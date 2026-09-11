@@ -24,10 +24,12 @@
  */
 import { LEEF_CONTRACT, LEEF_SYMBOL, WAX_CONTRACT, WAX_SYMBOL } from "@/lib/leef/types";
 import type { LeefSnapshot } from "@/lib/leef/types";
+import { DEFIBOX_SWAP, TACO_SWAP } from "@/lib/leef/venues";
 import { isAccountName, parseAsset, tokenCatalog } from "./tokens";
 
 /** Alcor's on-chain AMM contract on WAX. Swaps execute as token transfers into it. */
 export const ALCOR_SWAP_CONTRACT = "swap.alcor";
+const ALLOWED_SWAP_TO = new Set([ALCOR_SWAP_CONTRACT, DEFIBOX_SWAP, TACO_SWAP]);
 
 /** The only actions this app may ever call on the AMM contract itself. */
 const ALCOR_AMM_ACTIONS = new Set(["addliquid", "subliquid", "collect"]);
@@ -119,8 +121,8 @@ function checkTransfer(
   const memo = String(action.plain.memo ?? "");
 
   if (from !== account) fail(`transfer from "${from}" but the signer is "${account}"`);
-  if (to !== ALCOR_SWAP_CONTRACT) {
-    fail(`transfers may only go to ${ALCOR_SWAP_CONTRACT}, not "${to}"`);
+  if (!ALLOWED_SWAP_TO.has(to)) {
+    fail(`transfers may only go to allowlisted AMMs, not "${to}"`);
   }
   const asset = parseAsset(quantity);
   if (!asset || !(asset.amount > 0)) fail(`bad quantity "${quantity}"`);
@@ -140,6 +142,21 @@ function checkTransfer(
   }
 
   if (memo.trim() === "deposit") return; // LP deposit leg
+  if (to === DEFIBOX_SWAP) {
+    if (!/^swap,\d+,\d+$/.test(memo.trim())) {
+      fail("Defibox memo must be swap,<min_out_units>,<pair_id>");
+    }
+    return;
+  }
+  if (to === TACO_SWAP) {
+    const m = memo.trim().match(/^(\d+(?:\.\d+)?)\s+([A-Z0-9]+)@([a-z1-5.]{1,13})$/);
+    if (!m) fail("Taco memo must be `<min> SYM@contract`");
+    const minToken = tokens.get(m[2]!);
+    if (!minToken || minToken.contract !== m[3]) {
+      fail(`Taco min-out ${m[2]}@${m[3]} isn't the verified token for that symbol`);
+    }
+    return;
+  }
   const swap = parseSwapMemo(memo, account);
   if (!swap) {
     fail("transfer memo is neither an LP deposit nor a valid swapexactin route to this account");

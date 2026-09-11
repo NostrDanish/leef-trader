@@ -12,7 +12,7 @@ const WAX_RPC = [
   "https://wax.eosphere.io",
 ];
 
-async function rpcPost(path: string, body: unknown, timeoutMs = 12_000): Promise<unknown> {
+export async function rpcPost(path: string, body: unknown, timeoutMs = 12_000): Promise<unknown> {
   let last = "WAX RPC failed";
   for (const base of WAX_RPC) {
     try {

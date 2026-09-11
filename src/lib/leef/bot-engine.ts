@@ -1,4 +1,4 @@
-import { backedPools, isWaxToken, quoteConstantProduct } from "./amm";
+import { backedPools, isLeefToken, isWaxToken, quoteConstantProduct } from "./amm";
 import { bestExecutionRoute } from "./route-optimizer";
 import { realizedVolPerSec } from "./cost-model";
 import {
@@ -349,6 +349,41 @@ function bestSellRoute(snap: LeefSnapshot, amountLeef: number): SwapRoute | null
  * Constant-product quotes on real reserves are conservative for Alcor's
  * concentrated pools, which is the safe direction for a min-out guard.
  */
+/** LEEF/WAX books from Defibox/Taco, shaped as LeefPool so arb can cross venues. */
+function venueWaxLeefPools(snap: LeefSnapshot): LeefPool[] {
+  const out: LeefPool[] = [];
+  for (const p of snap.aux) {
+    if (p.venue !== "defibox" && p.venue !== "taco") continue;
+    const wax = isWaxToken(p.tokenA) ? p.tokenA : isWaxToken(p.tokenB) ? p.tokenB : null;
+    const leef = isLeefToken(p.tokenA) ? p.tokenA : isLeefToken(p.tokenB) ? p.tokenB : null;
+    if (!wax || !leef || leef.quantity < 1_000_000) continue;
+    out.push({
+      id: p.id,
+      fee: p.fee,
+      feePct: p.feePct,
+      leef,
+      pair: wax,
+      leefIsA: isLeefToken(p.tokenA),
+      tvlUsd: p.tvlUsd,
+      volume24Usd: p.volume24Usd,
+      volumeWeekUsd: 0,
+      volumeUsdMonth: 0,
+      volumeUsd90: 0,
+      volumeLeef24: 0,
+      volumePair24: 0,
+      change24: 0,
+      changeWeek: 0,
+      liquidity: "0",
+      pairPerLeef: leef.quantity > 0 ? wax.quantity / leef.quantity : 0,
+      leefPerPair: wax.quantity > 0 ? leef.quantity / wax.quantity : 0,
+      waxPerLeef: leef.quantity > 0 ? wax.quantity / leef.quantity : null,
+      usdPerLeef: null,
+      tickSpacing: 60,
+    });
+  }
+  return out;
+}
+
 export function findArb(
   snap: LeefSnapshot,
   waxIn: number,
@@ -356,7 +391,10 @@ export function findArb(
   allowSamePool = false,
 ): ArbPlan | null {
   if (!(waxIn > 0)) return null;
-  const waxPools = backedPools(snap.pools).filter((p) => isWaxToken(p.pair));
+  const waxPools = [
+    ...backedPools(snap.pools).filter((p) => isWaxToken(p.pair)),
+    ...venueWaxLeefPools(snap),
+  ];
   if (waxPools.length < 2 && !allowSamePool) return null;
 
   let best: ArbPlan | null = null;

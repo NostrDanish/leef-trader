@@ -50,6 +50,7 @@ type Edge = {
   tvlUsd: number;
   volume24Usd: number;
   pairName: string;
+  venue: "alcor" | "defibox" | "taco";
 };
 
 function tokenId(symbol: string, contract: string): TokenId {
@@ -82,6 +83,7 @@ function quoteEdge(edge: Edge, amountIn: number): QuoteLeg | null {
     amountOut: q.amountOut,
     feePct: edge.feePct,
     priceImpact: q.priceImpact,
+    venue: edge.venue,
   };
 }
 
@@ -167,6 +169,7 @@ export function buildRouteGraph(
       tvlUsd: p.tvlUsd,
       volume24Usd: p.volume24Usd,
       pairName: name,
+      venue: "alcor",
     });
     pushEdge(g, {
       poolId: p.id,
@@ -181,6 +184,7 @@ export function buildRouteGraph(
       tvlUsd: p.tvlUsd,
       volume24Usd: p.volume24Usd,
       pairName: name,
+      venue: "alcor",
     });
   }
 
@@ -193,7 +197,9 @@ export function buildRouteGraph(
     if (p.tvlUsd < 5) continue;
     const a = tokenId(p.tokenA.symbol, p.tokenA.contract);
     const b = tokenId(p.tokenB.symbol, p.tokenB.contract);
-    const name = `${p.tokenA.symbol} / ${p.tokenB.symbol}`;
+    const venue = p.venue ?? "alcor";
+    const tag = venue === "alcor" ? "" : ` · ${venue}`;
+    const name = `${p.tokenA.symbol} / ${p.tokenB.symbol}${tag}`;
     pushEdge(g, {
       poolId: p.id,
       from: a,
@@ -207,6 +213,7 @@ export function buildRouteGraph(
       tvlUsd: p.tvlUsd,
       volume24Usd: p.volume24Usd,
       pairName: name,
+      venue,
     });
     pushEdge(g, {
       poolId: p.id,
@@ -221,6 +228,7 @@ export function buildRouteGraph(
       tvlUsd: p.tvlUsd,
       volume24Usd: p.volume24Usd,
       pairName: name,
+      venue,
     });
   }
   return g;

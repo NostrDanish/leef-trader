@@ -77,6 +77,30 @@ describe("assertActionPolicy", () => {
     );
   });
 
+  it("accepts a Defibox swap memo to swap.box", () => {
+    expect(() =>
+      assertActionPolicy(
+        [transfer({ to: "swap.box", memo: "swap,123456,12" })],
+        ACCOUNT,
+      ),
+    ).not.toThrow();
+  });
+
+  it("accepts a Taco min-out memo to swap.taco", () => {
+    expect(() =>
+      assertActionPolicy(
+        [transfer({ to: "swap.taco", memo: "1.50000000 WAX@eosio.token", quantity: "10.0000 LEEF", contract: "leefmaincorp" })],
+        ACCOUNT,
+      ),
+    ).not.toThrow();
+  });
+
+  it("rejects a malformed Defibox memo", () => {
+    expect(() =>
+      assertActionPolicy([transfer({ to: "swap.box", memo: "swapexactin#1#x#y#0" })], ACCOUNT),
+    ).toThrow(/Defibox memo/);
+  });
+
   it("rejects transfers from a foreign sender", () => {
     expect(() => assertActionPolicy([transfer({ from: "other.account" })], ACCOUNT)).toThrow(
       /from "other.account"/,

@@ -13,7 +13,8 @@ exact size
   → extra hops win ONLY if destination amount is higher
   → 2-book golden-section split; optional 3rd book residual
   → rank by expected destination fill
-  → LIVE: fresh Alcor CLMM quote for that pair+size (executable truth)
+   → LIVE: Alcor legs requote CLMM; Defibox/Taco use min-out memos
+     (see VENUES.md)
 ```
 
 ## Dominance (why the old rule was unsafe)

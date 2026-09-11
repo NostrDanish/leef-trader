@@ -2,6 +2,18 @@
 
 All notable changes to LEEF Trader. Dates are commit-era, not release tags.
 
+## Unreleased — Defibox + TacoSwap venue adapters
+
+- Universal liquidity graph: Alcor + Defibox (`swap.box` pairs table) +
+  TacoSwap (`swap.taco`). Same optimizer, no second router, no venue bias.
+- Policy firewall allowlists those AMM contracts with venue-specific memos.
+- Live: all-Alcor still requotes CLMM; Defibox/Taco use on-chain min-out
+  memos; mixed hops are one atomic tx.
+- Spread arb also scans venue LEEF/WAX books (cross-DEX round trips).
+- Discovery is on-chain tables, cached 120s, fail-open if a venue is down.
+
+---
+
 ## Unreleased — safe dominance, depth-aware branching, ternary size search
 
 - Token-only dominance removed. A state is pruned only if another has ≥

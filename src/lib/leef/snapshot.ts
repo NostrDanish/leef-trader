@@ -3,6 +3,8 @@ import { fallbackSnapshot } from "./fallback";
 import { attachUsdPrices, parseAllPools, parseSwaps } from "./parse";
 import type { AuxPool, LeefPool, LeefSnapshot, LiveTrade } from "./types";
 import { buildUniverse, repriceUniverse, type UniverseToken } from "./universe";
+import { fetchExternalVenues } from "./venue-adapters";
+import type { VenuePool } from "./venues";
 import { fetchJson } from "@/lib/fetchJson";
 
 const ALCOR_API = "https://wax.alcor.exchange/api/v2";
@@ -171,6 +173,17 @@ async function loadLive(): Promise<LeefSnapshot> {
   book.leef.sort((a, b) => b.volume24Usd - a.volume24Usd || b.tvlUsd - a.tvlUsd);
   const universe = repriceUniverse(lastUniverse, book.aux, px.waxUsd);
   const trades = await loadTrades(book.leef);
+  const venues = await fetchExternalVenues(px.waxUsd).catch(() => [] as VenuePool[]);
+  const venueAux: AuxPool[] = venues.map((v) => ({
+    id: v.id,
+    fee: v.fee,
+    feePct: v.feePct,
+    tokenA: v.tokenA,
+    tokenB: v.tokenB,
+    tvlUsd: v.tvlUsd,
+    volume24Usd: 0,
+    venue: v.venue,
+  }));
 
   return {
     source: "live",
@@ -179,9 +192,10 @@ async function loadLive(): Promise<LeefSnapshot> {
     leefUsd: px.leefUsd,
     waxPerLeef: px.waxPerLeef,
     pools: book.leef,
-    aux: book.aux,
+    aux: [...book.aux, ...venueAux],
     trades,
     universe,
+    venues,
   };
 }
 

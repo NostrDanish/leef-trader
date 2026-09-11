@@ -1,6 +1,8 @@
 import type { ArbPlan } from "@/lib/leef/bot-engine";
 import type { LeefSnapshot, SwapRoute } from "@/lib/leef/types";
 import { LEEF_CONTRACT, WAX_CONTRACT } from "@/lib/leef/types";
+import { defiboxMemo, tacoMemo } from "@/lib/leef/venue-adapters";
+import { nativePoolId, venueOfPoolId } from "@/lib/leef/venues";
 import { fetchAlcorRoute, parseAssetAmount } from "./alcor-route";
 import {
   packAddLiquid,
@@ -30,7 +32,7 @@ import { formatAsset, metaOf } from "./tokens";
 
 export { ALCOR_SWAP_CONTRACT };
 
-type TransferSpec = { quantity: string; memo: string };
+type TransferSpec = { tokenContract: string; to: string; quantity: string; memo: string };
 
 export type SwapExecution = {
   txid: string;
@@ -38,13 +40,14 @@ export type SwapExecution = {
   expectedOut: number;
 };
 
+function allAlcor(route: SwapRoute): boolean {
+  return route.legs.every((l) => (l.venue ?? venueOfPoolId(l.poolId)) === "alcor");
+}
+
 /**
- * Live execution requires a fresh route from Alcor's CLMM router. There is
- * deliberately NO fallback to the local constant-product estimate here: the
- * local model is fine for ranking and paper fills, but handing real money to
- * a different pricing model than the one that executes is how funds get
- * lost. Router down / pair unrouted / malformed quote → the trade throws and
- * nothing is signed.
+ * Alcor-only routes still requote through Alcor's CLMM router (executable
+ * truth). Defibox/Taco legs use on-chain CP min-out memos — there is no
+ * equivalent public router. Mixed routes are sequential transfers in one tx.
  */
 async function buildTransfers(opts: {
   account: string;
@@ -56,21 +59,65 @@ async function buildTransfers(opts: {
   const tokenIn = metaOf(opts.route.tokenIn, opts.snap);
   const tokenOut = metaOf(opts.route.tokenOut, opts.snap);
 
-  const quote = await fetchAlcorRoute({
-    tokenInId: tokenIn.alcorId,
-    tokenOutId: tokenOut.alcorId,
-    amount: opts.amountIn,
-    slippagePct: opts.slippagePct,
-    receiver: opts.account,
-    maxHops: Math.min(10, Math.max(2, opts.route.legs.length)),
-  });
-  return {
-    transfers: quote.swaps.map((s) => ({
-      quantity: s.input,
-      memo: s.memo.replaceAll("<receiver>", opts.account),
-    })),
-    expectedOut: parseAssetAmount(quote.output) || opts.route.amountOut,
-  };
+  if (allAlcor(opts.route)) {
+    const quote = await fetchAlcorRoute({
+      tokenInId: tokenIn.alcorId,
+      tokenOutId: tokenOut.alcorId,
+      amount: opts.amountIn,
+      slippagePct: opts.slippagePct,
+      receiver: opts.account,
+      maxHops: Math.min(10, Math.max(2, opts.route.legs.length)),
+    });
+    return {
+      transfers: quote.swaps.map((s) => ({
+        tokenContract: tokenIn.contract,
+        to: ALCOR_SWAP_CONTRACT,
+        quantity: s.input,
+        memo: s.memo.replaceAll("<receiver>", opts.account),
+      })),
+      expectedOut: parseAssetAmount(quote.output) || opts.route.amountOut,
+    };
+  }
+
+  const slip = Math.max(0, opts.slippagePct) / 100;
+  const transfers: TransferSpec[] = [];
+  for (const leg of opts.route.legs) {
+    const venue = leg.venue ?? venueOfPoolId(leg.poolId);
+    const tin = metaOf(leg.tokenIn, opts.snap);
+    const tout = metaOf(leg.tokenOut, opts.snap);
+    const minOut = leg.amountOut * (1 - slip);
+    const nativeId = nativePoolId(leg.poolId);
+    if (venue === "alcor") {
+      const quote = await fetchAlcorRoute({
+        tokenInId: tin.alcorId,
+        tokenOutId: tout.alcorId,
+        amount: leg.amountIn,
+        slippagePct: opts.slippagePct,
+        receiver: opts.account,
+        maxHops: 1,
+      });
+      for (const s of quote.swaps) {
+        transfers.push({
+          tokenContract: tin.contract,
+          to: ALCOR_SWAP_CONTRACT,
+          quantity: s.input,
+          memo: s.memo.replaceAll("<receiver>", opts.account),
+        });
+      }
+      continue;
+    }
+    const memo =
+      venue === "defibox"
+        ? defiboxMemo(minOut, tout.decimals, nativeId)
+        : tacoMemo(minOut, tout.symbol, tout.contract, tout.decimals);
+    transfers.push({
+      tokenContract: tin.contract,
+      to: swapContractOf(venue),
+      quantity: formatAsset(leg.amountIn, tin),
+      memo,
+    });
+  }
+  return { transfers, expectedOut: opts.route.amountOut * (1 - slip) };
 }
 
 /** An action in both worlds: plain fields for wallet UIs, packed bytes for the local signer. */
@@ -183,16 +230,15 @@ export async function signAndPushSwap(opts: {
   slippagePct: number;
   snap: LeefSnapshot;
 }): Promise<SwapExecution> {
-  const tokenIn = metaOf(opts.route.tokenIn, opts.snap);
   const { transfers, expectedOut } = await buildTransfers(opts);
   const { txid } = await signAndPushTransfers({
     account: opts.account,
     permission: opts.permission,
     transfers: transfers.map((t) => ({
-      contract: tokenIn.contract,
+      contract: t.tokenContract,
       data: {
         from: opts.account,
-        to: ALCOR_SWAP_CONTRACT,
+        to: t.to,
         quantity: t.quantity,
         memo: t.memo,
       },

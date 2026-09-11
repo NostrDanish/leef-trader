@@ -43,6 +43,8 @@ export type AuxPool = {
   tokenB: TokenRef;
   tvlUsd: number;
   volume24Usd: number;
+  /** Liquidity venue. Omitted = Alcor (legacy aux books). */
+  venue?: "alcor" | "defibox" | "taco";
 };
 
 export type LiveTrade = {
@@ -69,6 +71,7 @@ export type QuoteLeg = {
   amountOut: number;
   feePct: number;
   priceImpact: number;
+  venue?: "alcor" | "defibox" | "taco";
 };
 
 export type SwapRoute = {
@@ -123,6 +126,8 @@ export type LeefSnapshot = {
   trades: LiveTrade[];
   /** Priced tradable token universe on Alcor (for the rebalancer). */
   universe: import("./universe").UniverseToken[];
+  /** Defibox + TacoSwap CP books (namespaced ids). Empty when discovery failed. */
+  venues?: import("./venues").VenuePool[];
   warning?: string;
 };
 

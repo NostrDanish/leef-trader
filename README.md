@@ -11,8 +11,9 @@ non-custodial: keys never leave the tab.
 - **Terminal**: live LEEF pool book from Alcor (30s refresh), ranked routes,
   tape of recent fills, pool analytics, LP management, token universe.
 - **Manual trading**: Buy Now / Sell Now pick the **best executable route for
-  that exact size** (direct, multi-hop, or split books) — paper by default,
-  live when a wallet/session key is connected. See [ROUTING](./docs/ROUTING.md).
+  that exact size** across Alcor, Defibox, and TacoSwap (direct, multi-hop, or
+  split) — paper by default, live when a wallet/session key is connected.
+  See [ROUTING](./docs/ROUTING.md) and [VENUES](./docs/VENUES.md).
 - **Automated bot**: six strategies (signal, mean reversion, spread arb, grid,
   DCA, volume maker) with goals, stops, and a decision journal.
 - **Rebalancer**: priority-ladder portfolio sweeps (dust consolidation + drift
