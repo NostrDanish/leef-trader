@@ -2,11 +2,18 @@ import type { ArbPlan } from "@/lib/leef/bot-engine";
 import type { LeefSnapshot, SwapRoute } from "@/lib/leef/types";
 import { fetchAlcorRoute } from "./alcor-route";
 import {
+  packAddLiquid,
+  packCollect,
+  packSubLiquid,
   packTransaction,
   packedTransactionBody,
+  packTransferData,
   signingDigest,
   transactionHeaderFromInfo,
+  type AddLiquidData,
   type ChainInfo,
+  type CollectData,
+  type SubLiquidData,
   type TransferActionData,
 } from "./antelope";
 import { getChainInfo, pushSigned } from "./chain";
@@ -67,10 +74,18 @@ async function buildTransfers(opts: {
   }
 }
 
-async function signAndPushTransfers(opts: {
+/** An action in both worlds: plain fields for wallet UIs, packed bytes for the local signer. */
+type ActionSpec = {
+  contract: string;
+  name: string;
+  plain: Record<string, unknown>;
+  dataBytes: Uint8Array;
+};
+
+async function dispatchActions(opts: {
   account: string;
   permission?: string;
-  transfers: { contract: string; data: TransferActionData }[];
+  actions: ActionSpec[];
 }): Promise<{ txid: string }> {
   // External wallet (Cloud Wallet / Anchor): the wallet builds, signs and
   // broadcasts — and prompts the user for each transaction.
@@ -78,18 +93,14 @@ async function signAndPushTransfers(opts: {
   if (sess) {
     const actor = String(sess.actor);
     const permission = String(sess.permission);
-    const actions = opts.transfers.map((t) => ({
-      account: t.contract,
-      name: "transfer",
-      authorization: [{ actor, permission }],
-      data: {
-        from: actor,
-        to: ALCOR_SWAP_CONTRACT,
-        quantity: t.data.quantity,
-        memo: t.data.memo,
-      },
-    }));
-    const result = await sess.transact({ actions });
+    const result = await sess.transact({
+      actions: opts.actions.map((a) => ({
+        account: a.contract,
+        name: a.name,
+        authorization: [{ actor, permission }],
+        data: a.plain,
+      })),
+    });
     const response = (
       result as { response?: { transaction_id?: string; processed?: { id?: string } } }
     ).response;
@@ -108,18 +119,44 @@ async function signAndPushTransfers(opts: {
 
   const packedTx = packTransaction({
     ...header,
-    actions: opts.transfers.map((t) => ({
-      account: t.contract,
-      name: "transfer",
+    actions: opts.actions.map((a) => ({
+      account: a.contract,
+      name: a.name,
       actor: opts.account,
       permission: opts.permission ?? "active",
-      data: t.data,
+      dataBytes: a.dataBytes,
     })),
   });
 
   const digest = signingDigest(rawInfo.chain_id, packedTx);
   const signature = signDigest(digest);
   return await pushSigned(packedTransactionBody(packedTx, [signature]));
+}
+
+function transferSpec(contract: string, data: TransferActionData): ActionSpec {
+  return {
+    contract,
+    name: "transfer",
+    plain: { from: data.from, to: data.to, quantity: data.quantity, memo: data.memo },
+    dataBytes: packTransferData(data),
+  };
+}
+
+async function signAndPushTransfers(opts: {
+  account: string;
+  permission?: string;
+  transfers: { contract: string; data: TransferActionData }[];
+}): Promise<{ txid: string }> {
+  // Wallet sessions sign as the wallet's own actor — normalize `from` to it.
+  const sess = walletSession();
+  const from = sess ? String(sess.actor) : opts.account;
+  return await dispatchActions({
+    account: from,
+    permission: opts.permission,
+    actions: opts.transfers.map((t) =>
+      transferSpec(t.contract, { ...t.data, from }),
+    ),
+  });
 }
 
 /**
@@ -244,5 +281,136 @@ export async function signAndPushArb(opts: {
         },
       },
     ],
+  });
+}
+
+/* ------------------------------------------------------------------ */
+/* Liquidity positions (Alcor AMM, full-range)                          */
+/* ------------------------------------------------------------------ */
+
+/**
+ * Add liquidity: deposit both tokens, then addliquid.
+ * Mirrors alcor-ui: transfer ×2 with memo "deposit" + addliquid action.
+ */
+export async function signAndPushAddLiquidity(opts: {
+  account: string;
+  permission?: string;
+  poolId: number;
+  tokenA: { contract: string; symbol: string; decimals: number };
+  tokenB: { contract: string; symbol: string; decimals: number };
+  amountA: number;
+  amountB: number;
+  tickLower: number;
+  tickUpper: number;
+  /** Slippage buffer for the min bounds, percent. */
+  slippagePct: number;
+}): Promise<{ txid: string }> {
+  const owner = walletSession() ? String(walletSession()!.actor) : opts.account;
+  const amountA = formatAsset(opts.amountA, opts.tokenA);
+  const amountB = formatAsset(opts.amountB, opts.tokenB);
+  const minA = formatAsset(opts.amountA * (1 - opts.slippagePct / 100), opts.tokenA);
+  const minB = formatAsset(opts.amountB * (1 - opts.slippagePct / 100), opts.tokenB);
+
+  const addData: AddLiquidData = {
+    poolId: opts.poolId,
+    owner,
+    tokenADesired: amountA,
+    tokenBDesired: amountB,
+    tickLower: opts.tickLower,
+    tickUpper: opts.tickUpper,
+    tokenAMin: minA,
+    tokenBMin: minB,
+    deadline: 0,
+  };
+
+  return await dispatchActions({
+    account: owner,
+    permission: opts.permission,
+    actions: [
+      transferSpec(opts.tokenA.contract, {
+        from: owner,
+        to: ALCOR_SWAP_CONTRACT,
+        quantity: amountA,
+        memo: "deposit",
+      }),
+      transferSpec(opts.tokenB.contract, {
+        from: owner,
+        to: ALCOR_SWAP_CONTRACT,
+        quantity: amountB,
+        memo: "deposit",
+      }),
+      {
+        contract: ALCOR_SWAP_CONTRACT,
+        name: "addliquid",
+        plain: { ...addData },
+        dataBytes: packAddLiquid(addData),
+      },
+    ],
+  });
+}
+
+/**
+ * Remove liquidity: subliquid (+ collect everything at 100%).
+ * Mirrors alcor-ui's removal flow on swap.alcor.
+ */
+export async function signAndPushRemoveLiquidity(opts: {
+  account: string;
+  permission?: string;
+  poolId: number;
+  tickLower: number;
+  tickUpper: number;
+  /** Position liquidity units to burn. */
+  liquidity: bigint;
+  collectAll: boolean;
+  /** Token metas — used for the zero min-bounds and the collect caps. */
+  tokenA: { symbol: string; decimals: number };
+  tokenB: { symbol: string; decimals: number };
+  /** Max bounds for the collect call — pool reserves work as safe caps. */
+  tokenAMax: string;
+  tokenBMax: string;
+}): Promise<{ txid: string }> {
+  const owner = walletSession() ? String(walletSession()!.actor) : opts.account;
+
+  const subData: SubLiquidData = {
+    poolId: opts.poolId,
+    owner,
+    liquidity: opts.liquidity,
+    tickLower: opts.tickLower,
+    tickUpper: opts.tickUpper,
+    // Min bounds of zero — same as alcor-ui's removal.
+    tokenAMin: formatAsset(0, opts.tokenA),
+    tokenBMin: formatAsset(0, opts.tokenB),
+    deadline: 0,
+  };
+  const collectData: CollectData = {
+    poolId: opts.poolId,
+    owner,
+    recipient: owner,
+    tickLower: opts.tickLower,
+    tickUpper: opts.tickUpper,
+    tokenAMax: opts.tokenAMax,
+    tokenBMax: opts.tokenBMax,
+  };
+
+  const actions: ActionSpec[] = [
+    {
+      contract: ALCOR_SWAP_CONTRACT,
+      name: "subliquid",
+      plain: { ...subData, liquidity: String(opts.liquidity) },
+      dataBytes: packSubLiquid(subData),
+    },
+  ];
+  if (opts.collectAll) {
+    actions.push({
+      contract: ALCOR_SWAP_CONTRACT,
+      name: "collect",
+      plain: { ...collectData },
+      dataBytes: packCollect(collectData),
+    });
+  }
+  return await dispatchActions({
+    account: owner,
+    permission: opts.permission,
+    actions,
   });
 }

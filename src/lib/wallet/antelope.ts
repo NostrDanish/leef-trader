@@ -311,6 +311,11 @@ class Writer {
     return this.u64(BigInt.asUintN(64, v));
   }
 
+  /** Signed 32-bit, little-endian two's complement. */
+  i32(v: number): this {
+    return this.u32(v | 0);
+  }
+
   varuint(v: number): this {
     let n = v >>> 0;
     for (;;) {
@@ -407,22 +412,7 @@ export type TransferActionData = {
   memo: string;
 };
 
-export type TransactionSpec = {
-  /** unix seconds */
-  expiration: number;
-  refBlockNum: number;
-  refBlockPrefix: number;
-  actions: {
-    account: string;
-    name: string;
-    actor: string;
-    /** Permission the actor signs with, e.g. "active". */
-    permission: string;
-    data: TransferActionData;
-  }[];
-};
-
-function packTransfer(data: TransferActionData): Uint8Array {
+export function packTransferData(data: TransferActionData): Uint8Array {
   const w = new Writer();
   w.name(data.from);
   w.name(data.to);
@@ -430,6 +420,99 @@ function packTransfer(data: TransferActionData): Uint8Array {
   w.string(data.memo);
   return w.done();
 }
+
+/* ---------------------------- Alcor AMM LP actions ----------------- */
+/* Field order verified against the swap.alcor ABI on WAX mainnet.     */
+
+export type AddLiquidData = {
+  poolId: number;
+  owner: string;
+  tokenADesired: string;
+  tokenBDesired: string;
+  tickLower: number;
+  tickUpper: number;
+  tokenAMin: string;
+  tokenBMin: string;
+  deadline: number;
+};
+
+export type SubLiquidData = {
+  poolId: number;
+  owner: string;
+  /** Position liquidity units (uint64). */
+  liquidity: bigint;
+  tickLower: number;
+  tickUpper: number;
+  tokenAMin: string;
+  tokenBMin: string;
+  deadline: number;
+};
+
+export type CollectData = {
+  poolId: number;
+  owner: string;
+  recipient: string;
+  tickLower: number;
+  tickUpper: number;
+  tokenAMax: string;
+  tokenBMax: string;
+};
+
+export function packAddLiquid(d: AddLiquidData): Uint8Array {
+  const w = new Writer();
+  w.u64(BigInt(d.poolId));
+  w.name(d.owner);
+  writeAsset(w, parseAssetString(d.tokenADesired));
+  writeAsset(w, parseAssetString(d.tokenBDesired));
+  w.i32(d.tickLower);
+  w.i32(d.tickUpper);
+  writeAsset(w, parseAssetString(d.tokenAMin));
+  writeAsset(w, parseAssetString(d.tokenBMin));
+  w.u32(d.deadline);
+  return w.done();
+}
+
+export function packSubLiquid(d: SubLiquidData): Uint8Array {
+  const w = new Writer();
+  w.u64(BigInt(d.poolId));
+  w.name(d.owner);
+  w.u64(d.liquidity);
+  w.i32(d.tickLower);
+  w.i32(d.tickUpper);
+  writeAsset(w, parseAssetString(d.tokenAMin));
+  writeAsset(w, parseAssetString(d.tokenBMin));
+  w.u32(d.deadline);
+  return w.done();
+}
+
+export function packCollect(d: CollectData): Uint8Array {
+  const w = new Writer();
+  w.u64(BigInt(d.poolId));
+  w.name(d.owner);
+  w.name(d.recipient);
+  w.i32(d.tickLower);
+  w.i32(d.tickUpper);
+  writeAsset(w, parseAssetString(d.tokenAMax));
+  writeAsset(w, parseAssetString(d.tokenBMax));
+  return w.done();
+}
+
+export type PackedAction = {
+  account: string;
+  name: string;
+  actor: string;
+  /** Permission the actor signs with, e.g. "active". */
+  permission: string;
+  dataBytes: Uint8Array;
+};
+
+export type TransactionSpec = {
+  /** unix seconds */
+  expiration: number;
+  refBlockNum: number;
+  refBlockPrefix: number;
+  actions: PackedAction[];
+};
 
 export function packTransaction(spec: TransactionSpec): Uint8Array {
   const w = new Writer();
@@ -442,14 +525,13 @@ export function packTransaction(spec: TransactionSpec): Uint8Array {
   w.varuint(0); // context_free_actions
   w.varuint(spec.actions.length);
   for (const action of spec.actions) {
-    const dataBytes = packTransfer(action.data);
     w.name(action.account);
     w.name(action.name);
     w.varuint(1); // one authorization
     w.name(action.actor);
     w.name(action.permission);
-    w.varuint(dataBytes.length);
-    w.bytes(dataBytes);
+    w.varuint(action.dataBytes.length);
+    w.bytes(action.dataBytes);
   }
   w.varuint(0); // transaction_extensions
   return w.done();

@@ -53,6 +53,7 @@ export function parseAllPools(raw: unknown): { leef: LeefPool[]; aux: AuxPool[] 
     const volumeB24 = num(p.volumeB24);
     const sqrt = p.sqrtPriceX64 != null ? String(p.sqrtPriceX64) : undefined;
     const firstSeenAt = p.firstSeenAt ? String(p.firstSeenAt) : undefined;
+    const tickSpacingRaw = num(p.tickSpacing);
 
     const leefIsA = isLeefToken(a);
     const leefIsB = isLeefToken(b);
@@ -108,6 +109,14 @@ export function parseAllPools(raw: unknown): { leef: LeefPool[]; aux: AuxPool[] 
         usdPerLeef: null,
         firstSeenAt,
         sqrtPriceX64: sqrt,
+        tickSpacing:
+          tickSpacingRaw > 0
+            ? tickSpacingRaw
+            : fee >= 10000
+              ? 200
+              : fee >= 3000
+                ? 60
+                : 10,
       });
       continue;
     }

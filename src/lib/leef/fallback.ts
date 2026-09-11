@@ -39,6 +39,7 @@ function leefPool(p: {
     leefPerPair: pairPerLeef > 0 ? 1 / pairPerLeef : 0,
     waxPerLeef: isWax ? pairPerLeef : null,
     usdPerLeef: null,
+    tickSpacing: p.fee >= 10000 ? 200 : 60,
   };
 }
 

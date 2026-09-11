@@ -1,11 +1,15 @@
-import { ArrowDownUp, ArrowRight } from "lucide-react";
-import { useMemo } from "react";
+import { ArrowDownUp, ArrowRight, CheckCircle2, Zap } from "lucide-react";
+import { useMemo, useState } from "react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { compareAllRoutes, pairTokens, MIN_LEEF_BACKING } from "@/lib/leef/amm";
 import { fmtNum, fmtPct } from "@/lib/leef/format";
+import { executeSwap, type SwapOutcome } from "@/lib/wallet/trade";
+import { hasWalletSession } from "@/lib/wallet/session";
+import { hasSecret } from "@/lib/wallet/secret";
+import { useWallet } from "@/store/wallet";
 import { headline } from "@/lib/leef/rank";
 import { leefLegPoolId } from "@/lib/leef/route-loss";
 import type { LeefSnapshot, RankedPool, SwapRoute } from "@/lib/leef/types";
@@ -202,19 +206,9 @@ export function Quotes({
               </dl>
             )}
 
-            {best && (
-              <Button variant="outline" className="w-full" asChild>
-                <a
-                  href="https://wax.alcor.exchange/swap?output=LEEF-leefmaincorp&input=WAX-eosio.token"
-                  target="_blank"
-                  rel="noreferrer"
-                >
-                  Open winning book on Alcor
-                </a>
-              </Button>
-            )}
+            {best && <TradeButton snap={snap} />}
             <p className="text-center text-xs text-subtle">
-              Quotes pick the pool. Autoswap can clip it on paper or with a local key.
+              Quotes pick the route — trades execute right here, paper or on-chain.
             </p>
           </div>
         </Card>
@@ -256,6 +250,86 @@ export function Quotes({
           )}
         </div>
       </div>
+    </div>
+  );
+}
+
+function TradeButton({ snap }: { snap: LeefSnapshot }) {
+  const tokenIn = useTerminal((s) => s.tokenIn);
+  const tokenOut = useTerminal((s) => s.tokenOut);
+  const amountIn = useTerminal((s) => s.amountIn);
+  const slippage = useTerminal((s) => s.slippage);
+  const setImportOpen = useWallet((s) => s.setImportOpen);
+  const authType = useWallet((s) => s.authType);
+  const mode = useWallet((s) => s.mode);
+  const [busy, setBusy] = useState(false);
+  const [done, setDone] = useState<SwapOutcome | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  const live = mode === "live" && (hasSecret() || hasWalletSession());
+  const liveBook = snap.source === "live";
+
+  function onTrade() {
+    setBusy(true);
+    setError(null);
+    setDone(null);
+    void executeSwap({
+      snap,
+      tokenIn,
+      tokenOut,
+      amountIn: Number(amountIn) || 0,
+      slippage,
+    })
+      .then((outcome) => setDone(outcome))
+      .catch((err) => setError(err instanceof Error ? err.message : "Swap failed"))
+      .finally(() => setBusy(false));
+  }
+
+  return (
+    <div className="space-y-2">
+      {live ? (
+        <Button variant="leef" className="w-full" disabled={busy || !liveBook} onClick={onTrade}>
+          <Zap className="size-3.5" />
+          {busy ? "Signing…" : `Swap ${amountIn || "0"} ${tokenIn} → ${tokenOut}`}
+        </Button>
+      ) : (
+        <Button variant="leef" className="w-full" disabled={busy || !liveBook} onClick={onTrade}>
+          <Zap className="size-3.5" />
+          {busy ? "Filling…" : `Paper swap ${amountIn || "0"} ${tokenIn} → ${tokenOut}`}
+        </Button>
+      )}
+      {!live && (
+        <Button variant="outline" className="w-full" size="sm" onClick={() => setImportOpen(true)}>
+          Connect wallet for live swaps
+        </Button>
+      )}
+      {done && (
+        <div className="flex items-start gap-2 rounded-lg border border-leef/30 bg-leef/10 px-3 py-2 text-xs">
+          <CheckCircle2 className="mt-0.5 size-3.5 shrink-0 text-leef" />
+          <span>
+            {done.mode === "live" ? "Live fill" : "Paper fill"} ·{" "}
+            {fmtNum(done.amountOut, { compact: true })} {tokenOut} on {done.routeLabel}
+            {done.txid && (
+              <>
+                {" · "}
+                <a
+                  className="font-mono text-accent hover:underline"
+                  href={`https://waxblock.io/transaction/${done.txid}`}
+                  target="_blank"
+                  rel="noreferrer"
+                >
+                  tx {done.txid.slice(0, 10)}…
+                </a>
+              </>
+            )}
+          </span>
+        </div>
+      )}
+      {error && (
+        <p className="rounded-lg border border-sell/30 bg-sell/10 px-3 py-2 text-xs text-sell">
+          {error}
+        </p>
+      )}
     </div>
   );
 }

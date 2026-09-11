@@ -1,4 +1,6 @@
-import { useMemo } from "react";
+import { useMemo, useState } from "react";
+import { useQuery } from "@tanstack/react-query";
+import { Droplets, Minus, Plus } from "lucide-react";
 import {
   Area,
   AreaChart,
@@ -13,7 +15,13 @@ import { ChartFrame } from "./chart-frame";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
+import { Input } from "@/components/ui/input";
 import { quoteConstantProduct } from "@/lib/leef/amm";
+import { fetchPositions, type AmmPosition } from "@/lib/leef/positions";
+import { signAndPushAddLiquidity, signAndPushRemoveLiquidity } from "@/lib/wallet/sign";
+import { hasSecret } from "@/lib/wallet/secret";
+import { hasWalletSession } from "@/lib/wallet/session";
+import { useWallet } from "@/store/wallet";
 import { feeApyPct, tradeSpark } from "@/lib/leef/analytics";
 import { fmtNum, fmtPct, fmtUsd } from "@/lib/leef/format";
 import type { LeefPool, LeefSnapshot } from "@/lib/leef/types";
@@ -117,6 +125,8 @@ export function Dashboard({ snap }: { snap: LeefSnapshot }) {
       <Card className="p-4 sm:p-5">
         <DepthCurve pool={pool} />
       </Card>
+
+      <LpCard pool={pool} snap={snap} />
     </div>
   );
 }
@@ -376,3 +386,254 @@ const tooltipStyle = {
   borderRadius: 8,
   fontSize: 12,
 };
+
+/* ------------------------------------------------------------------ */
+/* Liquidity positions (add / remove on swap.alcor)                     */
+/* ------------------------------------------------------------------ */
+
+function LpCard({ pool, snap }: { pool: LeefPool; snap: LeefSnapshot }) {
+  const mode = useWallet((s) => s.mode);
+  const account = useWallet((s) => s.account);
+  const permission = useWallet((s) => s.permission);
+  const setImportOpen = useWallet((s) => s.setImportOpen);
+  const paperBalances = useWallet((s) => s.paperBalances);
+  const liveBalances = useWallet((s) => s.liveBalances);
+  const balances = mode === "live" ? liveBalances : paperBalances;
+  const live = mode === "live" && (hasSecret() || hasWalletSession());
+
+  const positionsQ = useQuery({
+    queryKey: ["amm-positions", account],
+    queryFn: () => fetchPositions(account),
+    enabled: live && Boolean(account),
+    refetchInterval: 45_000,
+    staleTime: 20_000,
+  });
+  const positions = (positionsQ.data ?? []).filter((pos) => pos.poolId === pool.id);
+
+  const [amountLeef, setAmountLeef] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [note, setNote] = useState<string | null>(null);
+  const [err, setErr] = useState<string | null>(null);
+
+  const leefMeta = { contract: "leefmaincorp", symbol: "LEEF", decimals: pool.leef.decimals };
+  const pairMeta = {
+    contract: pool.pair.contract,
+    symbol: pool.pair.symbol,
+    decimals: pool.pair.decimals,
+  };
+  const tokenA = pool.leefIsA ? leefMeta : pairMeta;
+  const tokenB = pool.leefIsA ? pairMeta : leefMeta;
+
+  const pairPerLeef = pool.leef.quantity > 0 ? pool.pair.quantity / pool.leef.quantity : 0;
+  const leefAmount = Number(amountLeef) || 0;
+  const pairAmount = leefAmount * pairPerLeef;
+  const enoughLeef = (balances.LEEF ?? 0) >= leefAmount;
+  const enoughPair = (balances[pool.pair.symbol] ?? 0) >= pairAmount;
+
+  const spacing = pool.tickSpacing || 60;
+  const tickLower = Math.ceil(-887200 / spacing) * spacing;
+  const tickUpper = Math.floor(887200 / spacing) * spacing;
+
+  function flash(m: string, isErr = false) {
+    if (isErr) setErr(m);
+    else setNote(m);
+    window.setTimeout(() => {
+      setNote(null);
+      setErr(null);
+    }, 12_000);
+  }
+
+  async function onAdd() {
+    setBusy(true);
+    try {
+      const aForA = pool.leefIsA ? leefAmount : pairAmount;
+      const bForB = pool.leefIsA ? pairAmount : leefAmount;
+      const { txid } = await signAndPushAddLiquidity({
+        account,
+        permission,
+        poolId: pool.id,
+        tokenA,
+        tokenB,
+        amountA: aForA,
+        amountB: bForB,
+        tickLower,
+        tickUpper,
+        slippagePct: 1,
+      });
+      flash(`Liquidity added · tx ${txid.slice(0, 10)}…`);
+      setAmountLeef("");
+      window.setTimeout(() => void positionsQ.refetch(), 5000);
+    } catch (e) {
+      flash(e instanceof Error ? e.message : "Add liquidity failed", true);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function onRemove(pos: AmmPosition, pct: number) {
+    setBusy(true);
+    try {
+      const liqOut = (pos.liquidity * BigInt(pct)) / 100n;
+      const { txid } = await signAndPushRemoveLiquidity({
+        account,
+        permission,
+        poolId: pool.id,
+        tickLower: pos.tickLower,
+        tickUpper: pos.tickUpper,
+        liquidity: liqOut,
+        collectAll: pct === 100,
+        tokenA: { symbol: tokenA.symbol, decimals: tokenA.decimals },
+        tokenB: { symbol: tokenB.symbol, decimals: tokenB.decimals },
+        tokenAMax: pool.leefIsA
+          ? `${pool.leef.quantity.toFixed(leefMeta.decimals)} LEEF`
+          : `${pool.pair.quantity.toFixed(pairMeta.decimals)} ${pairMeta.symbol}`,
+        tokenBMax: pool.leefIsA
+          ? `${pool.pair.quantity.toFixed(pairMeta.decimals)} ${pairMeta.symbol}`
+          : `${pool.leef.quantity.toFixed(leefMeta.decimals)} LEEF`,
+      });
+      flash(`Removed ${pct}% of the position · tx ${txid.slice(0, 10)}…`);
+      window.setTimeout(() => void positionsQ.refetch(), 5000);
+    } catch (e) {
+      flash(e instanceof Error ? e.message : "Remove failed", true);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  const poolLiq = Number(pool.liquidity || "0");
+
+  return (
+    <Card className="p-4 sm:p-5">
+      <div className="mb-4 flex items-center justify-between gap-2">
+        <div>
+          <h3 className="flex items-center gap-2 text-sm font-medium">
+            <Droplets className="size-4 text-accent" />
+            Liquidity on this book
+          </h3>
+          <p className="text-xs text-muted-foreground">
+            Full-range position · deposits both sides at the current reserve
+            ratio · fees accrue to the position.
+          </p>
+        </div>
+        <Badge variant="plain">{pool.feePct}% fee tier</Badge>
+      </div>
+
+      {!live ? (
+        <div className="flex flex-col items-start gap-3 rounded-lg border border-border bg-background p-4">
+          <p className="text-xs text-muted-foreground">
+            Liquidity positions live on-chain — connect Cloud Wallet / Anchor or
+            import a session key to add or remove LP.
+          </p>
+          <Button variant="outline" size="sm" onClick={() => setImportOpen(true)}>
+            Connect to manage LP
+          </Button>
+        </div>
+      ) : (
+        <div className="grid gap-5 lg:grid-cols-2">
+          <div>
+            <div className="mb-1 text-xs text-muted-foreground">LEEF in</div>
+            <div className="flex items-center gap-2">
+              <Input
+                inputMode="decimal"
+                value={amountLeef}
+                onChange={(e) => setAmountLeef(e.target.value)}
+                placeholder="0.0"
+                className="h-11 font-mono"
+              />
+              <Button
+                variant="ghost"
+                size="xs"
+                onClick={() => setAmountLeef(String(Math.floor(balances.LEEF ?? 0)))}
+              >
+                Max
+              </Button>
+            </div>
+            <div className="mt-2 font-mono text-xs tabular-nums text-muted-foreground">
+              ≈ {fmtNum(pairAmount, { digits: 4 })} {pool.pair.symbol} paired
+              {leefAmount > 0 && (balances[pool.pair.symbol] ?? 0) < pairAmount
+                ? ` — short ${pool.pair.symbol}`
+                : ""}
+            </div>
+            <Button
+              variant="leef"
+              className="mt-3 w-full"
+              disabled={
+                busy || !(leefAmount > 0) || !enoughLeef || !enoughPair || snap.source !== "live"
+              }
+              onClick={() => void onAdd()}
+            >
+              <Plus className="size-3.5" />
+              {busy ? "Signing…" : "Add liquidity (full range)"}
+            </Button>
+            {leefAmount > 0 && (!enoughLeef || !enoughPair) && (
+              <p className="mt-2 text-xs text-warn">Balance too low for this size.</p>
+            )}
+          </div>
+
+          <div>
+            <div className="mb-1 text-xs text-muted-foreground">Your positions here</div>
+            {positionsQ.isLoading ? (
+              <p className="py-6 text-center text-xs text-muted-foreground">Loading positions…</p>
+            ) : positions.length === 0 ? (
+              <p className="py-6 text-center text-xs text-muted-foreground">
+                No open position on pool #{pool.id}.
+              </p>
+            ) : (
+              <div className="flex flex-col gap-2">
+                {positions.map((pos) => {
+                  const share = poolLiq > 0 ? Number(pos.liquidity) / poolLiq : 0;
+                  const estLeef = share * pool.leef.quantity;
+                  const estPair = share * pool.pair.quantity;
+                  return (
+                    <div
+                      key={pos.id}
+                      className="rounded-lg border border-border bg-background px-3 py-2 text-xs"
+                    >
+                      <div className="flex flex-wrap items-center justify-between gap-2">
+                        <span className="font-mono text-muted-foreground">#{pos.id}</span>
+                        <span className="font-mono tabular-nums">
+                          ~{fmtNum(estLeef, { compact: true })} LEEF · ~
+                          {fmtNum(estPair, { digits: 2 })} {pool.pair.symbol}
+                        </span>
+                      </div>
+                      {(pos.feesA || pos.feesB) && (
+                        <div className="mt-0.5 font-mono text-subtle">
+                          unclaimed: {[pos.feesA, pos.feesB].filter(Boolean).join(" + ")}
+                        </div>
+                      )}
+                      <div className="mt-2 flex gap-1.5">
+                        {[25, 50, 100].map((pct) => (
+                          <Button
+                            key={pct}
+                            variant="outline"
+                            size="xs"
+                            disabled={busy}
+                            onClick={() => void onRemove(pos, pct)}
+                          >
+                            <Minus className="size-3" />
+                            {pct === 100 ? "Max" : `${pct}%`}
+                          </Button>
+                        ))}
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
+      {note && (
+        <p className="mt-3 rounded-lg border border-leef/30 bg-leef/10 px-3 py-2 text-xs text-leef">
+          {note}
+        </p>
+      )}
+      {err && (
+        <p className="mt-3 rounded-lg border border-sell/30 bg-sell/10 px-3 py-2 text-xs text-sell">
+          {err}
+        </p>
+      )}
+    </Card>
+  );
+}

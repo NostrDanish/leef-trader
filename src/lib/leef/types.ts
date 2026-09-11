@@ -31,6 +31,8 @@ export type LeefPool = {
   usdPerLeef: number | null;
   firstSeenAt?: string;
   sqrtPriceX64?: string;
+  /** Concentrated-liquidity tick spacing (60 = 0.3% tier, 200 = 1% tier). */
+  tickSpacing: number;
 };
 
 export type AuxPool = {
