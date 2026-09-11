@@ -185,8 +185,8 @@ export function WalletDesk({ snap }: { snap: LeefSnapshot }) {
 
       <Card className="p-4 sm:p-5">
         <h3 className="mb-3 text-sm font-medium">Holdings</h3>
-        <div className="overflow-x-auto">
-          <table className="w-full text-left text-xs">
+        <div className="-mx-4 overflow-x-auto px-4 sm:mx-0 sm:px-0">
+          <table className="w-full min-w-[420px] text-left text-xs">
             <thead className="text-subtle">
               <tr className="border-b border-border">
                 <th className="py-2 pr-3 font-medium">Token</th>

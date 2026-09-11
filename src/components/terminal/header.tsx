@@ -47,13 +47,13 @@ export function TerminalHeader({
                 {snap.source === "live" ? "On-chain" : "Cached book"}
               </Badge>
             </div>
-            <p className="hidden text-xs text-muted-foreground sm:block">
+            <p className="hidden text-xs text-muted-foreground lg:block">
               AI bot + Alcor AMM desks for LEEF · leefmaincorp
             </p>
           </div>
         </div>
 
-        <div className="hidden items-center gap-5 rounded-lg border border-border bg-surface px-4 py-2 text-xs md:flex">
+        <div className="hidden items-center gap-5 rounded-lg border border-border bg-surface px-4 py-2 text-xs xl:flex">
           <div>
             <div className="text-subtle">1M LEEF</div>
             <div className="font-mono tabular-nums text-wax">
@@ -140,7 +140,7 @@ export function TerminalHeader({
               <ArrowUpRight className="size-3.5" />
             </a>
           </Button>
-          <LoginArea className="hidden max-w-36 md:inline-flex" />
+          <LoginArea className="hidden max-w-36 lg:inline-flex" />
         </div>
       </div>
     </header>

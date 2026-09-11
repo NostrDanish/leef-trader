@@ -184,7 +184,7 @@ export const useBot = create<BotState>()(
       // Versioned + merging migrate: fields added to the schema after a user
       // saved state (e.g. risk.maxEchoLossPct) get filled from defaults
       // instead of crashing selectors with undefined.
-      version: 2,
+      version: 3,
       migrate: (persisted) => {
         const p = (
           persisted && typeof persisted === "object" ? persisted : {}

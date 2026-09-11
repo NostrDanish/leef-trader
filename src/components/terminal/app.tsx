@@ -1,19 +1,6 @@
-import {
-  Activity,
-  Bot,
-  Calculator,
-  GitCompare,
-  Layers,
-  LayoutDashboard,
-  LineChart,
-  PieChart,
-  Radio,
-  Wallet,
-} from "lucide-react";
 import { useEffect, useState } from "react";
 import { restoreWallet } from "@/lib/wallet/session";
-import { cn } from "@/lib/utils";
-import { type TabId, useTerminal } from "@/store/terminal";
+import { useTerminal } from "@/store/terminal";
 import { useWallet } from "@/store/wallet";
 import { BotDesk } from "./bot-desk";
 import { Dashboard } from "./dashboard";
@@ -25,6 +12,7 @@ import { Overview } from "./overview";
 import { PoolsTable } from "./pools";
 import { PortfolioDesk } from "./portfolio-desk";
 import { Quotes } from "./quotes";
+import { DesktopNav, MobileNav } from "./shell-nav";
 import { StatusBar } from "./status-bar";
 import { Tape } from "./tape";
 import { TickDesk } from "./tick";
@@ -35,19 +23,6 @@ import { useSnapshot } from "./use-snapshot";
 import { useWalletSync } from "./use-wallet-sync";
 import { WalletDesk } from "./wallet-desk";
 
-const TABS: { id: TabId; label: string; icon: typeof GitCompare }[] = [
-  { id: "tick", label: "Live tick", icon: Radio },
-  { id: "bot", label: "AI Bot", icon: Bot },
-  { id: "portfolio", label: "Portfolio", icon: PieChart },
-  { id: "wallet", label: "Wallet", icon: Wallet },
-  { id: "overview", label: "Overview", icon: LayoutDashboard },
-  { id: "pools", label: "Pools", icon: Layers },
-  { id: "pool", label: "Pool desk", icon: LineChart },
-  { id: "quotes", label: "Quotes", icon: GitCompare },
-  { id: "il", label: "IL calc", icon: Calculator },
-  { id: "tape", label: "Tape", icon: Activity },
-];
-
 export function TerminalApp() {
   const { snap, ranked, isFetching, refetch, dataUpdatedAt } = useSnapshot();
   const tick = useLiveTick(snap);
@@ -55,7 +30,6 @@ export function TerminalApp() {
   useBotLoop(snap);
   usePortfolioLoop(snap);
   const tab = useTerminal((s) => s.tab);
-  const setTab = useTerminal((s) => s.setTab);
   const [countdown, setCountdown] = useState(30);
 
   // Restore an external wallet session (Cloud Wallet / Anchor) on load.
@@ -105,39 +79,9 @@ export function TerminalApp() {
         </div>
       )}
 
-      <main className="mx-auto flex w-full max-w-7xl flex-1 flex-col gap-5 px-4 py-5 sm:px-6">
-        <div className="flex items-center justify-between gap-3 border-b border-border">
-          <nav
-            className="-mx-4 flex gap-1 overflow-x-auto px-4 pb-3 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden sm:mx-0 sm:px-0"
-            aria-label="Sections"
-          >
-            {TABS.map((t) => {
-              const Icon = t.icon;
-              const active = tab === t.id;
-              return (
-                <button
-                  key={t.id}
-                  type="button"
-                  onClick={() => setTab(t.id)}
-                  className={cn(
-                    "flex h-11 shrink-0 items-center gap-2 whitespace-nowrap rounded-md px-3 text-xs font-medium transition-colors",
-                    active
-                      ? "bg-accent/10 text-accent border border-accent/30"
-                      : "text-muted-foreground hover:bg-surface-2 hover:text-fg border border-transparent",
-                  )}
-                >
-                  <Icon className="size-3.5" />
-                  {t.label}
-                  {t.id === "pools" && (
-                    <span className="rounded-full bg-surface-3 px-1.5 font-mono text-accent">
-                      {snap.pools.length}
-                    </span>
-                  )}
-                </button>
-              );
-            })}
-          </nav>
-        </div>
+      <main className="mx-auto flex w-full max-w-7xl flex-1 flex-col gap-5 px-4 py-5 pb-24 sm:px-6 md:pb-5">
+        <DesktopNav poolCount={snap.pools.length} />
+        <MobileNav poolCount={snap.pools.length} />
 
         {tab === "overview" && <Overview snap={snap} ranked={ranked} />}
         {tab === "pools" && <PoolsTable ranked={ranked} />}

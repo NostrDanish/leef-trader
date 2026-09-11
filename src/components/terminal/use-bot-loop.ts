@@ -1,7 +1,8 @@
 import { useEffect, useRef } from "react";
-import { evaluateBot, type Position } from "@/lib/leef/bot-engine";
+import { evaluateBot, type ArbPlan, type Position } from "@/lib/leef/bot-engine";
 import { fmtNum } from "@/lib/leef/format";
 import type { LeefSnapshot } from "@/lib/leef/types";
+import { fetchAlcorRoute, parseAssetAmount } from "@/lib/wallet/alcor-route";
 import { signAndPushArb, signAndPushSwap } from "@/lib/wallet/sign";
 import { useBot } from "@/store/bot";
 import { useWallet } from "@/store/wallet";
@@ -11,6 +12,53 @@ function equityUsdOf(balances: Record<string, number>, snap: LeefSnapshot): numb
   return (
     (balances.WAX ?? 0) * snap.waxUsd + (balances.LEEF ?? 0) * snap.leefUsd
   );
+}
+
+/** Replace the local constant-product quote with Alcor's CLMM route before broadcast. */
+async function quoteArbPlan(
+  plan: ArbPlan,
+  account: string,
+  slippagePct: number,
+  snap: LeefSnapshot,
+): Promise<ArbPlan> {
+  const buy = await fetchAlcorRoute({
+    tokenInId: "wax-eosio.token",
+    tokenOutId: "leef-leefmaincorp",
+    amount: plan.waxIn,
+    slippagePct,
+    receiver: account,
+  });
+  const leefOut = parseAssetAmount(buy.output);
+  if (!(leefOut > 0)) throw new Error("Alcor returned no LEEF for the echo");
+  const sell = await fetchAlcorRoute({
+    tokenInId: "leef-leefmaincorp",
+    tokenOutId: "wax-eosio.token",
+    amount: leefOut,
+    slippagePct,
+    receiver: account,
+  });
+  const waxOut = parseAssetAmount(sell.output);
+  if (!(waxOut > 0)) throw new Error("Alcor returned no WAX for the echo");
+  return {
+    ...plan,
+    leefMid: leefOut,
+    waxOut,
+    profitPct: waxOut / plan.waxIn - 1,
+    buyLegs: buy.swaps.map((s) => ({
+      input: s.input,
+      output: s.output,
+      memo: s.memo,
+      route: s.route,
+    })),
+    sellLegs: sell.swaps.map((s) => ({
+      input: s.input,
+      output: s.output,
+      memo: s.memo,
+      route: s.route,
+    })),
+    quotedLeef: leefOut,
+    quotedWax: waxOut,
+  };
 }
 
 let lastHoldReason = "";
@@ -201,7 +249,34 @@ async function runBotOnceInner(
     }
 
     if (decision.kind === "arb") {
-      const plan = decision.plan;
+      let plan = decision.plan;
+      {
+        try {
+          // Always re-quote through Alcor's CLMM router — the local
+          // constant-product estimate is not what the chain will fill.
+          plan = await quoteArbPlan(plan, live ? w.account : "paper.leef", b.risk.slippage, snap);
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : "Alcor router failed";
+          b.pushDecision({ kind: "error", mode, reason: msg, priceUsd: snap.leefUsd });
+          b.setLastReason(msg);
+          toast({ title: "Volume quote failed", description: msg, variant: "destructive" });
+          return decision;
+        }
+        const costPct = (1 - plan.waxOut / plan.waxIn) * 100;
+        if (b.strategy === "volume" && costPct > b.risk.maxEchoLossPct) {
+          // Real round-trip cost exceeds the budget — skip, don't burn CPU.
+          const reason = `Alcor round-trip costs ${costPct.toFixed(2)}% — above the ${b.risk.maxEchoLossPct}% budget`;
+          b.setLastReason(reason);
+          b.pushDecision({ kind: "hold", mode, reason, priceUsd: snap.leefUsd });
+          return { kind: "hold", reason };
+        }
+        if (b.strategy === "spread" && plan.profitPct * 100 < b.risk.minEdgePct) {
+          const reason = `Alcor spread ${ (plan.profitPct * 100).toFixed(2)}% is below the ${b.risk.minEdgePct}% floor`;
+          b.setLastReason(reason);
+          b.pushDecision({ kind: "hold", mode, reason, priceUsd: snap.leefUsd });
+          return { kind: "hold", reason };
+        }
+      }
       let txid: string | undefined;
       if (live) {
         const res = await signAndPushArb({

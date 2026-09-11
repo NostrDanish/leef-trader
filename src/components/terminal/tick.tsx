@@ -225,8 +225,8 @@ export function TickDesk({ snap, tick }: { snap: LeefSnapshot; tick: LiveTickSta
             No LEEF pool currently holds ≥ {fmtNum(MIN_LEEF_BACKING, { compact: true })} LEEF.
           </p>
         ) : (
-          <div className="overflow-x-auto">
-            <table className="w-full text-left text-xs">
+          <div className="-mx-4 overflow-x-auto px-4 sm:mx-0 sm:px-0">
+            <table className="w-full min-w-[620px] text-left text-xs">
               <thead className="text-subtle">
                 <tr className="border-b border-border">
                   <th className="py-2 pr-3 font-medium">Book</th>

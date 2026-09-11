@@ -252,9 +252,41 @@ export async function signAndPushArb(opts: {
 }): Promise<{ txid: string }> {
   const leefMeta = metaOf("LEEF", opts.snap);
   const waxMeta = metaOf("WAX", opts.snap);
+  const plan = opts.plan;
+
+  // Preferred path: execute the exact legs Alcor's router returned. The return
+  // leg is often SPLIT across routes, so each split becomes its own transfer.
+  if (plan.buyLegs?.length && plan.sellLegs?.length) {
+    const transfers = [
+      ...plan.buyLegs.map((l) => ({
+        contract: waxMeta.contract,
+        data: {
+          from: opts.account,
+          to: ALCOR_SWAP_CONTRACT,
+          quantity: l.input,
+          memo: l.memo,
+        },
+      })),
+      ...plan.sellLegs.map((l) => ({
+        contract: leefMeta.contract,
+        data: {
+          from: opts.account,
+          to: ALCOR_SWAP_CONTRACT,
+          quantity: l.input,
+          memo: l.memo,
+        },
+      })),
+    ];
+    return await signAndPushTransfers({
+      account: opts.account,
+      permission: opts.permission,
+      transfers,
+    });
+  }
+
+  // Fallback: single-route memos from the local constant-product plan.
   const leefMin = plan.leefMid * (1 - opts.slippagePct / 100);
   const waxFloor = plan.waxIn * (1 + opts.minProfitPct / 100);
-
   const leg1Memo = `swapexactin#${plan.buyPool.id}#${opts.account}#${formatAsset(leefMin, leefMeta).split(" ")[0]} ${leefMeta.symbol}@${leefMeta.contract}#0`;
   const leg2Memo = `swapexactin#${plan.sellPool.id}#${opts.account}#${formatAsset(waxFloor, waxMeta).split(" ")[0]} ${waxMeta.symbol}@${waxMeta.contract}#0`;
 
@@ -267,7 +299,7 @@ export async function signAndPushArb(opts: {
         data: {
           from: opts.account,
           to: ALCOR_SWAP_CONTRACT,
-          quantity: formatAsset(opts.plan.waxIn, waxMeta),
+          quantity: formatAsset(plan.waxIn, waxMeta),
           memo: leg1Memo,
         },
       },

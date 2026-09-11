@@ -81,8 +81,8 @@ export function Tape({ snap }: { snap: LeefSnapshot }) {
           No swaps in this snapshot. Refresh to pull the live Alcor tape.
         </p>
       ) : (
-        <div className="overflow-x-auto">
-          <table className="w-full text-left text-xs">
+        <div className="-mx-4 overflow-x-auto px-4 sm:mx-0 sm:px-0">
+          <table className="w-full min-w-[680px] text-left text-xs">
             <thead>
               <tr className="border-b border-border text-subtle">
                 <th className="py-2 pr-3 font-medium">Time</th>

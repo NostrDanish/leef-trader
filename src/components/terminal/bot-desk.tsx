@@ -319,7 +319,7 @@ export function BotDesk({ snap }: { snap: LeefSnapshot }) {
             <p className="mt-1 text-xs text-subtle">{preview.reason}</p>
           </Card>
 
-          <div className="grid gap-3 sm:grid-cols-3">
+          <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
             <Card className="border-l-2 border-l-leef p-4">
               <div className="text-xs uppercase tracking-wider text-subtle">Position</div>
               {b.position ? (
@@ -679,10 +679,10 @@ function RiskCard({ strategy }: { strategy: BotStrategy }) {
             ready={slidersOn}
             label="Max echo loss per round trip"
             value={risk.maxEchoLossPct}
-            min={0.05}
-            max={3}
-            step={0.05}
-            format={(v) => `${v.toFixed(2)}%`}
+            min={0.1}
+            max={5}
+            step={0.1}
+            format={(v) => `${v.toFixed(1)}%`}
             onChange={(maxEchoLossPct) => setRisk({ maxEchoLossPct })}
           />
         )}

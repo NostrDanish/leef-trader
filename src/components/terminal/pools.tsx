@@ -149,8 +149,8 @@ export function PoolsTable({ ranked }: { ranked: RankedPool[] }) {
       </Card>
 
       <Card className="overflow-hidden">
-        <div className="overflow-x-auto">
-          <table className="w-full text-left text-xs">
+        <div className="-mx-4 overflow-x-auto px-4 sm:mx-0 sm:px-0">
+          <table className="w-full min-w-[720px] text-left text-xs">
             <thead>
               <tr className="border-b border-border text-subtle">
                 <th className="px-4 py-3 font-medium">Pair</th>

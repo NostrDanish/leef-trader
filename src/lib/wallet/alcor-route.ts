@@ -73,3 +73,8 @@ export async function fetchAlcorRoute(opts: {
   if (!isQuote(raw)) throw new Error("Alcor router returned no usable route");
   return raw;
 }
+
+export function parseAssetAmount(asset: string): number {
+  const n = Number(String(asset).trim().split(/\s+/)[0]);
+  return Number.isFinite(n) ? n : 0;
+}

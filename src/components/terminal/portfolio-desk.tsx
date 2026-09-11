@@ -309,8 +309,8 @@ export function PortfolioDesk({ snap }: { snap: LeefSnapshot }) {
                 the paper wallet.
               </p>
             ) : (
-              <div className="overflow-x-auto">
-                <table className="w-full text-left text-xs">
+              <div className="-mx-4 overflow-x-auto px-4 sm:mx-0 sm:px-0">
+                <table className="w-full min-w-[560px] text-left text-xs">
                   <thead className="text-subtle">
                     <tr className="border-b border-border">
                       <th className="py-2 pr-3 font-medium">Token</th>

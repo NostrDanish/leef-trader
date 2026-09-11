@@ -144,7 +144,9 @@ export const DEFAULT_RISK: BotRisk = {
   minConfidence: 55,
   minEdgePct: 1.2,
   gridStepPct: 2.5,
-  maxEchoLossPct: 0.8,
+  // Real WAX→LEEF→WAX round trips cost ~0.5–1.5% (two fee tiers + impact),
+  // so the default budget has to clear that or every echo would revert.
+  maxEchoLossPct: 1.5,
 };
 
 export type Position = {
@@ -172,6 +174,22 @@ export type ArbPlan = {
   waxOut: number;
   profitPct: number;
   impactPct: number;
+  /** Alcor router legs for WAX→LEEF (may be split across routes). */
+  buyLegs?: ArbLeg[];
+  /** Alcor router legs for LEEF→WAX (may be split across routes). */
+  sellLegs?: ArbLeg[];
+  /** Exact LEEF amount the Alcor router quoted for the first leg. */
+  quotedLeef?: number;
+  /** Exact WAX amount the Alcor router quoted for the second leg. */
+  quotedWax?: number;
+};
+
+/** One split leg from Alcor's router: an input asset plus its ready memo. */
+export type ArbLeg = {
+  input: string;
+  output: string;
+  memo: string;
+  route: number[];
 };
 
 export type Decision =

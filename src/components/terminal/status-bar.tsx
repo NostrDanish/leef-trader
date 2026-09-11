@@ -53,8 +53,8 @@ export function StatusBar({
           </span>
           {h.bestBuy && (
             <>
-              <span className="text-border">·</span>
-              <span>
+              <span className="hidden text-border sm:inline">·</span>
+              <span className="hidden sm:inline">
                 Swap to{" "}
                 <strong className="font-mono tabular-nums text-fg">
                   #{h.bestBuy.id} {h.bestBuy.pair.symbol}
@@ -64,8 +64,8 @@ export function StatusBar({
           )}
           {h.arb && (
             <>
-              <span className="text-border">·</span>
-              <span className="text-warn">
+              <span className="hidden text-border lg:inline">·</span>
+              <span className="hidden text-warn lg:inline">
                 Spread {fmtNum(h.arb.spreadPct * 100, { digits: 1 })}% · #{h.arb.cheap.id} vs #
                 {h.arb.rich.id}
               </span>
