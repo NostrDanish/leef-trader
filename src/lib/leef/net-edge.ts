@@ -116,7 +116,7 @@ export function evaluateEntry(opts: {
   };
 }
 
-/** Candidate ladder: fractions of the risk-capped maximum size. */
+/** Coarse fractions of the risk cap — then we refine around the winner. */
 const SIZE_LADDER = [1, 0.75, 0.5, 0.3, 0.15, 0.08];
 
 export type SizedEntry = {
@@ -147,16 +147,25 @@ export function optimizeEntrySize(opts: {
   let best: EdgeVerdict | null = null;
   const seen = new Set<number>();
 
-  for (const f of SIZE_LADDER) {
-    const amountIn = opts.maxIn * f;
-    // Skip dust candidates and duplicate rounded sizes.
+  const consider = (amountIn: number) => {
     const key = Math.round(amountIn * 1e6);
-    if (!(amountIn > 0) || seen.has(key)) continue;
+    if (!(amountIn > 0) || seen.has(key)) return;
     seen.add(key);
     const v = evaluateEntry({ ...opts, amountIn });
-    if (!v) continue;
+    if (!v) return;
     tried.push({ amountIn, netEdgePct: v.netEdgePct, netProfitUsd: v.netProfitUsd });
     if (v.pass && (!best || v.netProfitUsd > best.netProfitUsd)) best = v;
+  };
+
+  for (const f of SIZE_LADDER) consider(opts.maxIn * f);
+
+  // Refine around the coarse winner: ± half a ladder step, then a tighter pair.
+  if (best) {
+    const mid = best.amountIn;
+    const step = Math.max(opts.maxIn * 0.04, mid * 0.12);
+    for (const x of [mid - step, mid + step, mid - step / 2, mid + step / 2]) {
+      if (x > 0 && x <= opts.maxIn * 1.0001) consider(Math.min(x, opts.maxIn));
+    }
   }
   if (!best) return null;
   return { best, tried };

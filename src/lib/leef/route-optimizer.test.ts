@@ -157,4 +157,53 @@ describe("execution router", () => {
     const pools = [leefPool({ id: 70, wax: 2, leef: 1_000_000 })];
     expect(bestExecutionRoute(pools, [], 50, "WAX", "LEEF")).toBeNull();
   });
+
+  it("picks a 4-hop path when every shorter path is worse", () => {
+    // Direct is tiny. Chain of deep books: WAX→A→B→C→LEEF.
+    const pools = [
+      leefPool({ id: 80, wax: 40, leef: 1_100_000 }),
+      leefPool({
+        id: 81,
+        wax: 0,
+        leef: 90_000_000,
+        pair: { symbol: "CCC", contract: "tokenccc1111", quantity: 9_000 },
+      }),
+    ];
+    const hops = [
+      aux({
+        id: 201,
+        a: { symbol: "AAA", contract: "tokenaaa1111", quantity: 8_000 },
+        b: { symbol: "WAX", contract: "eosio.token", quantity: 80_000 },
+      }),
+      aux({
+        id: 202,
+        a: { symbol: "BBB", contract: "tokenbbb1111", quantity: 8_000 },
+        b: { symbol: "AAA", contract: "tokenaaa1111", quantity: 8_000 },
+      }),
+      aux({
+        id: 203,
+        a: { symbol: "CCC", contract: "tokenccc1111", quantity: 8_000 },
+        b: { symbol: "BBB", contract: "tokenbbb1111", quantity: 8_000 },
+      }),
+    ];
+    const ranked = rankExecutionRoutes(pools, hops, 8, "WAX", "LEEF", 10);
+    const hop = ranked.find((r) => r.kind === "hop" && r.legs.length >= 4);
+    const direct = ranked.find((r) => r.kind === "direct");
+    expect(hop).toBeDefined();
+    if (hop && direct) expect(hop.amountOut).toBeGreaterThan(direct.amountOut);
+    if (hop) expect(ranked[0]!.legs.length).toBeGreaterThanOrEqual(4);
+  });
+
+  it("does not prefer extra hops that lose destination amount", () => {
+    const pools = [leefPool({ id: 90, wax: 80_000, leef: 800_000_000 })];
+    const hops = [
+      aux({
+        id: 301,
+        a: { symbol: "USDT", contract: "usdt.alcor", quantity: 5 },
+        b: { symbol: "WAX", contract: "eosio.token", quantity: 20 },
+      }),
+    ];
+    const r = bestExecutionRoute(pools, hops, 5, "WAX", "LEEF")!;
+    expect(r.kind).toBe("direct");
+  });
 });

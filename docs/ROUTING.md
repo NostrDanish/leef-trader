@@ -5,22 +5,21 @@ requote through Alcor's CLMM router immediately before signing.
 
 ## What changed
 
-`compareAllRoutes` used to enumerate a handful of hardcoded 1–2 hop patterns
-and rank by **gross `amountOut`**. Buy Now / Sell Now / bot entries now go
-through `src/lib/leef/route-optimizer.ts`:
+Buy Now / Sell Now / bot entries go through `src/lib/leef/route-optimizer.ts`:
 
 ```
 exact size
   → pool graph (contract+symbol identity)
-  → paths up to 3 hops, no cycles / no reused pools
-  → extra hops only if they beat a shorter path by ≥ 0.4% net output
-  → optional split across parallel books if ≥ 0.3% better than the best single
-  → rank by expected fill after hop penalty
+  → best-first search, up to MAX_ROUTE_HOPS (10), dominance pruning
+  → extra hops win ONLY if destination amount is higher (no hop haircut)
+  → two-book split via golden-section allocation if ≥ 0.3% better than single
+  → rank by expected destination fill
 ```
 
-The UI may say **best executable route based on the latest quote** — not
-"guaranteed best". Live execution still asks Alcor for a fresh route for that
-exact size (`maxHops` matches the local plan, default 3).
+Local quotes are constant-product on published reserves (conservative vs
+Alcor CLMM). Live execution still asks Alcor for a fresh route for that exact
+size (`maxHops` matches the local plan, up to 10). The UI says **best
+executable route based on the latest quote** — not "guaranteed best".
 
 ## Buy Now / Sell Now
 

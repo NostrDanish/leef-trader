@@ -2,27 +2,34 @@
  * ExecutionRouteOptimizer — size-specific, graph-based routing.
  *
  * Strategies decide WHAT they want (WAX → LEEF, LEEF → WAX, …). This module
- * decides HOW: the executable path that maximises expected net output for
- * THIS exact amount, after fees, impact and hop penalties.
+ * decides HOW: the executable path that maximises expected net destination
+ * output for THIS exact amount.
  *
- * Rules:
- *  - Never cache a universal "best pool". Quote the requested size.
- *  - Extra hops must improve net output enough to pay extra fees/impact/risk.
- *  - Splits across parallel books only win when they beat the best single
- *    path by a meaningful margin (extra tx complexity is not free).
- *  - Token identity is contract + symbol. Fake LEEF/WAX never enter the graph.
+ * Extra hops are allowed (configurable, default 10) but they must EARN the
+ * right: the winner is the highest net destination amount after the quote
+ * already nets pool fees + impact. There is no arbitrary "hops are bad"
+ * haircut. Splits only win when they beat the best single path by enough to
+ * cover extra on-chain actions (SPLIT_IMPROVE_MARGIN).
+ *
+ * Local quotes use constant-product on published reserves — conservative for
+ * Alcor CLMM. Live execution still requotes the winner through Alcor.
  */
 import { isLeefToken, isWaxToken, quoteConstantProduct } from "./amm";
 import { LEEF_CONTRACT, LEEF_SYMBOL, WAX_CONTRACT, WAX_SYMBOL } from "./types";
 import type { AuxPool, LeefPool, QuoteLeg, SwapRoute } from "./types";
 
-export const MAX_ROUTE_HOPS = 3;
-/** Extra hops must beat a shorter path by this fraction of output. */
-export const HOP_IMPROVE_MARGIN = 0.004;
-/** Split only if it beats the best single path by this fraction. */
+/** Hard cap on graph depth. The search decides how many hops actually win. */
+export const MAX_ROUTE_HOPS = 10;
+/**
+ * Split adds extra transfer actions in one tx (CPU). Only take a split when
+ * it beats the best single path by this fraction of destination output.
+ */
 export const SPLIT_IMPROVE_MARGIN = 0.003;
 const MAX_IMPACT = 0.35;
 const MIN_RESERVE_MULT = 1.5;
+/** Cap expansions so 10-hop never brute-forces the whole permutation tree. */
+const MAX_EXPANSIONS = 8_000;
+const BRANCH_FACTOR = 8;
 
 type TokenId = string; // SYMBOL@contract
 
@@ -252,15 +259,30 @@ export function resolveTokenId(
 
 type Path = { legs: QuoteLeg[]; tvl: number; vol: number };
 
+export type RouteSearchStats = {
+  expansions: number;
+  pruned: number;
+  found: number;
+};
+
+/**
+ * Best-first search with dominance pruning. Extra hops are explored up to
+ * maxHops, but a state that arrives at a token with less output than an
+ * already-seen state is dropped. Branching is limited to the deepest
+ * BRANCH_FACTOR edges so 10-hop never explodes.
+ */
 function searchPaths(
   graph: Map<TokenId, Edge[]>,
   from: TokenId,
   to: TokenId,
   amountIn: number,
   maxHops: number,
+  stats?: RouteSearchStats,
 ): Path[] {
   const found: Path[] = [];
   const bestAt = new Map<TokenId, number>();
+  let expansions = 0;
+  let pruned = 0;
 
   type Frame = {
     token: TokenId;
@@ -273,7 +295,7 @@ function searchPaths(
     vol: number;
   };
 
-  const stack: Frame[] = [
+  const heap: Frame[] = [
     {
       token: from,
       amount: amountIn,
@@ -286,10 +308,21 @@ function searchPaths(
     },
   ];
 
-  while (stack.length > 0) {
-    const cur = stack.pop()!;
+  while (heap.length > 0) {
+    // Best-first: expand the frame with the most intermediate amount.
+    let bestI = 0;
+    for (let i = 1; i < heap.length; i++) {
+      if (heap[i]!.amount > heap[bestI]!.amount) bestI = i;
+    }
+    const cur = heap.splice(bestI, 1)[0]!;
+    expansions += 1;
+    if (expansions > MAX_EXPANSIONS) break;
+
     const prevBest = bestAt.get(cur.token) ?? 0;
-    if (cur.amount <= prevBest * 0.999) continue;
+    if (cur.amount <= prevBest * 0.9995) {
+      pruned += 1;
+      continue;
+    }
     bestAt.set(cur.token, cur.amount);
 
     if (cur.token === to && cur.legs.length > 0) {
@@ -298,13 +331,17 @@ function searchPaths(
     }
     if (cur.hops >= maxHops) continue;
 
-    const edges = graph.get(cur.token) ?? [];
-    for (const edge of edges) {
+    const scored: { edge: Edge; leg: QuoteLeg }[] = [];
+    for (const edge of graph.get(cur.token) ?? []) {
       if (cur.usedPools.has(edge.poolId)) continue;
       if (cur.usedTokens.has(edge.to) && edge.to !== to) continue;
       const leg = quoteEdge(edge, cur.amount);
       if (!leg) continue;
-      stack.push({
+      scored.push({ edge, leg });
+    }
+    scored.sort((a, b) => b.leg.amountOut - a.leg.amountOut);
+    for (const { edge, leg } of scored.slice(0, BRANCH_FACTOR)) {
+      heap.push({
         token: edge.to,
         amount: leg.amountOut,
         hops: cur.hops + 1,
@@ -316,18 +353,63 @@ function searchPaths(
       });
     }
   }
+  if (stats) {
+    stats.expansions = expansions;
+    stats.pruned = pruned;
+    stats.found = found.length;
+  }
   return found;
 }
 
-function scorePath(amountOut: number, hops: number, bestDirectOut: number): number {
-  // Extra hops must pay for themselves in output. A 0.4%/hop haircut on the
-  // SCORE (not the fill) prefers shorter routes unless the extra hop clearly wins.
-  const hopPenalty = 1 - HOP_IMPROVE_MARGIN * Math.max(0, hops - 1);
-  let score = amountOut * hopPenalty;
-  if (hops > 1 && bestDirectOut > 0 && amountOut < bestDirectOut * (1 + HOP_IMPROVE_MARGIN)) {
-    score = 0; // not enough improvement over direct
+/**
+ * Two-book split: golden-section search over share α sent to the better
+ * book. Finds the allocation that maximises combined CP output — not a
+ * 70/30 / 50/50 ladder.
+ */
+function splitTwoBooks(
+  a: Edge,
+  b: Edge,
+  amountIn: number,
+): { legs: QuoteLeg[]; tvl: number; vol: number; out: number } | null {
+  const evalShare = (alpha: number) => {
+    const x = amountIn * alpha;
+    const y = amountIn - x;
+    const la = quoteEdge(a, x);
+    const lb = quoteEdge(b, y);
+    if (!la || !lb) return null;
+    return { legs: [la, lb], tvl: a.tvlUsd + b.tvlUsd, vol: a.volume24Usd + b.volume24Usd, out: la.amountOut + lb.amountOut };
+  };
+
+  let lo = 0.05;
+  let hi = 0.95;
+  const phi = (Math.sqrt(5) - 1) / 2;
+  let x1 = hi - phi * (hi - lo);
+  let x2 = lo + phi * (hi - lo);
+  let f1 = evalShare(x1);
+  let f2 = evalShare(x2);
+  for (let i = 0; i < 18; i++) {
+    const v1 = f1?.out ?? -Infinity;
+    const v2 = f2?.out ?? -Infinity;
+    if (v1 < v2) {
+      lo = x1;
+      x1 = x2;
+      f1 = f2;
+      x2 = lo + phi * (hi - lo);
+      f2 = evalShare(x2);
+    } else {
+      hi = x2;
+      x2 = x1;
+      f2 = f1;
+      x1 = hi - phi * (hi - lo);
+      f1 = evalShare(x1);
+    }
   }
-  return score;
+  const mid = evalShare((lo + hi) / 2);
+  const candidates = [f1, f2, mid, evalShare(0.5)].filter(
+    (x): x is NonNullable<typeof x> => x != null,
+  );
+  if (candidates.length === 0) return null;
+  return candidates.reduce((best, c) => (c.out > best.out ? c : best));
 }
 
 function splitDirect(
@@ -340,50 +422,25 @@ function splitDirect(
   const edges = (graph.get(from) ?? []).filter((e) => e.to === to);
   if (edges.length < 2) return null;
 
-  const quotable = edges
+  const ranked = edges
     .map((e) => ({ e, leg: quoteEdge(e, amountIn) }))
     .filter((x): x is { e: Edge; leg: QuoteLeg } => x.leg != null)
     .sort((a, b) => b.leg.amountOut - a.leg.amountOut)
     .slice(0, 3);
-  if (quotable.length < 2) return null;
-
-  const ratios: number[][] = [
-    quotable.map((q) => q.e.reserveIn), // proportional to depth
-    quotable.length === 2 ? [0.7, 0.3] : [0.5, 0.3, 0.2],
-    quotable.length === 2 ? [0.5, 0.5] : [0.34, 0.33, 0.33],
-  ];
+  if (ranked.length < 2) return null;
 
   let best: { legs: QuoteLeg[]; tvl: number; vol: number; out: number } | null = null;
-  for (const raw of ratios) {
-    const sum = raw.reduce((s, n) => s + n, 0);
-    if (!(sum > 0)) continue;
-    const legs: QuoteLeg[] = [];
-    let tvl = 0;
-    let vol = 0;
-    let out = 0;
-    let ok = true;
-    for (let i = 0; i < quotable.length; i++) {
-      const slice = amountIn * (raw[i]! / sum);
-      if (!(slice > 0)) continue;
-      const leg = quoteEdge(quotable[i]!.e, slice);
-      if (!leg) {
-        ok = false;
-        break;
-      }
-      legs.push(leg);
-      tvl += quotable[i]!.e.tvlUsd;
-      vol += quotable[i]!.e.volume24Usd;
-      out += leg.amountOut;
+  for (let i = 0; i < ranked.length; i++) {
+    for (let j = i + 1; j < ranked.length; j++) {
+      const trial = splitTwoBooks(ranked[i]!.e, ranked[j]!.e, amountIn);
+      if (trial && (!best || trial.out > best.out)) best = trial;
     }
-    if (!ok || legs.length < 2) continue;
-    if (!best || out > best.out) best = { legs, tvl, vol, out };
   }
   if (!best || best.out < bestSingleOut * (1 + SPLIT_IMPROVE_MARGIN)) return null;
 
-  // Represent the split as parallel legs; amountIn of the route is the total.
   const notes = [
     `Split ${best.legs.length} books`,
-    `+${(((best.out / bestSingleOut) - 1) * 100).toFixed(2)}% vs single`,
+    `+${((best.out / bestSingleOut - 1) * 100).toFixed(2)}% vs single`,
   ];
   const route = routeFromLegs("split", best.legs, best.tvl, best.vol, notes);
   route.amountIn = amountIn;
@@ -413,21 +470,22 @@ export function rankExecutionRoutes(
   const to = resolveTokenId(tokenOut, graph);
   if (!from || !to) return [];
 
-  const paths = searchPaths(graph, from, to, amountIn, maxHops);
+  const hops = Math.min(MAX_ROUTE_HOPS, Math.max(1, Math.floor(maxHops)));
+  const paths = searchPaths(graph, from, to, amountIn, hops);
   const routes: SwapRoute[] = [];
   const seen = new Set<string>();
   let bestDirectOut = 0;
 
   for (const p of paths) {
-    const hops = p.legs.length;
-    const kind: SwapRoute["kind"] = hops === 1 ? "direct" : "hop";
+    const n = p.legs.length;
+    const kind: SwapRoute["kind"] = n === 1 ? "direct" : "hop";
     const notes: string[] = [];
-    if (hops === 2) notes.push("Two-hop", "Double fee");
-    if (hops >= 3) notes.push(`${hops}-hop`, "Multi fee");
+    if (n === 2) notes.push("Two-hop");
+    if (n >= 3) notes.push(`${n}-hop`);
     const route = routeFromLegs(kind, p.legs, p.tvl, p.vol, notes);
     if (seen.has(route.id)) continue;
     seen.add(route.id);
-    if (hops === 1) bestDirectOut = Math.max(bestDirectOut, route.amountOut);
+    if (n === 1) bestDirectOut = Math.max(bestDirectOut, route.amountOut);
     routes.push(route);
   }
 
@@ -437,20 +495,13 @@ export function rankExecutionRoutes(
     routes.push(split);
   }
 
-  const scored = routes
-    .map((r) => ({
-      r,
-      score: scorePath(r.amountOut, r.kind === "split" ? 1 : r.legs.length, bestDirectOut),
-    }))
-    .filter((x) => x.score > 0);
-  scored.sort((a, b) => b.score - a.score || b.r.amountOut - a.r.amountOut);
-
-  const ranked = scored.map((x) => x.r);
-  const best = ranked[0]?.amountOut ?? 0;
-  for (const r of ranked) {
+  // Winner = highest destination amount. Extra hops win only if they pay.
+  routes.sort((a, b) => b.amountOut - a.amountOut);
+  const best = routes[0]?.amountOut ?? 0;
+  for (const r of routes) {
     r.vsBestPct = best > 0 ? r.amountOut / best - 1 : 0;
   }
-  return ranked;
+  return routes;
 }
 
 /** Best executable route for this exact size, or null (do nothing). */

@@ -62,7 +62,7 @@ async function buildTransfers(opts: {
     amount: opts.amountIn,
     slippagePct: opts.slippagePct,
     receiver: opts.account,
-    maxHops: Math.min(4, Math.max(2, opts.route.legs.length)),
+    maxHops: Math.min(10, Math.max(2, opts.route.legs.length)),
   });
   return {
     transfers: quote.swaps.map((s) => ({

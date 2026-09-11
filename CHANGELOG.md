@@ -2,6 +2,17 @@
 
 All notable changes to LEEF Trader. Dates are commit-era, not release tags.
 
+## Unreleased — 0–10 hop economics + numerical splits
+
+- Router cap is **10 hops** (`MAX_ROUTE_HOPS`), searched with dominance
+  pruning and a branch factor — not brute force. Extra hops have **no
+  arbitrary 0.4% haircut**; they win only if destination output is higher.
+- Two-book splits use **golden-section allocation**, not a 70/30 ladder.
+- Entry size: coarse ladder then **local refinement** around the winner.
+- Live Alcor `maxHops` follows the local plan up to 10.
+
+---
+
 ## Unreleased — execution router + strategy quality
 
 ### Added
