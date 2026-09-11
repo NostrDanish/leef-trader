@@ -210,7 +210,13 @@ async function runBotOnceInner(
       balances.WAX ?? 0,
       Math.max(0, b.risk.maxPositionWax - held),
     );
-    const minIn = Math.min(b.risk.clipWax, maxIn);
+    if (maxIn + 1e-12 < b.risk.clipWax) {
+      const reason = `Remaining room ${maxIn.toFixed(2)} WAX is under min clip ${b.risk.clipWax.toFixed(2)} — sitting out`;
+      b.pushDecision({ kind: "hold", mode, reason, priceUsd: snap.leefUsd });
+      b.setLastReason(reason);
+      return { kind: "hold", reason };
+    }
+    const minIn = b.risk.clipWax;
     const thesis =
       decision.expectedGrossPct ?? Math.max(b.goals.takeProfitPct * 0.5, 0.2);
     const fresh = optimizeEntrySize({

@@ -167,6 +167,16 @@ describe("net edge + optimal size", () => {
     expect(sized!.tried.every((t) => t.amountIn >= 5 - 1e-9 && t.amountIn <= 40 + 1e-9)).toBe(true);
   });
 
+  it("returns null when the ceiling is below the clip floor", () => {
+    const snap = mkSnap([mkPool(50_000, 500_000_000)]);
+    expect(
+      optimizeEntrySize({
+        snap, tokenIn: "WAX", tokenOut: "LEEF", expectedGrossPct: 8,
+        minNetEdgePct: 0.1, minIn: 10, maxIn: 4, volPerSec: 0,
+      }),
+    ).toBeNull();
+  });
+
   it("scores opportunities with explainable factors", () => {
     const snap = mkSnap([mkPool(50_000, 500_000_000)]);
     const v = evaluateEntry({

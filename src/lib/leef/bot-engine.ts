@@ -515,8 +515,10 @@ export function evaluateBot(input: BotInput): Decision {
       input.balances.WAX ?? 0,
       Math.max(0, risk.maxPositionWax - held),
     );
-    const minWax = Math.min(risk.clipWax, maxWax);
-    if (!(minWax > 0)) return hold("No room under max position (or no WAX)");
+    if (maxWax + 1e-12 < risk.clipWax) {
+      return hold("Remaining room is under min clip — sitting out (won't size below the floor)");
+    }
+    const minWax = risk.clipWax;
     const sized = optimizeEntrySize({
       snap,
       tokenIn: "WAX",
@@ -601,7 +603,7 @@ export function evaluateBot(input: BotInput): Decision {
   const heldWax = input.position?.entryWax ?? 0;
   const roomWax = Math.max(0, risk.maxPositionWax - heldWax);
   const maxWax = Math.min(waxAvail, roomWax);
-  const minWax = Math.min(risk.clipWax, maxWax);
+  const minWax = risk.clipWax;
 
   /**
    * Entries flow through the NetEdgeEngine: scan sizes below the risk cap,
