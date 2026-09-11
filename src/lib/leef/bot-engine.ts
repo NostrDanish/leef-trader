@@ -221,6 +221,8 @@ export type Decision =
       route: SwapRoute;
       reason: string;
       confidence: number;
+      /** Thesis the size scanner used — pre-trade re-optimize must reuse this. */
+      expectedGrossPct?: number;
       /** Net-edge verdict that approved the entry (journal/calibration). */
       edge?: { netEdgePct: number; netProfitUsd: number; score: number };
     }
@@ -534,6 +536,7 @@ export function evaluateBot(input: BotInput): Decision {
       route,
       reason: `Manual buy · ${amountWax.toFixed(2)} WAX (clip ${risk.clipWax}–${risk.maxPositionWax}) · ${route.label}`,
       confidence: signal.confidence,
+      expectedGrossPct: Math.max(goals.takeProfitPct, 0.5),
       edge: sized
         ? { netEdgePct: sized.best.netEdgePct, netProfitUsd: sized.best.netProfitUsd, score: 0 }
         : undefined,
@@ -581,7 +584,7 @@ export function evaluateBot(input: BotInput): Decision {
           reason: `Arb #${plan.buyPool.id}→#${plan.sellPool.id} · est +${(plan.profitPct * 100).toFixed(2)}% after fees · impact ${(plan.impactPct * 100).toFixed(1)}%`,
         };
       }
-      const probe = findBestArb(snap, waxAvail, -100);
+      const probe = findBestArb(snap, waxAvail, -100, false, risk.clipWax);
       scanReason = `No atomic arb ≥ ${risk.minEdgePct}% after fees+impact (${
         probe ? `best spread ${(probe.profitPct * 100).toFixed(2)}%` : "no two WAX books"
       })`;
@@ -653,6 +656,7 @@ export function evaluateBot(input: BotInput): Decision {
         `${reason} · net edge ${v.netEdgePct.toFixed(2)}% ≈ $${v.netProfitUsd.toFixed(3)} ` +
         `on ${v.amountIn.toFixed(2)} WAX · score ${score.score}/100`,
       confidence,
+      expectedGrossPct,
       edge: { netEdgePct: v.netEdgePct, netProfitUsd: v.netProfitUsd, score: score.score },
     };
   };

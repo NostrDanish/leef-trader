@@ -9,6 +9,8 @@ import {
 import { realizedVolPerSec } from "@/lib/leef/cost-model";
 import { optimizeEntrySize } from "@/lib/leef/net-edge";
 import { fmtNum } from "@/lib/leef/format";
+import { getLeefSnapshot } from "@/lib/leef/snapshot";
+import { bestExecutionRoute } from "@/lib/leef/route-optimizer";
 import type { LeefSnapshot } from "@/lib/leef/types";
 import { fetchAlcorRoute, parseAssetAmount, type AlcorRouteQuote } from "@/lib/wallet/alcor-route";
 import { LEEF_CONTRACT, WAX_CONTRACT } from "@/lib/leef/types";
@@ -188,9 +190,20 @@ async function runBotOnceInner(
 
   if (opts?.dry) return decision;
 
+  // Fresh book right before capital moves (live + paper). Fail closed if
+  // Alcor is gone — never size/route on a stale fallback.
+  let book = snap;
+  if (snap.source === "live") {
+    try {
+      const latest = await getLeefSnapshot();
+      if (latest.source === "live") book = latest;
+    } catch {
+      /* keep the cycle's snapshot */
+    }
+  }
+
   // Last-second re-optimize: clip is the floor, max position the ceiling.
-  // Re-scan size + route on this snapshot immediately before signing so we
-  // never fire the size that looked best 30s ago if the book moved.
+  // Re-scan size + route on THIS book so we never fire the 30s-old candidate.
   if (decision.kind === "buy") {
     const held = b.position?.entryWax ?? 0;
     const maxIn = Math.min(
@@ -198,11 +211,13 @@ async function runBotOnceInner(
       Math.max(0, b.risk.maxPositionWax - held),
     );
     const minIn = Math.min(b.risk.clipWax, maxIn);
+    const thesis =
+      decision.expectedGrossPct ?? Math.max(b.goals.takeProfitPct * 0.5, 0.2);
     const fresh = optimizeEntrySize({
-      snap,
+      snap: book,
       tokenIn: "WAX",
       tokenOut: "LEEF",
-      expectedGrossPct: Math.max(b.goals.takeProfitPct * 0.5, 0.2),
+      expectedGrossPct: thesis,
       minNetEdgePct: b.risk.minNetEdgePct,
       minIn,
       maxIn,
@@ -231,7 +246,7 @@ async function runBotOnceInner(
     const floorPct =
       b.strategy === "volume" ? -b.risk.maxEchoLossPct : b.risk.minEdgePct;
     const fresh = findBestArb(
-      snap,
+      book,
       maxIn,
       b.strategy === "volume" ? -b.risk.maxEchoLossPct : floorPct,
       b.strategy === "volume",
@@ -244,6 +259,28 @@ async function runBotOnceInner(
       return { kind: "hold", reason };
     }
     decision = { ...decision, plan: fresh };
+  }
+  if (decision.kind === "sell") {
+    const routed = bestExecutionRoute(
+      book.pools,
+      book.aux,
+      decision.amountLeef,
+      "LEEF",
+      "WAX",
+    );
+    if (!routed) {
+      const reason = "Pre-trade sell: no executable route for this LEEF size";
+      b.pushDecision({ kind: "hold", mode, reason, priceUsd: book.leefUsd });
+      b.setLastReason(reason);
+      return { kind: "hold", reason };
+    }
+    if (routed.priceImpact * 100 > b.risk.maxImpactPct) {
+      const reason = `Pre-trade sell impact ${(routed.priceImpact * 100).toFixed(1)}% above cap`;
+      b.pushDecision({ kind: "hold", mode, reason, priceUsd: book.leefUsd });
+      b.setLastReason(reason);
+      return { kind: "hold", reason };
+    }
+    decision = { ...decision, route: routed };
   }
 
   // WAX resource preflight: never sign a live trade on an exhausted account.
@@ -272,7 +309,7 @@ async function runBotOnceInner(
           route: decision.route,
           amountIn: decision.amountWax,
           slippagePct: b.risk.slippage,
-          snap,
+          snap: book,
         });
         txid = exec.txid;
         amountLeef = exec.expectedOut > 0 ? exec.expectedOut : minOut;
@@ -354,7 +391,7 @@ async function runBotOnceInner(
           route: decision.route,
           amountIn: decision.amountLeef,
           slippagePct: b.risk.slippage,
-          snap,
+          snap: book,
         });
         txid = exec.txid;
         if (exec.expectedOut > 0) waxOut = exec.expectedOut;

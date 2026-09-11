@@ -1,4 +1,5 @@
 import { bestExecutionRoute, splitSlices } from "@/lib/leef/route-optimizer";
+import { getLeefSnapshot } from "@/lib/leef/snapshot";
 import type { LeefSnapshot } from "@/lib/leef/types";
 import { assetDelta, waitForTransaction } from "./reconcile";
 import { signAndPushBatch, signAndPushSwap, type BatchLeg } from "./sign";
@@ -37,12 +38,20 @@ export async function executeSwap(opts: {
       `Need ${opts.amountIn} ${opts.tokenIn.toUpperCase()}, wallet has ${have.toFixed(4)}`,
     );
   }
-  // Local graph ranks candidates for THIS size. Live execution still asks
-  // Alcor for a fresh CLMM quote of the same pair+size (Alcor is the
-  // executable truth). Splits requote each slice independently.
+  // Fresh book, then size-specific route. Live still requotes Alcor CLMM
+  // immediately before sign (executable truth).
+  let book = opts.snap;
+  if (opts.snap.source === "live") {
+    try {
+      const latest = await getLeefSnapshot();
+      if (latest.source === "live") book = latest;
+    } catch {
+      /* keep the desk snapshot */
+    }
+  }
   const route = bestExecutionRoute(
-    opts.snap.pools,
-    opts.snap.aux,
+    book.pools,
+    book.aux,
     opts.amountIn,
     opts.tokenIn,
     opts.tokenOut,
@@ -55,8 +64,8 @@ export async function executeSwap(opts: {
       const legs: BatchLeg[] = [];
       let expectedOut = 0;
       for (const sl of slices) {
-        const tin = metaOf(sl.tokenIn, opts.snap);
-        const tout = metaOf(sl.tokenOut, opts.snap);
+        const tin = metaOf(sl.tokenIn, book);
+        const tout = metaOf(sl.tokenOut, book);
         const quote = await fetchAlcorRoute({
           tokenInId: tin.alcorId,
           tokenOutId: tout.alcorId,
@@ -77,13 +86,13 @@ export async function executeSwap(opts: {
         account: w.account,
         permission: w.permission,
         legs,
-        snap: opts.snap,
+        snap: book,
       });
       const rec = await waitForTransaction(txid);
       if (rec.status === "failed") throw new Error(rec.error);
       let amountOut = expectedOut;
       if (rec.status === "confirmed") {
-        const outMeta = metaOf(opts.tokenOut, opts.snap);
+        const outMeta = metaOf(opts.tokenOut, book);
         const actual = assetDelta(rec.transfers, w.account, outMeta.symbol, outMeta.contract);
         if (actual > 0) amountOut = actual;
       }
@@ -101,7 +110,7 @@ export async function executeSwap(opts: {
       route,
       amountIn: opts.amountIn,
       slippagePct: opts.slippage,
-      snap: opts.snap,
+      snap: book,
     });
     // Reconcile against the chain: the actual transfer is the truth, the
     // router quote is only an estimate. On "unknown" we return the estimate
@@ -110,7 +119,7 @@ export async function executeSwap(opts: {
     if (rec.status === "failed") throw new Error(rec.error);
     let amountOut = exec.expectedOut;
     if (rec.status === "confirmed") {
-      const outMeta = metaOf(opts.tokenOut, opts.snap);
+        const outMeta = metaOf(opts.tokenOut, book);
       const actual = assetDelta(rec.transfers, w.account, outMeta.symbol, outMeta.contract);
       if (actual > 0) amountOut = actual;
     }
