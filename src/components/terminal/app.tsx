@@ -1,5 +1,6 @@
 import {
   Activity,
+  Bot,
   Calculator,
   GitCompare,
   Layers,
@@ -7,12 +8,11 @@ import {
   LineChart,
   Radio,
   Wallet,
-  Zap,
 } from "lucide-react";
 import { useEffect, useState } from "react";
 import { cn } from "@/lib/utils";
 import { type TabId, useTerminal } from "@/store/terminal";
-import { AutoswapDesk } from "./autoswap-desk";
+import { BotDesk } from "./bot-desk";
 import { Dashboard } from "./dashboard";
 import { TerminalHeader } from "./header";
 import { IlCalc } from "./il";
@@ -24,6 +24,7 @@ import { Quotes } from "./quotes";
 import { StatusBar } from "./status-bar";
 import { Tape } from "./tape";
 import { TickDesk } from "./tick";
+import { useBotLoop } from "./use-bot-loop";
 import { useLiveTick } from "./use-live-tick";
 import { useSnapshot } from "./use-snapshot";
 import { useWalletSync } from "./use-wallet-sync";
@@ -31,7 +32,7 @@ import { WalletDesk } from "./wallet-desk";
 
 const TABS: { id: TabId; label: string; icon: typeof GitCompare }[] = [
   { id: "tick", label: "Live tick", icon: Radio },
-  { id: "autoswap", label: "Autoswap", icon: Zap },
+  { id: "bot", label: "AI Bot", icon: Bot },
   { id: "wallet", label: "Wallet", icon: Wallet },
   { id: "overview", label: "Overview", icon: LayoutDashboard },
   { id: "pools", label: "Pools", icon: Layers },
@@ -45,6 +46,7 @@ export function TerminalApp() {
   const { snap, ranked, isFetching, refetch, dataUpdatedAt } = useSnapshot();
   const tick = useLiveTick(snap);
   useWalletSync(snap);
+  useBotLoop(snap);
   const tab = useTerminal((s) => s.tab);
   const setTab = useTerminal((s) => s.setTab);
   const [countdown, setCountdown] = useState(30);
@@ -120,7 +122,7 @@ export function TerminalApp() {
         {tab === "il" && <IlCalc snap={snap} />}
         {tab === "tape" && <Tape snap={snap} />}
         {tab === "wallet" && <WalletDesk snap={snap} />}
-        {tab === "autoswap" && <AutoswapDesk snap={snap} />}
+        {tab === "bot" && <BotDesk snap={snap} />}
       </main>
 
       <footer className="border-t border-border py-4 text-xs text-subtle">

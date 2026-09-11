@@ -6,6 +6,7 @@ import { compareAllRoutes } from "@/lib/leef/amm";
 import { fmtNum, fmtUsd } from "@/lib/leef/format";
 import type { LeefSnapshot } from "@/lib/leef/types";
 import { tokenCatalog } from "@/lib/wallet/tokens";
+import { useBot } from "@/store/bot";
 import { useTerminal } from "@/store/terminal";
 import { useWallet } from "@/store/wallet";
 import { PairMarks } from "./token-mark";
@@ -30,10 +31,11 @@ export function WalletDesk({ snap }: { snap: LeefSnapshot }) {
   const setImportOpen = useWallet((s) => s.setImportOpen);
   const forgetLive = useWallet((s) => s.forgetLive);
   const resetPaper = useWallet((s) => s.resetPaper);
-  const setAuto = useWallet((s) => s.setAuto);
   const setTab = useTerminal((s) => s.setTab);
   const setSwap = useTerminal((s) => s.setSwap);
-  const balances = useWallet((s) => s.balances());
+  const paperBalances = useWallet((s) => s.paperBalances);
+  const liveBalances = useWallet((s) => s.liveBalances);
+  const balances = mode === "live" ? liveBalances : paperBalances;
   const catalog = tokenCatalog(snap);
   const rows = catalog
     .map((t) => {
@@ -50,11 +52,16 @@ export function WalletDesk({ snap }: { snap: LeefSnapshot }) {
   const buy = compareAllRoutes(snap.pools, snap.aux, buySize, "WAX", "LEEF")[0];
   const sell = compareAllRoutes(snap.pools, snap.aux, sellSize, "LEEF", "WAX")[0];
 
-  function sendToAutoswap(tokenIn: string, tokenOut: string, amountIn: number) {
-    const size = String(amountIn);
-    setAuto({ tokenIn, tokenOut, amountIn: size });
-    setSwap({ tokenIn, tokenOut, amountIn: size });
-    setTab("autoswap");
+  function sendToBot(kind: "buy" | "sell", amountIn: number) {
+    if (kind === "buy") {
+      useBot.getState().setRisk({ clipWax: Math.max(1, Math.round(amountIn)) });
+    }
+    setSwap({
+      tokenIn: kind === "buy" ? "WAX" : "LEEF",
+      tokenOut: kind === "buy" ? "LEEF" : "WAX",
+      amountIn: String(amountIn),
+    });
+    setTab("bot");
   }
 
   return (
@@ -132,9 +139,9 @@ export function WalletDesk({ snap }: { snap: LeefSnapshot }) {
               variant="outline"
               size="sm"
               className="mt-3"
-              onClick={() => sendToAutoswap("WAX", "LEEF", buySize)}
+              onClick={() => sendToBot("buy", buySize)}
             >
-              Send this clip to autoswap
+              Trade this with the bot
             </Button>
           )}
         </Card>
@@ -150,9 +157,9 @@ export function WalletDesk({ snap }: { snap: LeefSnapshot }) {
               variant="outline"
               size="sm"
               className="mt-3"
-              onClick={() => sendToAutoswap("LEEF", "WAX", sellSize)}
+              onClick={() => sendToBot("sell", sellSize)}
             >
-              Send this clip to autoswap
+              Trade this with the bot
             </Button>
           )}
         </Card>

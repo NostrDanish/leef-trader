@@ -6,6 +6,7 @@ import { marketStats } from "@/lib/leef/analytics";
 import { fmtNum, fmtUsd } from "@/lib/leef/format";
 import type { LeefSnapshot } from "@/lib/leef/types";
 import { cn } from "@/lib/utils";
+import { useBot } from "@/store/bot";
 import { useTerminal } from "@/store/terminal";
 import { useWallet } from "@/store/wallet";
 import { TokenMark } from "./token-mark";
@@ -24,8 +25,7 @@ export function TerminalHeader({
   const chg = stats.change24;
   const mode = useWallet((s) => s.mode);
   const account = useWallet((s) => s.account);
-  const autoOn = useWallet((s) => s.auto.enabled);
-  const armed = useWallet((s) => s.auto.armed);
+  const botRunning = useBot((s) => s.running);
   const setTab = useTerminal((s) => s.setTab);
   const setImportOpen = useWallet((s) => s.setImportOpen);
 
@@ -94,8 +94,12 @@ export function TerminalHeader({
           >
             <KeyRound className="size-3.5" />
             <span className="font-mono">{account}</span>
-            <Badge variant={mode === "live" ? "leef" : autoOn ? "accent" : "plain"}>
-              {mode === "live" ? (armed ? "Live" : "Key") : autoOn ? "Paper" : "Wallet"}
+            <Badge
+              variant={
+                mode === "live" ? (botRunning ? "leef" : "plain") : botRunning ? "accent" : "plain"
+              }
+            >
+              {mode === "live" ? (botRunning ? "Live bot" : "Key") : botRunning ? "Paper bot" : "Wallet"}
             </Badge>
           </Button>
           <Button
