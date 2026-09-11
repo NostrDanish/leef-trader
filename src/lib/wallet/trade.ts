@@ -37,6 +37,9 @@ export async function executeSwap(opts: {
       `Need ${opts.amountIn} ${opts.tokenIn.toUpperCase()}, wallet has ${have.toFixed(4)}`,
     );
   }
+  // Local graph ranks candidates for THIS size. Live execution still asks
+  // Alcor for a fresh CLMM quote of the same pair+size (Alcor is the
+  // executable truth). Splits requote each slice independently.
   const route = bestExecutionRoute(
     opts.snap.pools,
     opts.snap.aux,

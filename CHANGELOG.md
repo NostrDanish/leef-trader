@@ -2,6 +2,19 @@
 
 All notable changes to LEEF Trader. Dates are commit-era, not release tags.
 
+## Unreleased — safe dominance, depth-aware branching, ternary size search
+
+- Token-only dominance removed. A state is pruned only if another has ≥
+  output, ≤ hops, and a **subset of used pools** (conservative Pareto).
+- Branching is no longer "top 8 quotes". Union of best quotes + deepest
+  books; all edges if a node has ≤16 exits. Weak first hops can still win.
+- Optional 3-book residual on top of the 2-book golden-section split.
+- Size scan: coarse ladder then **ternary refine** (unimodal assumption).
+- Docs: ROUTING.md states the search is a **bounded heuristic**, not globally
+  optimal. Adversarial tests for the old prune bug and a non-top-8 first hop.
+
+---
+
 ## Unreleased — 0–10 hop economics + numerical splits
 
 - Router cap is **10 hops** (`MAX_ROUTE_HOPS`), searched with dominance

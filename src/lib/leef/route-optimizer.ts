@@ -29,7 +29,11 @@ const MAX_IMPACT = 0.35;
 const MIN_RESERVE_MULT = 1.5;
 /** Cap expansions so 10-hop never brute-forces the whole permutation tree. */
 const MAX_EXPANSIONS = 8_000;
-const BRANCH_FACTOR = 8;
+/** Soft cap when a node has many edges. We still union in deep books. */
+const BRANCH_QUOTE = 8;
+const BRANCH_DEPTH = 4;
+const BRANCH_ALL_BELOW = 16;
+const PARETO_PER_TOKEN = 8;
 
 type TokenId = string; // SYMBOL@contract
 
@@ -265,11 +269,57 @@ export type RouteSearchStats = {
   found: number;
 };
 
+type Frame = {
+  token: TokenId;
+  amount: number;
+  hops: number;
+  usedPools: Set<number>;
+  usedTokens: Set<TokenId>;
+  legs: QuoteLeg[];
+  tvl: number;
+  vol: number;
+};
+
 /**
- * Best-first search with dominance pruning. Extra hops are explored up to
- * maxHops, but a state that arrives at a token with less output than an
- * already-seen state is dropped. Branching is limited to the deepest
- * BRANCH_FACTOR edges so 10-hop never explodes.
+ * Conservative dominance: B is dominated by A only if A has ≥ output, ≤ hops,
+ * and used a subset of B's pools. Different used-pool sets are NEVER
+ * collapsed — a slightly worse arrival can still own a better continuation.
+ */
+function dominatedByPareto(cur: Frame, seen: Frame[]): boolean {
+  for (const a of seen) {
+    if (a.amount + 1e-12 < cur.amount) continue;
+    if (a.hops > cur.hops) continue;
+    let subset = true;
+    for (const p of a.usedPools) {
+      if (!cur.usedPools.has(p)) {
+        subset = false;
+        break;
+      }
+    }
+    if (subset) return true;
+  }
+  return false;
+}
+
+function pickOutgoing(edges: Edge[], amount: number): { edge: Edge; leg: QuoteLeg }[] {
+  const scored: { edge: Edge; leg: QuoteLeg }[] = [];
+  for (const edge of edges) {
+    const leg = quoteEdge(edge, amount);
+    if (!leg) continue;
+    scored.push({ edge, leg });
+  }
+  scored.sort((a, b) => b.leg.amountOut - a.leg.amountOut);
+  if (scored.length <= BRANCH_ALL_BELOW) return scored;
+  const pick = new Map<number, { edge: Edge; leg: QuoteLeg }>();
+  for (const s of scored.slice(0, BRANCH_QUOTE)) pick.set(s.edge.poolId, s);
+  const byDepth = [...scored].sort((a, b) => b.edge.reserveOut - a.edge.reserveOut);
+  for (const s of byDepth.slice(0, BRANCH_DEPTH)) pick.set(s.edge.poolId, s);
+  return [...pick.values()];
+}
+
+/**
+ * Best-first search. Heuristic (bounded expansions) — not claimed globally
+ * optimal. Dominance is conservative (Pareto on amount/hops/used-pool subset).
  */
 function searchPaths(
   graph: Map<TokenId, Edge[]>,
@@ -280,20 +330,9 @@ function searchPaths(
   stats?: RouteSearchStats,
 ): Path[] {
   const found: Path[] = [];
-  const bestAt = new Map<TokenId, number>();
+  const pareto = new Map<TokenId, Frame[]>();
   let expansions = 0;
   let pruned = 0;
-
-  type Frame = {
-    token: TokenId;
-    amount: number;
-    hops: number;
-    usedPools: Set<number>;
-    usedTokens: Set<TokenId>;
-    legs: QuoteLeg[];
-    tvl: number;
-    vol: number;
-  };
 
   const heap: Frame[] = [
     {
@@ -309,7 +348,6 @@ function searchPaths(
   ];
 
   while (heap.length > 0) {
-    // Best-first: expand the frame with the most intermediate amount.
     let bestI = 0;
     for (let i = 1; i < heap.length; i++) {
       if (heap[i]!.amount > heap[bestI]!.amount) bestI = i;
@@ -318,12 +356,14 @@ function searchPaths(
     expansions += 1;
     if (expansions > MAX_EXPANSIONS) break;
 
-    const prevBest = bestAt.get(cur.token) ?? 0;
-    if (cur.amount <= prevBest * 0.9995) {
+    const seen = pareto.get(cur.token) ?? [];
+    if (dominatedByPareto(cur, seen)) {
       pruned += 1;
       continue;
     }
-    bestAt.set(cur.token, cur.amount);
+    seen.push(cur);
+    seen.sort((a, b) => b.amount - a.amount);
+    pareto.set(cur.token, seen.slice(0, PARETO_PER_TOKEN));
 
     if (cur.token === to && cur.legs.length > 0) {
       found.push({ legs: cur.legs, tvl: cur.tvl, vol: cur.vol });
@@ -331,16 +371,12 @@ function searchPaths(
     }
     if (cur.hops >= maxHops) continue;
 
-    const scored: { edge: Edge; leg: QuoteLeg }[] = [];
-    for (const edge of graph.get(cur.token) ?? []) {
-      if (cur.usedPools.has(edge.poolId)) continue;
-      if (cur.usedTokens.has(edge.to) && edge.to !== to) continue;
-      const leg = quoteEdge(edge, cur.amount);
-      if (!leg) continue;
-      scored.push({ edge, leg });
-    }
-    scored.sort((a, b) => b.leg.amountOut - a.leg.amountOut);
-    for (const { edge, leg } of scored.slice(0, BRANCH_FACTOR)) {
+    const outgoing = (graph.get(cur.token) ?? []).filter((e) => {
+      if (cur.usedPools.has(e.poolId)) return false;
+      if (cur.usedTokens.has(e.to) && e.to !== to) return false;
+      return true;
+    });
+    for (const { edge, leg } of pickOutgoing(outgoing, cur.amount)) {
       heap.push({
         token: edge.to,
         amount: leg.amountOut,
@@ -434,6 +470,25 @@ function splitDirect(
     for (let j = i + 1; j < ranked.length; j++) {
       const trial = splitTwoBooks(ranked[i]!.e, ranked[j]!.e, amountIn);
       if (trial && (!best || trial.out > best.out)) best = trial;
+    }
+  }
+  // Optional 3-way: residual after the two-book optimum vs a third book.
+  if (ranked.length >= 3 && best) {
+    const c = ranked[2]!.e;
+    for (const share of [0.15, 0.22, 0.3]) {
+      const rest = amountIn * (1 - share);
+      const two = splitTwoBooks(ranked[0]!.e, ranked[1]!.e, rest);
+      const lc = quoteEdge(c, amountIn * share);
+      if (!two || !lc) continue;
+      const out = two.out + lc.amountOut;
+      if (out > best.out) {
+        best = {
+          legs: [...two.legs, lc],
+          tvl: two.tvl + c.tvlUsd,
+          vol: two.vol + c.volume24Usd,
+          out,
+        };
+      }
     }
   }
   if (!best || best.out < bestSingleOut * (1 + SPLIT_IMPROVE_MARGIN)) return null;

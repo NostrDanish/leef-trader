@@ -206,4 +206,76 @@ describe("execution router", () => {
     const r = bestExecutionRoute(pools, hops, 5, "WAX", "LEEF")!;
     expect(r.kind).toBe("direct");
   });
+
+  it("does not prune a slightly worse arrival that owns the better continuation", () => {
+    // A: WAX→MID via fat pool 401 (more MID) but that pool is ALSO the only
+    // deep MID→LEEF book — consuming it kills the continuation.
+    // B: WAX→MID via thin 402 (less MID) leaves 401 free for MID→LEEF.
+    const pools = [
+      leefPool({
+        id: 401,
+        wax: 0,
+        leef: 80_000_000,
+        pair: { symbol: "MID", contract: "tokenmid1111", quantity: 8_000 },
+      }),
+    ];
+    const hops = [
+      aux({
+        id: 401,
+        a: { symbol: "MID", contract: "tokenmid1111", quantity: 8_000 },
+        b: { symbol: "WAX", contract: "eosio.token", quantity: 40_000 },
+      }),
+      aux({
+        id: 402,
+        a: { symbol: "MID", contract: "tokenmid1111", quantity: 400 },
+        b: { symbol: "WAX", contract: "eosio.token", quantity: 2_000 },
+      }),
+    ];
+    const r = bestExecutionRoute(pools, hops, 10, "WAX", "LEEF")!;
+    expect(r.kind).toBe("hop");
+    // Must use the thin first hop (402) then the fat LEEF book (401).
+    expect(r.poolIds).toContain(402);
+    expect(r.poolIds).toContain(401);
+  });
+
+  it("can still find a first hop that is not among the fattest immediate quotes", () => {
+    const pools = [
+      leefPool({
+        id: 500,
+        wax: 0,
+        leef: 90_000_000,
+        pair: { symbol: "GEM", contract: "tokengem1111", quantity: 9_000 },
+      }),
+    ];
+    const hops: AuxPool[] = [];
+    for (let i = 0; i < 10; i++) {
+      hops.push(
+        aux({
+          id: 600 + i,
+          a: { symbol: "DUD", contract: "tokendud1111", quantity: 3_000 + i * 10 },
+          b: { symbol: "WAX", contract: "eosio.token", quantity: 30_000 + i * 100 },
+        }),
+      );
+    }
+    for (let i = 10; i < 20; i++) {
+      hops.push(
+        aux({
+          id: 600 + i,
+          a: { symbol: "DUD", contract: "tokendud1111", quantity: 3_000 + i * 10 },
+          b: { symbol: "WAX", contract: "eosio.token", quantity: 30_000 + i * 100 },
+        }),
+      );
+    }
+    hops.push(
+      aux({
+        id: 699,
+        a: { symbol: "GEM", contract: "tokengem1111", quantity: 9_000 },
+        b: { symbol: "WAX", contract: "eosio.token", quantity: 8_000 },
+      }),
+    );
+    const r = bestExecutionRoute(pools, hops, 5, "WAX", "LEEF");
+    expect(r).not.toBeNull();
+    expect(r!.poolIds).toContain(699);
+    expect(r!.poolIds).toContain(500);
+  });
 });

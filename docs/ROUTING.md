@@ -1,43 +1,60 @@
 # Execution routing
 
-Status: production. Local graph search ranks candidates; live fills still
-requote through Alcor's CLMM router immediately before signing.
+Status: production ranking + live Alcor execution. Local search is a
+**bounded heuristic**, not a claimed global optimum.
 
-## What changed
-
-Buy Now / Sell Now / bot entries go through `src/lib/leef/route-optimizer.ts`:
+## Pipeline
 
 ```
 exact size
-  → pool graph (contract+symbol identity)
-  → best-first search, up to MAX_ROUTE_HOPS (10), dominance pruning
-  → extra hops win ONLY if destination amount is higher (no hop haircut)
-  → two-book split via golden-section allocation if ≥ 0.3% better than single
+  → pool graph (contract + symbol)
+  → best-first search, up to MAX_ROUTE_HOPS (10)
+  → conservative Pareto dominance (amount, hops, used-pool subset)
+  → extra hops win ONLY if destination amount is higher
+  → 2-book golden-section split; optional 3rd book residual
   → rank by expected destination fill
+  → LIVE: fresh Alcor CLMM quote for that pair+size (executable truth)
 ```
 
-Local quotes are constant-product on published reserves (conservative vs
-Alcor CLMM). Live execution still asks Alcor for a fresh route for that exact
-size (`maxHops` matches the local plan, up to 10). The UI says **best
-executable route based on the latest quote** — not "guaranteed best".
+## Dominance (why the old rule was unsafe)
 
-## Buy Now / Sell Now
+A state that reaches token X with more intermediate output does **not**
+dominate another state at X if it used different pools. The slightly worse
+arrival may still own the only good continuation.
 
-Same optimizer, different direction:
+We only prune B when some A has ≥ output, ≤ hops, **and** used a subset of
+B's pools. Different used-pool sets are never collapsed.
 
-- Buy: maximise destination token received for this exact input.
-- Sell: maximise destination token received for this exact input.
+This is **conservative**, not exact. The search also caps expansions
+(8 000) and outgoing edges (top quotes ∪ deepest books; all edges if ≤16).
+Do not document this as mathematically optimal.
 
-A book that is best for 1 WAX is not assumed best for 80 WAX. Splits are
-executed as one atomic batch (live) or sequential paper fills.
+## Branching
 
-## Token identity
+Outgoing edges are not “top 8 quotes only.” We take:
 
-LEEF enters the graph only as `LEEF@leefmaincorp`. WAX only as
-`WAX@eosio.token`. Auxiliary hops with spoofed symbols are dropped.
+- the best immediate quotes, **and**
+- the deepest reserve books (downstream liquidity), **and**
+- every edge when the node has ≤16 quotable exits.
 
-## Strategies vs the router
+A first hop that looks mediocre on output can still be expanded if it is
+deep. A 9th-best skinny quote into a unique destination can still be
+picked via the depth union.
 
-Strategies emit a thesis (want LEEF / want WAX / want an atomic arb).
-They do **not** pick a pool id. The router picks the path for the sized clip.
-The net-edge engine still decides whether the clip is worth doing.
+## Splits
+
+Two-book allocation is golden-section on share α. A third book may take a
+small residual if that raises combined output. Splits execute only if they
+beat the best single path by ≥ 0.3% (extra CPU of extra transfers).
+
+## Live vs local
+
+Local constant-product on published reserves is **ranking**. Live Buy/Sell
+and bot fills **requote Alcor** immediately before signing. Unknown chain
+status is never retried blindly.
+
+## Terminology
+
+- **direct** = one pool / one swap
+- **N-hop** = N swaps (N ≤ 10)
+- There is no executable “0-hop” route

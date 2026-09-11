@@ -158,14 +158,21 @@ export function optimizeEntrySize(opts: {
   };
 
   for (const f of SIZE_LADDER) consider(opts.maxIn * f);
+  if (!best) return null;
 
-  // Refine around the coarse winner: ± half a ladder step, then a tighter pair.
-  if (best) {
-    const mid = best.amountIn;
-    const step = Math.max(opts.maxIn * 0.04, mid * 0.12);
-    for (const x of [mid - step, mid + step, mid - step / 2, mid + step / 2]) {
-      if (x > 0 && x <= opts.maxIn * 1.0001) consider(Math.min(x, opts.maxIn));
-    }
+  // Ternary refine: net profit vs size is treated as unimodal (impact grows
+  // faster than gross). Not a closed-form optimum — a bounded numerical search.
+  let lo = Math.max(opts.maxIn * 0.05, best.amountIn * 0.5);
+  let hi = Math.min(opts.maxIn, best.amountIn * 1.5);
+  const profitAt = (x: number) =>
+    tried.find((t) => Math.abs(t.amountIn - x) < x * 1e-6)?.netProfitUsd ?? -Infinity;
+  for (let i = 0; i < 8; i++) {
+    const m1 = lo + (hi - lo) / 3;
+    const m2 = hi - (hi - lo) / 3;
+    consider(m1);
+    consider(m2);
+    if (profitAt(m1) < profitAt(m2)) lo = m1;
+    else hi = m2;
   }
   if (!best) return null;
   return { best, tried };
