@@ -1,4 +1,5 @@
-import { backedPools, compareAllRoutes, isWaxToken, quoteConstantProduct } from "./amm";
+import { backedPools, isWaxToken, quoteConstantProduct } from "./amm";
+import { bestExecutionRoute } from "./route-optimizer";
 import { realizedVolPerSec } from "./cost-model";
 import {
   decorate,
@@ -280,6 +281,21 @@ export function momentumPct(series: PricePoint[], points = 6): number {
   return a > 0 ? b / a - 1 : 0;
 }
 
+/**
+ * Adaptive grid step: large enough to clear a round-trip of fees + impact
+ * plus recent realized volatility. Never below 1% or above 8%.
+ */
+export function adaptiveGridStepPct(
+  configured: number,
+  volPerSec: number,
+  feePct = 0.3,
+): number {
+  const roundTripFee = feePct * 2;
+  const vol30s = volPerSec * 30 * 100; // percent move over one print
+  const floor = roundTripFee + 0.4; // fees plus a thin impact/slippage buffer
+  return Math.min(8, Math.max(1, configured, floor, vol30s * 1.5));
+}
+
 /** Latest RSI, Bollinger %B and distance to the band midline from the real series. */
 export function reversionRead(series: PricePoint[]): {
   rsi: number | null;
@@ -315,12 +331,12 @@ export function adaptiveCooldownSec(
 
 function bestBuyRoute(snap: LeefSnapshot, amountWax: number): SwapRoute | null {
   if (amountWax <= 0) return null;
-  return compareAllRoutes(snap.pools, snap.aux, amountWax, "WAX", "LEEF")[0] ?? null;
+  return bestExecutionRoute(snap.pools, snap.aux, amountWax, "WAX", "LEEF");
 }
 
 function bestSellRoute(snap: LeefSnapshot, amountLeef: number): SwapRoute | null {
   if (amountLeef <= 0) return null;
-  return compareAllRoutes(snap.pools, snap.aux, amountLeef, "LEEF", "WAX")[0] ?? null;
+  return bestExecutionRoute(snap.pools, snap.aux, amountLeef, "LEEF", "WAX");
 }
 
 /* ------------------------------------------------------------------ */
@@ -353,7 +369,11 @@ export function findArb(
       if (q2.amountOut <= 0 || q2.priceImpact > 0.2) continue;
       const profitPct = q2.amountOut / waxIn - 1;
       const impactPct = 1 - (1 - q1.priceImpact) * (1 - q2.priceImpact);
-      if (!best || profitPct > best.profitPct) {
+      // Rank by net WAX profit, not percentage — a 2 WAX clip at +0.8% can
+      // beat a 10 WAX clip at +0.3% after impact.
+      const profitWax = q2.amountOut - waxIn;
+      const bestProfit = best ? best.waxOut - best.waxIn : -Infinity;
+      if (profitPct * 100 >= minProfitPct && profitWax > bestProfit) {
         best = {
           buyPool,
           sellPool,
@@ -366,8 +386,24 @@ export function findArb(
       }
     }
   }
-  if (best && best.profitPct * 100 >= minProfitPct) return best;
-  return null;
+  return best;
+}
+
+/** Scan a size ladder and pick the clip that maximises net WAX profit. */
+export function findBestArb(
+  snap: LeefSnapshot,
+  maxWax: number,
+  minProfitPct: number,
+  allowSamePool = false,
+): ArbPlan | null {
+  if (!(maxWax > 0)) return null;
+  let best: ArbPlan | null = null;
+  for (const f of [1, 0.6, 0.35, 0.2, 0.1]) {
+    const plan = findArb(snap, maxWax * f, minProfitPct, allowSamePool);
+    if (!plan) continue;
+    if (!best || plan.waxOut - plan.waxIn > best.waxOut - best.waxIn) best = plan;
+  }
+  return best;
 }
 
 /* ------------------------------------------------------------------ */
@@ -432,7 +468,7 @@ export function evaluateBot(input: BotInput): Decision {
   if (input.force === "buy") {
     const amountWax = Math.min(risk.clipWax, input.balances.WAX ?? 0);
     const route = bestBuyRoute(snap, amountWax);
-    if (!route) return hold("No backed route to buy with");
+    if (!route) return hold("No executable route for this size — sitting out");
     return {
       kind: "buy",
       amountWax,
@@ -457,7 +493,7 @@ export function evaluateBot(input: BotInput): Decision {
       scanReason = "Not enough WAX for an arb clip";
     } else if (isVolume) {
       // Echo: round-trip allowed, gated by the loss budget (negative profit gate).
-      const plan = findArb(snap, waxAvail, -risk.maxEchoLossPct, true);
+      const plan = findBestArb(snap, waxAvail, -risk.maxEchoLossPct, true);
       if (plan) {
         const costPct = -plan.profitPct * 100;
         arbDecision = {
@@ -475,7 +511,7 @@ export function evaluateBot(input: BotInput): Decision {
       // floor needs the raw spread to clear it with slippage headroom.
       const gatePct =
         ((1 + risk.minEdgePct / 100) / Math.max(0.9, 1 - risk.slippage / 100) - 1) * 100;
-      const plan = findArb(snap, waxAvail, gatePct);
+      const plan = findBestArb(snap, waxAvail, gatePct);
       if (plan) {
         arbDecision = {
           kind: "arb",
@@ -483,7 +519,7 @@ export function evaluateBot(input: BotInput): Decision {
           reason: `Arb #${plan.buyPool.id}→#${plan.sellPool.id} · est +${(plan.profitPct * 100).toFixed(2)}% after fees · impact ${(plan.impactPct * 100).toFixed(1)}%`,
         };
       }
-      const probe = findArb(snap, waxAvail, -100);
+      const probe = findBestArb(snap, waxAvail, -100);
       scanReason = `No atomic arb ≥ ${risk.minEdgePct}% after fees+impact (${
         probe ? `best spread ${(probe.profitPct * 100).toFixed(2)}%` : "no two WAX books"
       })`;
@@ -622,10 +658,11 @@ export function evaluateBot(input: BotInput): Decision {
       }
     }
     if (strategy === "grid" && input.gridAnchor != null) {
-      const stepUp = input.gridAnchor * (1 + risk.gridStepPct / 100);
+      const step = adaptiveGridStepPct(risk.gridStepPct, realizedVolPerSec(input.series));
+      const stepUp = input.gridAnchor * (1 + step / 100);
       if (leefUsd >= stepUp) {
         const d = sellAll(
-          `Grid step +${risk.gridStepPct}% filled · ${pnlPct >= 0 ? "+" : ""}${pnlPct.toFixed(2)}% on the leg`,
+          `Grid step +${step.toFixed(2)}% filled · ${pnlPct >= 0 ? "+" : ""}${pnlPct.toFixed(2)}% on the leg`,
         );
         if (d) return d;
       }
@@ -661,16 +698,18 @@ export function evaluateBot(input: BotInput): Decision {
         return hold(`Engines warming up — ${input.series.length}/${BOT_WARMUP_POINTS} prints collected`);
       }
       const conf = Math.round(signal.confidence * 100);
+      const mom = momentumPct(input.series);
       if (signal.bias === "buy" && conf >= risk.minConfidence) {
         const votes = signal.readings
           .filter((r) => r.score > 0.12)
           .map((r) => r.id.toUpperCase())
           .join("+");
         // Anchor: the engine vote aims for the take-profit target, scaled by
-        // how strongly the indicators agree.
+        // how strongly the indicators agree. Fade a collapsing tape.
+        const expected = signal.confidence * goals.takeProfitPct * (mom < 0 ? 0.6 : 1);
         return tryBuy(
-          `Engine vote BUY ${conf}% conf (${votes || "blend"}) · momentum ${(momentumPct(input.series) * 100).toFixed(2)}%`,
-          signal.confidence * goals.takeProfitPct,
+          `Engine vote BUY ${conf}% conf (${votes || "blend"}) · momentum ${(mom * 100).toFixed(2)}%`,
+          expected,
           signal.confidence,
         );
       }
@@ -681,9 +720,12 @@ export function evaluateBot(input: BotInput): Decision {
       if (rsi == null || pctB == null) {
         return hold(`Engines warming up — ${input.series.length}/${BOT_WARMUP_POINTS} prints collected`);
       }
+      const mom = momentumPct(input.series, 12);
+      // Do not catch a falling knife: a strong downtrend is not a dip.
+      if (mom < -0.04) {
+        return hold(`Mean-reversion blocked — 12-print momentum ${(mom * 100).toFixed(1)}% (trend, not a dip)`);
+      }
       if (rsi <= 30 && pctB <= 0.1) {
-        // Anchor: 70% of the measured distance back to the band midline —
-        // the measured reversion target with a conservative haircut.
         const expected = Math.max(0, (distToMidPct ?? 0) * 0.7);
         return tryBuy(
           `Oversold · RSI ${rsi.toFixed(0)} ≤ 30, %B ${pctB.toFixed(2)} at the lower band`,
@@ -694,21 +736,25 @@ export function evaluateBot(input: BotInput): Decision {
       return hold(`RSI ${rsi.toFixed(0)} · %B ${pctB.toFixed(2)} — waiting for an oversold tag`);
     }
     case "grid": {
-      // Anchor: one grid step, haircut 20% for exit uncertainty.
-      const expected = risk.gridStepPct * 0.8;
+      const step = adaptiveGridStepPct(risk.gridStepPct, realizedVolPerSec(input.series));
+      const expected = step * 0.8;
       const anchor = input.gridAnchor;
       if (anchor == null) {
-        return tryBuy("Grid seed buy — anchoring the grid at market", expected, signal.confidence);
+        return tryBuy(`Grid seed buy — anchoring at market · step ${step.toFixed(2)}%`, expected, signal.confidence);
       }
-      const stepDown = anchor * (1 - risk.gridStepPct / 100);
+      const stepDown = anchor * (1 - step / 100);
       if (leefUsd <= stepDown) {
-        return tryBuy(`Grid step −${risk.gridStepPct}% filled at the bid`, expected, signal.confidence);
+        return tryBuy(`Grid step −${step.toFixed(2)}% filled at the bid`, expected, signal.confidence);
       }
       const distDown = (leefUsd / stepDown - 1) * 100;
-      return hold(`Grid armed · next buy ${distDown.toFixed(1)}% below, next sell +${risk.gridStepPct}% above last fill`);
+      return hold(`Grid armed · next buy ${distDown.toFixed(1)}% below, next sell +${step.toFixed(2)}% above last fill`);
     }
     case "dca": {
-      // Anchor: the accumulation thesis targets the take-profit level.
+      const mom = momentumPct(input.series, 8);
+      // Skip a clip when the tape is ripping against us; size stays risk-capped.
+      if (mom > 0.05) {
+        return hold(`DCA waiting — 8-print momentum +${(mom * 100).toFixed(1)}% (not averaging into a spike)`);
+      }
       return tryBuy("Scheduled accumulation clip", goals.takeProfitPct, signal.confidence);
     }
     case "spread":

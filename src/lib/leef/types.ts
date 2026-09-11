@@ -73,7 +73,7 @@ export type QuoteLeg = {
 
 export type SwapRoute = {
   id: string;
-  kind: "direct" | "hop";
+  kind: "direct" | "hop" | "split";
   label: string;
   poolIds: number[];
   legs: QuoteLeg[];

@@ -1,9 +1,5 @@
-import {
-  backedPools,
-  compareAllRoutes,
-  MIN_LEEF_BACKING,
-  quoteConstantProduct,
-} from "./amm";
+import { backedPools, MIN_LEEF_BACKING, quoteConstantProduct } from "./amm";
+import { rankExecutionRoutes } from "./route-optimizer";
 import type { LeefPool, LeefSnapshot, SwapRoute } from "./types";
 
 export { backedPools, isBackedPool, MIN_LEEF_BACKING } from "./amm";
@@ -175,5 +171,5 @@ export function routeForSwap(
   tokenIn: string,
   tokenOut: string,
 ): SwapRoute[] {
-  return compareAllRoutes(snap.pools, snap.aux, amountIn, tokenIn, tokenOut);
+  return rankExecutionRoutes(snap.pools, snap.aux, amountIn, tokenIn, tokenOut);
 }

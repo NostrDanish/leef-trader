@@ -66,7 +66,7 @@ export async function fetchAlcorRoute(opts: {
     amount: String(opts.amount),
     slippage: String(Math.max(0.05, opts.slippagePct)),
     receiver: opts.receiver,
-    maxHops: String(opts.maxHops ?? 2),
+    maxHops: String(opts.maxHops ?? 3),
     v2: "true",
   });
   const raw = await fetchJson(`${ROUTER}?${params.toString()}`, { timeoutMs: 12_000 });

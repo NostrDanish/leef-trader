@@ -85,7 +85,12 @@ export function TickDesk({ snap, tick }: { snap: LeefSnapshot; tick: LiveTickSta
                 </span>{" "}
                 {best.label}. Fill {fmtNum(best.amountOut, { compact: true })} {tokenOut} for{" "}
                 {fmtNum(Number(amountIn) || 0, { compact: true })} {tokenIn}
-                {best.kind === "hop" ? " · routed hop" : " · direct"}. Impact{" "}
+                {best.kind === "hop"
+                  ? " · routed hop"
+                  : best.kind === "split"
+                    ? " · split books"
+                    : " · direct"}
+                . Impact{" "}
                 {fmtPct(best.priceImpact, 2, false)}, fee {best.feePct.toFixed(2)}%.
               </p>
             </div>

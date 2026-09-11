@@ -20,7 +20,7 @@
  * If nothing clears the required net edge, the engine returns null and the
  * bot does nothing. Doing nothing is a successful trading decision.
  */
-import { compareAllRoutes } from "./amm";
+import { bestExecutionRoute } from "./route-optimizer";
 import {
   estimateRoundTripCosts,
   usdPriceOf,
@@ -57,24 +57,23 @@ export function evaluateEntry(opts: {
   volPerSec: number;
   costs?: Partial<CostConfig>;
 }): EdgeVerdict | null {
-  const route = compareAllRoutes(
+  const route = bestExecutionRoute(
     opts.snap.pools,
     opts.snap.aux,
     opts.amountIn,
     opts.tokenIn,
     opts.tokenOut,
-  )[0];
+  );
   if (!route) return null;
 
   // The exit route for the position we'd hold — judged at the size we'd exit.
-  const exitRoute =
-    compareAllRoutes(
-      opts.snap.pools,
-      opts.snap.aux,
-      route.amountOut,
-      opts.tokenOut,
-      opts.tokenIn,
-    )[0] ?? null;
+  const exitRoute = bestExecutionRoute(
+    opts.snap.pools,
+    opts.snap.aux,
+    route.amountOut,
+    opts.tokenOut,
+    opts.tokenIn,
+  );
 
   const costs = estimateRoundTripCosts({
     route,

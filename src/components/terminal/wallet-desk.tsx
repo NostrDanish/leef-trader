@@ -2,7 +2,7 @@ import { KeyRound, Trash2 } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
-import { compareAllRoutes } from "@/lib/leef/amm";
+import { bestExecutionRoute } from "@/lib/leef/route-optimizer";
 import { fmtNum, fmtUsd } from "@/lib/leef/format";
 import type { LeefSnapshot } from "@/lib/leef/types";
 import { findToken } from "@/lib/leef/universe";
@@ -58,8 +58,8 @@ export function WalletDesk({ snap }: { snap: LeefSnapshot }) {
   const leef = balances.LEEF ?? 0;
   const buySize = Math.min(10, wax) || 10;
   const sellSize = Math.min(1_000_000, leef) || 1_000_000;
-  const buy = compareAllRoutes(snap.pools, snap.aux, buySize, "WAX", "LEEF")[0];
-  const sell = compareAllRoutes(snap.pools, snap.aux, sellSize, "LEEF", "WAX")[0];
+  const buy = bestExecutionRoute(snap.pools, snap.aux, buySize, "WAX", "LEEF");
+  const sell = bestExecutionRoute(snap.pools, snap.aux, sellSize, "LEEF", "WAX");
 
   function sendToBot(kind: "buy" | "sell", amountIn: number) {
     if (kind === "buy") {

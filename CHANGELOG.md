@@ -2,6 +2,33 @@
 
 All notable changes to LEEF Trader. Dates are commit-era, not release tags.
 
+## Unreleased — execution router + strategy quality
+
+### Added
+
+- **ExecutionRouteOptimizer** (`lib/leef/route-optimizer.ts`): graph search
+  over Alcor pools (up to 3 hops), hop penalty so extra legs must pay, and
+  split routing when two books beat a single clip. Buy Now / Sell Now / bot
+  entries / net-edge sizing all use this for the **exact** trade size.
+- Live Alcor quotes request `maxHops` matching the local plan (default 3).
+- Split fills execute as one atomic batch on-chain (or sequential paper fills).
+
+### Strategy quality (kept, not replaced)
+
+- Signal: fade expected edge when short-term momentum is negative.
+- Mean reversion: block entries in a strong downtrend (12-print momentum < −4%).
+- Grid: adaptive step from fees + realized vol (still respects the configured floor).
+- DCA: skip a clip into a short-term spike.
+- Spread/volume: size ladder — pick the clip that maximises **net WAX**, not %.
+
+### Tests
+
+- Router: small vs large size, buy/sell asymmetry, hop beats thin direct,
+  direct beats worse hop, split only when it pays, spoofed LEEF rejected,
+  illiquid size → no trade.
+
+---
+
 ## Unreleased — economic core + execution hardening
 
 ### Added — economic engine

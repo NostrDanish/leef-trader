@@ -10,7 +10,7 @@ import {
   type LivePrint,
 } from "@/lib/leef/tick-engine";
 import type { LeefPool, LeefSnapshot, SwapRoute } from "@/lib/leef/types";
-import { compareAllRoutes } from "@/lib/leef/amm";
+import { rankExecutionRoutes } from "@/lib/leef/route-optimizer";
 import { useTerminal } from "@/store/terminal";
 
 export type LiveTickState = {
@@ -65,7 +65,7 @@ export function useLiveTick(snap: LeefSnapshot): LiveTickState {
 
   const amount = Number(amountIn) || 0;
   const routes = useMemo(
-    () => compareAllRoutes(snap.pools, snap.aux, amount, tokenIn, tokenOut),
+    () => rankExecutionRoutes(snap.pools, snap.aux, amount, tokenIn, tokenOut),
     [snap.pools, snap.aux, amount, tokenIn, tokenOut],
   );
   const bestRoute = routes[0] ?? null;

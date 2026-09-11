@@ -4,7 +4,8 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
-import { compareAllRoutes, pairTokens, MIN_LEEF_BACKING } from "@/lib/leef/amm";
+import { pairTokens, MIN_LEEF_BACKING } from "@/lib/leef/amm";
+import { rankExecutionRoutes } from "@/lib/leef/route-optimizer";
 import { fmtNum, fmtPct } from "@/lib/leef/format";
 import { executeSwap, type SwapOutcome } from "@/lib/wallet/trade";
 import { hasWalletSession } from "@/lib/wallet/session";
@@ -42,7 +43,7 @@ export function Quotes({
   const amount = Number(amountIn) || 0;
 
   const routes = useMemo(
-    () => compareAllRoutes(snap.pools, snap.aux, amount, tokenIn, tokenOut),
+    () => rankExecutionRoutes(snap.pools, snap.aux, amount, tokenIn, tokenOut),
     [snap.pools, snap.aux, amount, tokenIn, tokenOut],
   );
 
@@ -208,7 +209,7 @@ export function Quotes({
 
             {best && <TradeButton snap={snap} />}
             <p className="text-center text-xs text-subtle">
-              Quotes pick the route — trades execute right here, paper or on-chain.
+              Best executable route for this exact size — hops and splits only when they pay.
             </p>
           </div>
         </Card>
@@ -220,7 +221,11 @@ export function Quotes({
               <p className="text-xs text-muted-foreground">
                 {routes.length} route{routes.length === 1 ? "" : "s"} on books with ≥{" "}
                 {(MIN_LEEF_BACKING / 1_000_000).toFixed(0)}M LEEF
-                {best?.kind === "hop" ? " · hops via WAX or the pair token" : ""}
+                {best?.kind === "hop"
+                  ? " · multi-hop"
+                  : best?.kind === "split"
+                    ? " · split across books"
+                    : ""}
               </p>
             </div>
             {best && (
@@ -380,8 +385,9 @@ function RouteRow({
                 }
               />
               <span className="text-sm font-medium truncate">{route.label}</span>
-              {isBest && <Badge variant="accent">Best fill</Badge>}
-              {route.kind === "hop" && <Badge>2-hop</Badge>}
+              {isBest && <Badge variant="accent">Best executable</Badge>}
+              {route.kind === "hop" && <Badge>{route.legs.length}-hop</Badge>}
+              {route.kind === "split" && <Badge>split</Badge>}
             </div>
             <div className="mt-1 flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
               <span className="inline-flex items-center gap-1 font-mono">
