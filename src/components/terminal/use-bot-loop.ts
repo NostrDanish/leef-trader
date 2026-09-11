@@ -1,5 +1,10 @@
 import { useEffect, useRef } from "react";
-import { evaluateBot, type ArbPlan, type Position } from "@/lib/leef/bot-engine";
+import {
+  adaptiveCooldownSec,
+  evaluateBot,
+  type ArbPlan,
+  type Position,
+} from "@/lib/leef/bot-engine";
 import { fmtNum } from "@/lib/leef/format";
 import type { LeefSnapshot } from "@/lib/leef/types";
 import { fetchAlcorRoute, parseAssetAmount, type AlcorRouteQuote } from "@/lib/wallet/alcor-route";
@@ -238,6 +243,14 @@ async function runBotOnceInner(
             since: prev.since,
             highUsd: Math.max(prev.highUsd, snap.leefUsd),
             mode,
+            // Weight the predicted edge by the new capital entering.
+            predEdgePct:
+              decision.edge != null
+                ? ((prev.predEdgePct ?? decision.edge.netEdgePct) * prev.entryWax +
+                    decision.edge.netEdgePct * decision.amountWax) /
+                  Math.max(prev.entryWax + decision.amountWax, 1e-9)
+                : prev.predEdgePct,
+            strategy: prev.strategy ?? b.strategy,
           }
         : {
             amountLeef,
@@ -247,10 +260,12 @@ async function runBotOnceInner(
             since: Date.now(),
             highUsd: snap.leefUsd,
             mode,
+            predEdgePct: decision.edge?.netEdgePct,
+            strategy: b.strategy,
           };
       b.setPosition(position);
       b.setGridAnchor(snap.leefUsd);
-      b.markTrade(b.risk.cooldownSec);
+      b.markTrade(adaptiveCooldownSec(b.risk.cooldownSec, b.strategy, b.stats.lastPnlUsd));
       b.pushDecision({
         kind: "buy",
         mode,
@@ -270,6 +285,7 @@ async function runBotOnceInner(
       let waxOut = decision.route.amountOut;
       let txid: string | undefined;
       let note = "";
+      const t0 = Date.now();
       if (live) {
         const exec = await signAndPushSwap({
           account: w.account,
@@ -296,8 +312,16 @@ async function runBotOnceInner(
       const pnlUsd = position ? waxOut * snap.waxUsd - position.entryCostUsd : 0;
       b.setPosition(null);
       b.setGridAnchor(snap.leefUsd);
-      b.markTrade(b.risk.cooldownSec);
+      b.markTrade(adaptiveCooldownSec(b.risk.cooldownSec, b.strategy, pnlUsd));
       b.recordResult(pnlUsd, equityUsd + pnlUsd);
+      // Calibration: predicted edge (stored at entry) vs the realized edge.
+      b.recordStrategyPerf(position?.strategy ?? b.strategy, {
+        pnlUsd,
+        predEdgePct: position?.predEdgePct ?? null,
+        realEdgePct:
+          position && position.entryCostUsd > 0 ? (pnlUsd / position.entryCostUsd) * 100 : 0,
+        latencyMs: live ? Date.now() - t0 : null,
+      });
       b.pushDecision({
         kind: "sell",
         mode,
@@ -376,6 +400,7 @@ async function runBotOnceInner(
       let note = "";
       /** Net WAX delta read from the confirmed transaction (null = estimate). */
       let realizedWax: number | null = null;
+      const t0 = Date.now();
       if (live) {
         const res = await signAndPushArb({
           account: w.account,
@@ -401,8 +426,16 @@ async function runBotOnceInner(
         realizedWax != null
           ? realizedWax * snap.waxUsd
           : (plan.waxOut - plan.waxIn) * snap.waxUsd;
-      b.markTrade(b.risk.cooldownSec);
+      b.markTrade(adaptiveCooldownSec(b.risk.cooldownSec, b.strategy, pnlUsd));
       b.recordResult(pnlUsd, equityUsd + pnlUsd);
+      // Calibration: the router-quoted edge vs what the chain actually paid.
+      b.recordStrategyPerf(b.strategy, {
+        pnlUsd,
+        predEdgePct: plan.profitPct * 100,
+        realEdgePct:
+          (realizedWax != null ? realizedWax / plan.waxIn : plan.waxOut / plan.waxIn - 1) * 100,
+        latencyMs: live ? Date.now() - t0 : null,
+      });
       if (b.strategy === "volume") {
         b.recordVolume((plan.waxIn + plan.waxOut) * snap.waxUsd, -pnlUsd);
       }

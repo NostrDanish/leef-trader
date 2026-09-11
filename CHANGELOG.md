@@ -1,0 +1,85 @@
+# Changelog
+
+All notable changes to LEEF Trader. Dates are commit-era, not release tags.
+
+## Unreleased — economic core + execution hardening
+
+### Added — economic engine
+
+- **TradeCostModel** (`lib/leef/cost-model.ts`): the single authoritative
+  cost calculation — round-trip execution (AMM fee + impact measured exactly
+  once against USD mids), slippage allowance, volatility-driven opportunity
+  decay, WAX resource cost, failure cost.
+- **NetEdgeEngine** (`lib/leef/net-edge.ts`): net edge after all costs,
+  profit-maximizing trade-size scan (interior maximum — the best size is
+  often smaller than the clip), and an explainable 0–100 opportunity score
+  with per-factor breakdowns.
+- Every bot entry (signal / mean reversion / grid / DCA) now flows through
+  the edge engine with a strategy-anchored expected move; entries that can't
+  clear `minNetEdgePct` after costs are declined. Doing nothing is a valid,
+  logged decision.
+- **Quote freshness gate** (`maxQuoteAgeSec`, default 45s): stale book → hold.
+- **Adaptive cooldowns**: 0.5× for atomic arb/echo, 2× for DCA, 1.5× after a
+  losing trade; 15s floor retained as runaway protection.
+- **Strategy calibration memory**: per-strategy predicted-vs-realized edge,
+  P&L, wins and execution latency (`stats.byStrategy`).
+- **Opportunity dedup**: the rebalancer defers LEEF-selling legs while the
+  bot holds an open LEEF position.
+
+### Added — execution + safety
+
+- **Transaction policy firewall** (`lib/wallet/policy.ts`): every action list
+  validated before any signer sees it (allowlisted contracts/actions,
+  verified token contract+precision, receiver pinned to the account at
+  swap.alcor, well-formed memos only).
+- **Arb profit floor on the actual transaction**: the sell legs' on-chain
+  min-outs must sum to ≥ stake × (1 + floor); verified in the bot loop and
+  again at the signing boundary. The sell leg is re-quoted with a tighter
+  slippage guard when the quote clears the floor but the min-out doesn't.
+- **Chain reconciliation** (`lib/wallet/reconcile.ts`): post-broadcast
+  Hyperion lookups; positions and P&L settle from actual transfers
+  (confirmed / failed / unknown — unknown is never blind-retried).
+- **WAX resource preflight**: CPU > 95% / NET > 98% / RAM > 98% → no signing.
+- **Emergency stop**: header button halts bot + rebalancer, preserves
+  positions, requires deliberate restart.
+- RAM monitoring in `accountResources` + wallet store.
+
+### Fixed — correctness bugs
+
+- **Arb profit floor was not enforced on the router path** (the documented
+  guarantee didn't match the transaction). Now enforced on the memos' min-outs.
+- **Live fallback to the local constant-product model on router failure** —
+  removed. Live execution is router-exact or nothing.
+- **`expectedOut` was silently the local estimate**: `Number(quote.output)` is
+  NaN on "123.45 LEEF"-style strings; now parsed with `parseAssetAmount`.
+- **Token identity accepted any non-empty contract for "LEEF"** (and an empty
+  contract for "WAX") — spoofed tokens could feed pricing/routing. Now exact.
+- **Rebalancer never fired on schedule**: `intervalSec` was used by the loop
+  and the desk UI but missing from `RebalanceSettings`/`DEFAULT_REBALANCE`
+  (NaN interval, perpetual "not due"). Added with a 600s default.
+
+### Changed
+
+- `package.json`: `mkstack` → `leef-trader` 0.1.0; scripts no longer run
+  `npm i` on every invocation; added `lint` / `typecheck` / `preview`.
+- Decision journal entries carry net edge, score, confirmation status and
+  txid for every trade.
+- Removed `lib/wallet/memo.ts` (dead local-fallback memo builder).
+
+### Tests
+
+- New suites: policy firewall, signer reference vectors (Wharfkit),
+  reconciliation parsing, resource gate, token identity, cost model,
+  size optimizer, bot edge gate.
+
+### Documentation
+
+- README rewritten; `docs/` added: ARCHITECTURE, TRADING_ENGINE, NET_EDGE,
+  TRADE_COST_MODEL, STRATEGIES, RISK_MANAGEMENT, SECURITY, WAX,
+  CONFIGURATION, TESTING.
+
+## Prior history
+
+See `git log` — terminal port onto MKStack, bot strategies, atomic arb,
+multi-token rebalancer, volume maker, WCW/Anchor login, session-key import,
+mobile polish, rate-limit hygiene.

@@ -8,6 +8,7 @@ import {
 import { fmtUsd } from "@/lib/leef/format";
 import type { LeefSnapshot } from "@/lib/leef/types";
 import { signAndPushBatch, type BatchLeg } from "@/lib/wallet/sign";
+import { useBot } from "@/store/bot";
 import { usePortfolio } from "@/store/portfolio";
 import { useWallet } from "@/store/wallet";
 import { toast } from "@/hooks/useToast";
@@ -61,8 +62,31 @@ export async function runRebalancer(snap: LeefSnapshot, opts?: { force?: boolean
       return;
     }
 
+    // Opportunity dedup: while the bot is managing an open LEEF position, the
+    // rebalancer must not sell LEEF out from under it — same wallet, same
+    // market event. LEEF-selling legs wait for a flat bot.
+    const bot = useBot.getState();
+    const botHoldsLeef = bot.running && !!bot.position && bot.position.amountLeef > 0;
+    const legs = botHoldsLeef
+      ? plan.legs.filter((l) => l.from.symbol !== "LEEF")
+      : plan.legs;
+    if (legs.length < plan.legs.length) {
+      p.pushLog({
+        mode,
+        status: "skipped",
+        summary: "LEEF legs deferred — bot holds an open LEEF position",
+        legs: plan.legs.filter((l) => l.from.symbol === "LEEF").map((l) => l.reason),
+        totalUsd: 0,
+      });
+      if (legs.length === 0) {
+        p.markRun();
+        p.setLastPlanNote("All legs deferred — bot holds an open LEEF position");
+        return;
+      }
+    }
+
     const account = mode === "live" ? w.account : "paper.leef";
-    const quoted = await quoteLegs(plan.legs, account, p.settings.slippage, p.settings.maxImpactPct);
+    const quoted = await quoteLegs(legs, account, p.settings.slippage, p.settings.maxImpactPct);
     const ready = quoted.filter((l) => l.quote);
     const dropped = quoted.filter((l) => !l.quote);
     for (const d of dropped) {

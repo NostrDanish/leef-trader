@@ -1,4 +1,5 @@
 import { backedPools, compareAllRoutes, isWaxToken, quoteConstantProduct } from "./amm";
+import { realizedVolPerSec } from "./cost-model";
 import {
   decorate,
   scoreSignal,
@@ -6,6 +7,7 @@ import {
   type SignalSnap,
   type TickParams,
 } from "./indicators";
+import { optimizeEntrySize, scoreOpportunity } from "./net-edge";
 import type { LeefPool, LeefSnapshot, SwapRoute } from "./types";
 
 /* ------------------------------------------------------------------ */
@@ -124,6 +126,19 @@ export type BotRisk = {
   gridStepPct: number;
   /** Volume strategy: max acceptable round-trip loss, percent. */
   maxEchoLossPct: number;
+  /**
+   * Minimum NET edge an entry must clear after ALL modeled costs (round-trip
+   * execution, slippage allowance, opportunity decay, resource + failure
+   * cost), percent of notional. 0.1% keeps WAX micro-edges viable while
+   * refusing trades whose costs eat the thesis.
+   */
+  minNetEdgePct: number;
+  /**
+   * Maximum age of the book a decision may act on, seconds. The snapshot
+   * pulls every 30s, so 45s means "at most one missed refresh". Older than
+   * that → hold and wait for fresh data (fail closed).
+   */
+  maxQuoteAgeSec: number;
 };
 
 export const DEFAULT_GOALS: BotGoals = {
@@ -147,6 +162,8 @@ export const DEFAULT_RISK: BotRisk = {
   // Real WAX→LEEF→WAX round trips cost ~0.5–1.5% (two fee tiers + impact),
   // so the default budget has to clear that or every echo would revert.
   maxEchoLossPct: 1.5,
+  minNetEdgePct: 0.1,
+  maxQuoteAgeSec: 45,
 };
 
 export type Position = {
@@ -162,6 +179,10 @@ export type Position = {
   highUsd: number;
   /** Wallet mode the position was opened in — guards mode mismatches after reloads. */
   mode: "paper" | "live";
+  /** Net edge the entry engine predicted, percent — for predicted-vs-realized calibration. */
+  predEdgePct?: number;
+  /** Strategy that opened the position (survives mid-position strategy switches). */
+  strategy?: BotStrategy;
 };
 
 export type PricePoint = { t: number; usd: number };
@@ -193,7 +214,15 @@ export type ArbLeg = {
 };
 
 export type Decision =
-  | { kind: "buy"; amountWax: number; route: SwapRoute; reason: string; confidence: number }
+  | {
+      kind: "buy";
+      amountWax: number;
+      route: SwapRoute;
+      reason: string;
+      confidence: number;
+      /** Net-edge verdict that approved the entry (journal/calibration). */
+      edge?: { netEdgePct: number; netProfitUsd: number; score: number };
+    }
   | { kind: "sell"; amountLeef: number; route: SwapRoute; reason: string; confidence: number }
   | { kind: "arb"; plan: ArbPlan; reason: string }
   | { kind: "hold"; reason: string }
@@ -251,12 +280,37 @@ export function momentumPct(series: PricePoint[], points = 6): number {
   return a > 0 ? b / a - 1 : 0;
 }
 
-/** Latest RSI and Bollinger %B from the real series. */
-export function reversionRead(series: PricePoint[]): { rsi: number | null; pctB: number | null } {
-  if (series.length < BOT_WARMUP_POINTS) return { rsi: null, pctB: null };
+/** Latest RSI, Bollinger %B and distance to the band midline from the real series. */
+export function reversionRead(series: PricePoint[]): {
+  rsi: number | null;
+  pctB: number | null;
+  /** Distance from current price up to the Bollinger midline, percent. */
+  distToMidPct: number | null;
+} {
+  if (series.length < BOT_WARMUP_POINTS) return { rsi: null, pctB: null, distToMidPct: null };
   const points = decorate(seriesToCandles(series), BOT_TICK_PARAMS);
   const last = points[points.length - 1];
-  return { rsi: last?.rsi ?? null, pctB: last?.pctB ?? null };
+  const distToMidPct =
+    last && last.bbMid != null && last.c > 0 ? (last.bbMid / last.c - 1) * 100 : null;
+  return { rsi: last?.rsi ?? null, pctB: last?.pctB ?? null, distToMidPct };
+}
+
+/**
+ * Adaptive cooldown: arb/echo round trips are self-contained and can re-arm
+ * faster; DCA is deliberately slow; a losing trade slows the bot down
+ * (simple anti-tilt, never a martingale). The 15s floor is the runaway
+ * protection — no configuration may trade faster than that.
+ */
+export function adaptiveCooldownSec(
+  baseSec: number,
+  strategy: BotStrategy,
+  lastPnlUsd: number,
+): number {
+  let factor = 1;
+  if (strategy === "spread" || strategy === "volume") factor = 0.5;
+  else if (strategy === "dca") factor = 2;
+  if (lastPnlUsd < 0) factor *= 1.5;
+  return Math.max(15, Math.round(baseSec * factor));
 }
 
 function bestBuyRoute(snap: LeefSnapshot, amountWax: number): SwapRoute | null {
@@ -333,6 +387,15 @@ export function evaluateBot(input: BotInput): Decision {
   if (!input.running && !input.force) return hold("Bot is stopped");
   if (snap.source !== "live") return hold("Book is stale — waiting for live Alcor data");
   if (!(leefUsd > 0) || !(waxUsd > 0)) return hold("Waiting for a priced book");
+
+  // Quote freshness: never act on an obsolete book. The snapshot cadence is
+  // 30s; the default 45s budget tolerates exactly one missed pull.
+  const quoteAgeSec = (now - Date.parse(snap.fetchedAt)) / 1000;
+  if (!Number.isFinite(quoteAgeSec) || quoteAgeSec > risk.maxQuoteAgeSec) {
+    return hold(
+      `Book quote is ${Number.isFinite(quoteAgeSec) ? `${Math.round(quoteAgeSec)}s` : "unparseably"} old — waiting for a fresh pull`,
+    );
+  }
 
   // Session goal / drawdown circuit breakers.
   if (goals.sessionGoalUsd > 0 && input.sessionRealizedUsd >= goals.sessionGoalUsd) {
@@ -431,6 +494,70 @@ export function evaluateBot(input: BotInput): Decision {
     if (!position || position.amountLeef <= 0) return hold(scanReason);
   }
 
+  /* ------------------- entry sizing (NetEdgeEngine) ---------------- */
+
+  const waxAvail = input.balances.WAX ?? 0;
+  const clip = Math.min(risk.clipWax, waxAvail);
+  const positionUsd = 0; // flat-position entries size against zero exposure
+  const roomWax = risk.maxPositionWax - positionUsd / Math.max(waxUsd, 1e-9);
+  const amountWax = Math.min(clip, Math.max(roomWax, 0));
+
+  /**
+   * Entries flow through the NetEdgeEngine: scan sizes below the risk cap,
+   * charge the full round-trip cost model, and take the profit-maximizing
+   * size that still clears minNetEdgePct. No size clears → DO NOTHING.
+   * (Exits are never edge-gated — risk actions must always fire.)
+   */
+  const tryBuyWith = (
+    reason: string,
+    expectedGrossPct: number,
+    confidence: number,
+    maxWax: number,
+  ): Decision => {
+    if (!(maxWax > 0.01)) return hold("Position cap reached or no WAX available");
+    if (!(expectedGrossPct > 0)) return hold("No positive expected move on this book — sitting out");
+    const sized = optimizeEntrySize({
+      snap,
+      tokenIn: "WAX",
+      tokenOut: "LEEF",
+      expectedGrossPct,
+      minNetEdgePct: risk.minNetEdgePct,
+      maxIn: maxWax,
+      volPerSec: realizedVolPerSec(input.series),
+    });
+    if (!sized) {
+      return hold(
+        `No size ≤ ${maxWax.toFixed(2)} WAX clears net edge ≥ ${risk.minNetEdgePct}% after all costs`,
+      );
+    }
+    const v = sized.best;
+    if (v.route.priceImpact * 100 > risk.maxImpactPct) {
+      return hold(
+        `Entry impact ${(v.route.priceImpact * 100).toFixed(1)}% above ${risk.maxImpactPct}% cap`,
+      );
+    }
+    const score = scoreOpportunity({
+      verdict: v,
+      confidence,
+      minNetEdgePct: risk.minNetEdgePct,
+      maxImpactPct: risk.maxImpactPct,
+      quoteAgeMs: quoteAgeSec * 1000,
+      maxQuoteAgeMs: risk.maxQuoteAgeSec * 1000,
+    });
+    return {
+      kind: "buy",
+      amountWax: v.amountIn,
+      route: v.route,
+      reason:
+        `${reason} · net edge ${v.netEdgePct.toFixed(2)}% ≈ $${v.netProfitUsd.toFixed(3)} ` +
+        `on ${v.amountIn.toFixed(2)} WAX · score ${score.score}/100`,
+      confidence,
+      edge: { netEdgePct: v.netEdgePct, netProfitUsd: v.netProfitUsd, score: score.score },
+    };
+  };
+  const tryBuy = (reason: string, expectedGrossPct: number, confidence: number): Decision =>
+    tryBuyWith(reason, expectedGrossPct, confidence, amountWax);
+
   /* ---------------- position management (all strategies) ---------- */
 
   if (position && position.amountLeef > 0) {
@@ -508,18 +635,12 @@ export function evaluateBot(input: BotInput): Decision {
       const roomWax = risk.maxPositionWax - position.entryWax;
       const clip = Math.min(risk.clipWax, roomWax, input.balances.WAX ?? 0);
       if (clip > 0.01) {
-        const route = bestBuyRoute(snap, clip);
-        if (!route) return hold("No backed route for the DCA clip");
-        if (route.priceImpact * 100 > risk.maxImpactPct) {
-          return hold(`DCA clip impact ${(route.priceImpact * 100).toFixed(1)}% above cap — waiting`);
-        }
-        return {
-          kind: "buy",
-          amountWax: clip,
-          route,
-          reason: `DCA clip · averaging in at ${(leefUsd * 1e6).toFixed(4)} USD/1M (${(position.entryWax + clip).toFixed(1)}/${risk.maxPositionWax} WAX stacked)`,
-          confidence: signal.confidence,
-        };
+        return tryBuyWith(
+          `DCA clip · averaging in at ${(leefUsd * 1e6).toFixed(4)} USD/1M`,
+          goals.takeProfitPct,
+          signal.confidence,
+          clip,
+        );
       }
       return hold(
         `Cap reached · holding ${position.amountLeef.toLocaleString()} LEEF · ${pnlPct >= 0 ? "+" : ""}${pnlPct.toFixed(2)}% vs entry — TP at +${goals.takeProfitPct}%`,
@@ -534,22 +655,6 @@ export function evaluateBot(input: BotInput): Decision {
 
   /* ------------------------------ entries ------------------------- */
 
-  const waxAvail = input.balances.WAX ?? 0;
-  const clip = Math.min(risk.clipWax, waxAvail);
-  const positionUsd = 0; // flat here
-  const roomWax = risk.maxPositionWax - positionUsd / Math.max(waxUsd, 1e-9);
-  const amountWax = Math.min(clip, Math.max(roomWax, 0));
-
-  const tryBuy = (reason: string): Decision => {
-    if (!(amountWax > 0.01)) return hold("Position cap reached or no WAX available");
-    const route = bestBuyRoute(snap, amountWax);
-    if (!route) return hold("No backed route for this size");
-    if (route.priceImpact * 100 > risk.maxImpactPct) {
-      return hold(`Entry impact ${(route.priceImpact * 100).toFixed(1)}% above ${risk.maxImpactPct}% cap`);
-    }
-    return { kind: "buy", amountWax, route, reason, confidence: signal.confidence };
-  };
-
   switch (strategy) {
     case "signal": {
       if (!signal.warmed) {
@@ -561,34 +666,50 @@ export function evaluateBot(input: BotInput): Decision {
           .filter((r) => r.score > 0.12)
           .map((r) => r.id.toUpperCase())
           .join("+");
-        return tryBuy(`Engine vote BUY ${conf}% conf (${votes || "blend"}) · momentum ${(momentumPct(input.series) * 100).toFixed(2)}%`);
+        // Anchor: the engine vote aims for the take-profit target, scaled by
+        // how strongly the indicators agree.
+        return tryBuy(
+          `Engine vote BUY ${conf}% conf (${votes || "blend"}) · momentum ${(momentumPct(input.series) * 100).toFixed(2)}%`,
+          signal.confidence * goals.takeProfitPct,
+          signal.confidence,
+        );
       }
       return hold(`Vote ${signal.bias} · ${conf}% conf (need ≥ ${risk.minConfidence}% buy)`);
     }
     case "meanrev": {
-      const { rsi, pctB } = reversionRead(input.series);
+      const { rsi, pctB, distToMidPct } = reversionRead(input.series);
       if (rsi == null || pctB == null) {
         return hold(`Engines warming up — ${input.series.length}/${BOT_WARMUP_POINTS} prints collected`);
       }
       if (rsi <= 30 && pctB <= 0.1) {
-        return tryBuy(`Oversold · RSI ${rsi.toFixed(0)} ≤ 30, %B ${pctB.toFixed(2)} at the lower band`);
+        // Anchor: 70% of the measured distance back to the band midline —
+        // the measured reversion target with a conservative haircut.
+        const expected = Math.max(0, (distToMidPct ?? 0) * 0.7);
+        return tryBuy(
+          `Oversold · RSI ${rsi.toFixed(0)} ≤ 30, %B ${pctB.toFixed(2)} at the lower band`,
+          expected,
+          signal.confidence,
+        );
       }
       return hold(`RSI ${rsi.toFixed(0)} · %B ${pctB.toFixed(2)} — waiting for an oversold tag`);
     }
     case "grid": {
+      // Anchor: one grid step, haircut 20% for exit uncertainty.
+      const expected = risk.gridStepPct * 0.8;
       const anchor = input.gridAnchor;
       if (anchor == null) {
-        return tryBuy("Grid seed buy — anchoring the grid at market");
+        return tryBuy("Grid seed buy — anchoring the grid at market", expected, signal.confidence);
       }
       const stepDown = anchor * (1 - risk.gridStepPct / 100);
       if (leefUsd <= stepDown) {
-        return tryBuy(`Grid step −${risk.gridStepPct}% filled at the bid`);
+        return tryBuy(`Grid step −${risk.gridStepPct}% filled at the bid`, expected, signal.confidence);
       }
       const distDown = (leefUsd / stepDown - 1) * 100;
       return hold(`Grid armed · next buy ${distDown.toFixed(1)}% below, next sell +${risk.gridStepPct}% above last fill`);
     }
     case "dca": {
-      return tryBuy("Scheduled accumulation clip");
+      // Anchor: the accumulation thesis targets the take-profit level.
+      return tryBuy("Scheduled accumulation clip", goals.takeProfitPct, signal.confidence);
     }
     case "spread":
     case "volume":

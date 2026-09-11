@@ -40,6 +40,8 @@ export type RebalancePlan = {
 };
 
 export type RebalanceSettings = {
+  /** Seconds between automatic rebalancer checks (desk slider: 60–1800). */
+  intervalSec: number;
   /** Dust below this USD value is left alone. */
   minDustUsd: number;
   /** Relative drift from target share that triggers repair, percent. */
@@ -55,6 +57,10 @@ export type RebalanceSettings = {
 };
 
 export const DEFAULT_REBALANCE: RebalanceSettings = {
+  // 10 minutes: slow enough to never fight the bot's own trades, fast enough
+  // to repair real drift. Without this default the scheduler computed
+  // `undefined * 1000` and never fired on interval.
+  intervalSec: 600,
   minDustUsd: 1,
   driftPct: 15,
   maxLegs: 3,

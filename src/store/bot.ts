@@ -23,6 +23,19 @@ export type BotDecisionLog = {
   pnlUsd?: number;
 };
 
+/** Per-strategy calibration record — predicted vs realized edge. */
+export type StrategyPerf = {
+  trades: number;
+  wins: number;
+  pnlUsd: number;
+  /** Sum of predicted net edges at entry, percent (÷ trades = mean prediction). */
+  predEdgePctSum: number;
+  /** Sum of realized net edges at exit, percent (÷ trades = mean realized). */
+  realEdgePctSum: number;
+  /** Sum of execution latencies (sign→reconcile), ms. */
+  latencyMsSum: number;
+};
+
 export type BotStats = {
   trades: number;
   wins: number;
@@ -31,6 +44,10 @@ export type BotStats = {
   volumeUsd: number;
   /** Volume maker: net USD cost of echo round trips (negative = profit). */
   echoCostUsd: number;
+  /** Last closed trade's P&L — feeds the adaptive cooldown (anti-tilt). */
+  lastPnlUsd: number;
+  /** Calibration memory per strategy id. */
+  byStrategy: Record<string, StrategyPerf>;
   startedAt: number;
   startEquityUsd: number;
   equity: { t: number; usd: number }[];
@@ -67,6 +84,11 @@ type BotState = {
   bumpPositionHigh: (usd: number) => void;
   recordResult: (pnlUsd: number, equityUsd: number) => void;
   recordVolume: (volumeUsd: number, costUsd: number) => void;
+  /** Calibration: record one closed trade under the strategy that opened it. */
+  recordStrategyPerf: (
+    strategy: string,
+    r: { pnlUsd: number; predEdgePct: number | null; realEdgePct: number; latencyMs: number | null },
+  ) => void;
   resetSession: (equityUsd: number) => void;
   setLastReason: (s: string) => void;
 };
@@ -77,6 +99,8 @@ const freshStats = (equityUsd: number): BotStats => ({
   realizedUsd: 0,
   volumeUsd: 0,
   echoCostUsd: 0,
+  lastPnlUsd: 0,
+  byStrategy: {},
   startedAt: Date.now(),
   startEquityUsd: equityUsd,
   equity: [{ t: Date.now(), usd: equityUsd }],
@@ -155,9 +179,37 @@ export const useBot = create<BotState>()(
             ...s.stats,
             realizedUsd: s.stats.realizedUsd + pnlUsd,
             wins: s.stats.wins + (pnlUsd > 0 ? 1 : 0),
+            lastPnlUsd: pnlUsd,
             equity: [...s.stats.equity, { t: Date.now(), usd: equityUsd }].slice(-120),
           },
         })),
+      recordStrategyPerf: (strategy, r) =>
+        set((s) => {
+          const prev = s.stats.byStrategy[strategy] ?? {
+            trades: 0,
+            wins: 0,
+            pnlUsd: 0,
+            predEdgePctSum: 0,
+            realEdgePctSum: 0,
+            latencyMsSum: 0,
+          };
+          return {
+            stats: {
+              ...s.stats,
+              byStrategy: {
+                ...s.stats.byStrategy,
+                [strategy]: {
+                  trades: prev.trades + 1,
+                  wins: prev.wins + (r.pnlUsd > 0 ? 1 : 0),
+                  pnlUsd: prev.pnlUsd + r.pnlUsd,
+                  predEdgePctSum: prev.predEdgePctSum + (r.predEdgePct ?? 0),
+                  realEdgePctSum: prev.realEdgePctSum + r.realEdgePct,
+                  latencyMsSum: prev.latencyMsSum + (r.latencyMs ?? 0),
+                },
+              },
+            },
+          };
+        }),
       recordVolume: (volumeUsd, costUsd) =>
         set((s) => ({
           stats: {
@@ -182,9 +234,9 @@ export const useBot = create<BotState>()(
     {
       name: "leef-bot-v1",
       // Versioned + merging migrate: fields added to the schema after a user
-      // saved state (e.g. risk.maxEchoLossPct) get filled from defaults
-      // instead of crashing selectors with undefined.
-      version: 3,
+      // saved state (e.g. risk.minNetEdgePct, stats.byStrategy) get filled
+      // from defaults instead of crashing selectors with undefined.
+      version: 4,
       migrate: (persisted) => {
         const p = (
           persisted && typeof persisted === "object" ? persisted : {}
