@@ -12,9 +12,9 @@
  * signature leaves the module we recover the public key from it and compare
  * against the session key, so a malformed signature can never be broadcast.
  */
-import { sha256 } from "@noble/hashes/sha256";
-import { ripemd160 } from "@noble/hashes/ripemd160";
-import { secp256k1 } from "@noble/curves/secp256k1";
+import { sha256 } from "@noble/hashes/sha2.js";
+import { ripemd160 } from "@noble/hashes/legacy.js";
+import { secp256k1 } from "@noble/curves/secp256k1.js";
 
 /* ------------------------------------------------------------------ */
 /* hex + bytes helpers                                                 */
@@ -188,7 +188,7 @@ export function parsePrivateKey(raw: string): AntelopeKeyPair {
     try {
       const candidate = attempt();
       if (candidate.length !== 32) throw new Error("Key must be 32 bytes");
-      if (!secp256k1.utils.isValidPrivateKey(candidate)) {
+      if (!secp256k1.utils.isValidSecretKey(candidate)) {
         throw new Error("Key is outside the secp256k1 range");
       }
       priv = candidate;
@@ -220,14 +220,10 @@ export function keyPairFromPrivate(privateKey: Uint8Array): AntelopeKeyPair {
 /* signatures                                                          */
 /* ------------------------------------------------------------------ */
 
-function bigTo32(n: bigint): Uint8Array {
-  const out = new Uint8Array(32);
-  let v = n;
-  for (let i = 31; i >= 0; i--) {
-    out[i] = Number(v & 0xffn);
-    v >>= 8n;
-  }
-  return out;
+function bytesToBigIntBE(b: Uint8Array): bigint {
+  let n = 0n;
+  for (const x of b) n = (n << 8n) | BigInt(x);
+  return n;
 }
 
 /** Legacy EOSIO canonical-signature check. */
@@ -243,29 +239,36 @@ function isCanonical(r: Uint8Array, s: Uint8Array): boolean {
 /**
  * Sign a 32-byte digest with the session key, returning SIG_K1_…
  * Self-verifies by recovering the public key before returning.
+ *
+ * noble-curves 2.x notes: sign() takes `prehash: false` (we hash ourselves)
+ * and `format: "recovered"` yields 65 bytes — recid || r || s.
  */
 export function signDigest(digest: Uint8Array, keyPair: AntelopeKeyPair): string {
   if (digest.length !== 32) throw new Error("Digest must be 32 bytes");
 
   for (let round = 0; round < 64; round++) {
-    let extraEntropy: Uint8Array | undefined;
-    if (round > 0) {
-      extraEntropy = new Uint8Array(32);
-      extraEntropy[31] = round;
-    }
-    const sig = secp256k1.sign(digest, keyPair.privateKey, {
+    // Round 0 is purely deterministic; retries bump extra entropy.
+    const extraEntropy = round === 0 ? false : new Uint8Array(32);
+    if (round > 0) (extraEntropy as Uint8Array)[31] = round;
+    const raw = secp256k1.sign(digest, keyPair.privateKey, {
       lowS: true,
+      prehash: false,
+      format: "recovered",
       extraEntropy,
     });
-    const r = bigTo32(sig.r);
-    const s = bigTo32(sig.s);
+    const recid = raw[0]!;
+    const r = raw.slice(1, 33);
+    const s = raw.slice(33, 65);
     if (!isCanonical(r, s)) continue;
-    const recovery = sig.recovery ?? 0;
-    const data = concat(new Uint8Array([27 + 4 + recovery]), r, s);
+    const data = concat(new Uint8Array([27 + 4 + recid]), r, s);
 
     // Self-check: the recovered key must be our key.
-    const recovered = sig.recoverPublicKey(digest);
-    if (!recovered || bytesToHex(recovered.toRawBytes(true)) !== bytesToHex(keyPair.publicKey)) {
+    const recovered = new secp256k1.Signature(
+      bytesToBigIntBE(r),
+      bytesToBigIntBE(s),
+      recid,
+    ).recoverPublicKey(digest);
+    if (!recovered || bytesToHex(recovered.toBytes(true)) !== bytesToHex(keyPair.publicKey)) {
       continue;
     }
     return `SIG_K1_${base58CheckEncode(data, "K1")}`;
