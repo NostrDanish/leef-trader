@@ -2,6 +2,16 @@
 
 All notable changes to LEEF Trader. Dates are commit-era, not release tags.
 
+## Unreleased — dynamic clip band + pre-trade re-optimize
+
+- `clipWax` is the **minimum** order size; `maxPositionWax` is the **ceiling**
+  (minus already held). Each entry picks a size in that band (0.1–500 can
+  fire 1, 25, 4.4, 453 — never 0.09 or 501).
+- Immediately before sign, size + route are scanned again on the current
+  book so the fill is not the 30s-old candidate.
+
+---
+
 ## Unreleased — Defibox + TacoSwap venue adapters
 
 - Universal liquidity graph: Alcor + Defibox (`swap.box` pairs table) +

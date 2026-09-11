@@ -116,8 +116,8 @@ export function evaluateEntry(opts: {
   };
 }
 
-/** Coarse fractions of the risk cap — then we refine around the winner. */
-const SIZE_LADDER = [1, 0.75, 0.5, 0.3, 0.15, 0.08];
+/** Fractions of the [min, max] band — then ternary refine around the winner. */
+const SIZE_LADDER = [0, 0.08, 0.15, 0.3, 0.5, 0.75, 1];
 
 export type SizedEntry = {
   best: EdgeVerdict;
@@ -126,10 +126,9 @@ export type SizedEntry = {
 };
 
 /**
- * Profit-maximizing size for an entry. Scans the ladder below the risk cap
- * and returns the candidate with the highest expected NET profit that still
- * clears the required net edge. Null when NO size is worth trading — the
- * correct answer on a thin or quiet book.
+ * Profit-maximizing size in [minIn, maxIn]. Clip is the FLOOR, max position
+ * (minus already held) is the CEILING. Never below min, never above max.
+ * Null when no size in the band clears net edge — do nothing.
  */
 export function optimizeEntrySize(opts: {
   snap: LeefSnapshot;
@@ -137,35 +136,50 @@ export function optimizeEntrySize(opts: {
   tokenOut: string;
   expectedGrossPct: number;
   minNetEdgePct: number;
-  /** Risk-capped maximum input (clip ∧ balance ∧ position room). */
+  /** Inclusive floor (clip size). */
+  minIn: number;
+  /** Inclusive ceiling (remaining room under max position ∧ wallet). */
   maxIn: number;
   volPerSec: number;
   costs?: Partial<CostConfig>;
 }): SizedEntry | null {
-  if (!(opts.maxIn > 0)) return null;
+  const minIn = Math.max(0, opts.minIn);
+  const maxIn = opts.maxIn;
+  if (!(maxIn > 0) || maxIn + 1e-12 < minIn) return null;
   const tried: SizedEntry["tried"] = [];
   let best: EdgeVerdict | null = null;
   const seen = new Set<number>();
 
   const consider = (amountIn: number) => {
-    const key = Math.round(amountIn * 1e6);
-    if (!(amountIn > 0) || seen.has(key)) return;
+    const clamped = Math.min(maxIn, Math.max(minIn, amountIn));
+    const key = Math.round(clamped * 1e6);
+    if (!(clamped > 0) || seen.has(key)) return;
     seen.add(key);
-    const v = evaluateEntry({ ...opts, amountIn });
+    const v = evaluateEntry({ ...opts, amountIn: clamped });
     if (!v) return;
-    tried.push({ amountIn, netEdgePct: v.netEdgePct, netProfitUsd: v.netProfitUsd });
+    tried.push({ amountIn: clamped, netEdgePct: v.netEdgePct, netProfitUsd: v.netProfitUsd });
     if (v.pass && (!best || v.netProfitUsd > best.netProfitUsd)) best = v;
   };
 
-  for (const f of SIZE_LADDER) consider(opts.maxIn * f);
+  const span = maxIn - minIn;
+  if (span < minIn * 0.02) {
+    consider(minIn);
+    consider(maxIn);
+  } else {
+    for (const f of SIZE_LADDER) consider(minIn + span * f);
+  }
   if (!best) return null;
 
-  // Ternary refine: net profit vs size is treated as unimodal (impact grows
-  // faster than gross). Not a closed-form optimum — a bounded numerical search.
-  let lo = Math.max(opts.maxIn * 0.05, best.amountIn * 0.5);
-  let hi = Math.min(opts.maxIn, best.amountIn * 1.5);
-  const profitAt = (x: number) =>
-    tried.find((t) => Math.abs(t.amountIn - x) < x * 1e-6)?.netProfitUsd ?? -Infinity;
+  let lo = Math.max(minIn, best.amountIn * 0.7);
+  let hi = Math.min(maxIn, best.amountIn * 1.3);
+  if (hi <= lo) {
+    lo = minIn;
+    hi = maxIn;
+  }
+  const profitAt = (x: number) => {
+    const c = Math.min(maxIn, Math.max(minIn, x));
+    return tried.find((t) => Math.abs(t.amountIn - c) < Math.max(c, 1) * 1e-6)?.netProfitUsd ?? -Infinity;
+  };
   for (let i = 0; i < 8; i++) {
     const m1 = lo + (hi - lo) / 3;
     const m2 = hi - (hi - lo) / 3;
@@ -175,6 +189,7 @@ export function optimizeEntrySize(opts: {
     else hi = m2;
   }
   if (!best) return null;
+  if (best.amountIn + 1e-12 < minIn || best.amountIn - 1e-12 > maxIn) return null;
   return { best, tried };
 }
 

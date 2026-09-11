@@ -111,9 +111,9 @@ export type BotGoals = {
 };
 
 export type BotRisk = {
-  /** WAX spent per buy clip. */
+  /** Minimum WAX per entry (floor). Optimizer never sizes below this. */
   clipWax: number;
-  /** Max WAX-value held in LEEF at once. */
+  /** Max WAX-value held in LEEF at once (ceiling for this clip + open). */
   maxPositionWax: number;
   maxImpactPct: number;
   cooldownSec: number;
@@ -433,11 +433,15 @@ export function findBestArb(
   maxWax: number,
   minProfitPct: number,
   allowSamePool = false,
+  minWax = 0,
 ): ArbPlan | null {
-  if (!(maxWax > 0)) return null;
+  if (!(maxWax > 0) || maxWax + 1e-12 < minWax) return null;
+  const floor = Math.max(0, minWax);
   let best: ArbPlan | null = null;
-  for (const f of [1, 0.6, 0.35, 0.2, 0.1]) {
-    const plan = findArb(snap, maxWax * f, minProfitPct, allowSamePool);
+  const span = maxWax - floor;
+  const points = span < floor * 0.02 ? [floor, maxWax] : [0, 0.2, 0.35, 0.6, 1].map((f) => floor + span * f);
+  for (const size of points) {
+    const plan = findArb(snap, size, minProfitPct, allowSamePool);
     if (!plan) continue;
     if (!best || plan.waxOut - plan.waxIn > best.waxOut - best.waxIn) best = plan;
   }
@@ -504,15 +508,35 @@ export function evaluateBot(input: BotInput): Decision {
   /* ------------------------- manual overrides ---------------------- */
 
   if (input.force === "buy") {
-    const amountWax = Math.min(risk.clipWax, input.balances.WAX ?? 0);
-    const route = bestBuyRoute(snap, amountWax);
-    if (!route) return hold("No executable route for this size — sitting out");
+    const held = input.position?.entryWax ?? 0;
+    const maxWax = Math.min(
+      input.balances.WAX ?? 0,
+      Math.max(0, risk.maxPositionWax - held),
+    );
+    const minWax = Math.min(risk.clipWax, maxWax);
+    if (!(minWax > 0)) return hold("No room under max position (or no WAX)");
+    const sized = optimizeEntrySize({
+      snap,
+      tokenIn: "WAX",
+      tokenOut: "LEEF",
+      expectedGrossPct: Math.max(goals.takeProfitPct, 0.5),
+      minNetEdgePct: 0,
+      minIn: minWax,
+      maxIn: maxWax,
+      volPerSec: realizedVolPerSec(input.series),
+    });
+    const route = sized?.best.route ?? bestBuyRoute(snap, minWax);
+    if (!route) return hold("No executable route in the clip–max band");
+    const amountWax = sized?.best.amountIn ?? minWax;
     return {
       kind: "buy",
       amountWax,
       route,
-      reason: `Manual buy clip · ${route.label}`,
+      reason: `Manual buy · ${amountWax.toFixed(2)} WAX (clip ${risk.clipWax}–${risk.maxPositionWax}) · ${route.label}`,
       confidence: signal.confidence,
+      edge: sized
+        ? { netEdgePct: sized.best.netEdgePct, netProfitUsd: sized.best.netProfitUsd, score: 0 }
+        : undefined,
     };
   }
   if (input.force === "sell" && (!position || position.amountLeef <= 0)) {
@@ -522,16 +546,16 @@ export function evaluateBot(input: BotInput): Decision {
   /* ----------- position-independent scans (spread arb / volume) ---- */
 
   if (strategy === "spread" || strategy === "volume") {
-    const waxAvail = Math.min(risk.clipWax, input.balances.WAX ?? 0);
+    const waxAvail = Math.min(risk.maxPositionWax, input.balances.WAX ?? 0);
     const isVolume = strategy === "volume";
     let arbDecision: Decision | null = null;
     let scanReason: string;
 
-    if (waxAvail <= 0.5) {
-      scanReason = "Not enough WAX for an arb clip";
+    if (waxAvail + 1e-12 < risk.clipWax) {
+      scanReason = "Not enough WAX for the min clip";
     } else if (isVolume) {
       // Echo: round-trip allowed, gated by the loss budget (negative profit gate).
-      const plan = findBestArb(snap, waxAvail, -risk.maxEchoLossPct, true);
+      const plan = findBestArb(snap, waxAvail, -risk.maxEchoLossPct, true, risk.clipWax);
       if (plan) {
         const costPct = -plan.profitPct * 100;
         arbDecision = {
@@ -549,7 +573,7 @@ export function evaluateBot(input: BotInput): Decision {
       // floor needs the raw spread to clear it with slippage headroom.
       const gatePct =
         ((1 + risk.minEdgePct / 100) / Math.max(0.9, 1 - risk.slippage / 100) - 1) * 100;
-      const plan = findBestArb(snap, waxAvail, gatePct);
+      const plan = findBestArb(snap, waxAvail, gatePct, false, risk.clipWax);
       if (plan) {
         arbDecision = {
           kind: "arb",
@@ -571,10 +595,10 @@ export function evaluateBot(input: BotInput): Decision {
   /* ------------------- entry sizing (NetEdgeEngine) ---------------- */
 
   const waxAvail = input.balances.WAX ?? 0;
-  const clip = Math.min(risk.clipWax, waxAvail);
-  const positionUsd = 0; // flat-position entries size against zero exposure
-  const roomWax = risk.maxPositionWax - positionUsd / Math.max(waxUsd, 1e-9);
-  const amountWax = Math.min(clip, Math.max(roomWax, 0));
+  const heldWax = input.position?.entryWax ?? 0;
+  const roomWax = Math.max(0, risk.maxPositionWax - heldWax);
+  const maxWax = Math.min(waxAvail, roomWax);
+  const minWax = Math.min(risk.clipWax, maxWax);
 
   /**
    * Entries flow through the NetEdgeEngine: scan sizes below the risk cap,
@@ -586,9 +610,11 @@ export function evaluateBot(input: BotInput): Decision {
     reason: string,
     expectedGrossPct: number,
     confidence: number,
-    maxWax: number,
+    maxWaxArg: number,
   ): Decision => {
-    if (!(maxWax > 0.01)) return hold("Position cap reached or no WAX available");
+    if (!(maxWaxArg > 0.01) || maxWaxArg + 1e-12 < minWax) {
+      return hold("Position cap reached, clip larger than remaining room, or no WAX");
+    }
     if (!(expectedGrossPct > 0)) return hold("No positive expected move on this book — sitting out");
     const sized = optimizeEntrySize({
       snap,
@@ -596,12 +622,13 @@ export function evaluateBot(input: BotInput): Decision {
       tokenOut: "LEEF",
       expectedGrossPct,
       minNetEdgePct: risk.minNetEdgePct,
-      maxIn: maxWax,
+      minIn: minWax,
+      maxIn: maxWaxArg,
       volPerSec: realizedVolPerSec(input.series),
     });
     if (!sized) {
       return hold(
-        `No size ≤ ${maxWax.toFixed(2)} WAX clears net edge ≥ ${risk.minNetEdgePct}% after all costs`,
+        `No size in ${minWax.toFixed(2)}–${maxWaxArg.toFixed(2)} WAX clears net edge ≥ ${risk.minNetEdgePct}% after all costs`,
       );
     }
     const v = sized.best;
@@ -630,7 +657,7 @@ export function evaluateBot(input: BotInput): Decision {
     };
   };
   const tryBuy = (reason: string, expectedGrossPct: number, confidence: number): Decision =>
-    tryBuyWith(reason, expectedGrossPct, confidence, amountWax);
+    tryBuyWith(reason, expectedGrossPct, confidence, maxWax);
 
   /* ---------------- position management (all strategies) ---------- */
 
@@ -707,14 +734,13 @@ export function evaluateBot(input: BotInput): Decision {
     }
     if (strategy === "dca") {
       // Keep stacking until the position cap, then ride to the take-profit.
-      const roomWax = risk.maxPositionWax - position.entryWax;
-      const clip = Math.min(risk.clipWax, roomWax, input.balances.WAX ?? 0);
-      if (clip > 0.01) {
+      const dcaMax = Math.min(roomWax, input.balances.WAX ?? 0);
+      if (dcaMax + 1e-12 >= minWax) {
         return tryBuyWith(
           `DCA clip · averaging in at ${(leefUsd * 1e6).toFixed(4)} USD/1M`,
           goals.takeProfitPct,
           signal.confidence,
-          clip,
+          dcaMax,
         );
       }
       return hold(

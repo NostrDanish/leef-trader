@@ -132,7 +132,7 @@ describe("net edge + optimal size", () => {
     const snap = mkSnap([mkPool(100, 1_000_000)]);
     const sized = optimizeEntrySize({
       snap, tokenIn: "WAX", tokenOut: "LEEF", expectedGrossPct: 2,
-      minNetEdgePct: 0.1, maxIn: 10, volPerSec: 0,
+      minNetEdgePct: 0.1, minIn: 0.1, maxIn: 10, volPerSec: 0,
     });
     expect(sized).toBeNull();
   });
@@ -143,7 +143,7 @@ describe("net edge + optimal size", () => {
     const snap = mkSnap([mkPool(1000, 1_000_000)]);
     const sized = optimizeEntrySize({
       snap, tokenIn: "WAX", tokenOut: "LEEF", expectedGrossPct: 20,
-      minNetEdgePct: 0.1, maxIn: 100, volPerSec: 0,
+      minNetEdgePct: 0.1, minIn: 0.1, maxIn: 100, volPerSec: 0,
     });
     expect(sized).not.toBeNull();
     expect(sized!.best.amountIn).toBeLessThan(100);
@@ -153,6 +153,18 @@ describe("net edge + optimal size", () => {
     const atCap = sized!.tried.find((t) => t.amountIn === 100);
     expect(atCap).toBeDefined();
     expect(sized!.best.netProfitUsd).toBeGreaterThan(atCap!.netProfitUsd);
+  });
+
+  it("never sizes below the clip floor or above the max", () => {
+    const snap = mkSnap([mkPool(50_000, 500_000_000)]);
+    const sized = optimizeEntrySize({
+      snap, tokenIn: "WAX", tokenOut: "LEEF", expectedGrossPct: 8,
+      minNetEdgePct: 0.1, minIn: 5, maxIn: 40, volPerSec: 0,
+    });
+    expect(sized).not.toBeNull();
+    expect(sized!.best.amountIn).toBeGreaterThanOrEqual(5 - 1e-9);
+    expect(sized!.best.amountIn).toBeLessThanOrEqual(40 + 1e-9);
+    expect(sized!.tried.every((t) => t.amountIn >= 5 - 1e-9 && t.amountIn <= 40 + 1e-9)).toBe(true);
   });
 
   it("scores opportunities with explainable factors", () => {

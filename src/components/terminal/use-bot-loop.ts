@@ -2,9 +2,12 @@ import { useEffect, useRef } from "react";
 import {
   adaptiveCooldownSec,
   evaluateBot,
+  findBestArb,
   type ArbPlan,
   type Position,
 } from "@/lib/leef/bot-engine";
+import { realizedVolPerSec } from "@/lib/leef/cost-model";
+import { optimizeEntrySize } from "@/lib/leef/net-edge";
 import { fmtNum } from "@/lib/leef/format";
 import type { LeefSnapshot } from "@/lib/leef/types";
 import { fetchAlcorRoute, parseAssetAmount, type AlcorRouteQuote } from "@/lib/wallet/alcor-route";
@@ -184,6 +187,64 @@ async function runBotOnceInner(
   }
 
   if (opts?.dry) return decision;
+
+  // Last-second re-optimize: clip is the floor, max position the ceiling.
+  // Re-scan size + route on this snapshot immediately before signing so we
+  // never fire the size that looked best 30s ago if the book moved.
+  if (decision.kind === "buy") {
+    const held = b.position?.entryWax ?? 0;
+    const maxIn = Math.min(
+      balances.WAX ?? 0,
+      Math.max(0, b.risk.maxPositionWax - held),
+    );
+    const minIn = Math.min(b.risk.clipWax, maxIn);
+    const fresh = optimizeEntrySize({
+      snap,
+      tokenIn: "WAX",
+      tokenOut: "LEEF",
+      expectedGrossPct: Math.max(b.goals.takeProfitPct * 0.5, 0.2),
+      minNetEdgePct: b.risk.minNetEdgePct,
+      minIn,
+      maxIn,
+      volPerSec: realizedVolPerSec(b.series),
+    });
+    if (!fresh) {
+      const reason = `Pre-trade size scan found nothing in ${minIn.toFixed(2)}–${maxIn.toFixed(2)} WAX`;
+      b.pushDecision({ kind: "hold", mode, reason, priceUsd: snap.leefUsd });
+      b.setLastReason(reason);
+      return { kind: "hold", reason };
+    }
+    decision = {
+      ...decision,
+      amountWax: fresh.best.amountIn,
+      route: fresh.best.route,
+      reason: `${decision.reason} · pre-trade ${fresh.best.amountIn.toFixed(2)} WAX`,
+      edge: {
+        netEdgePct: fresh.best.netEdgePct,
+        netProfitUsd: fresh.best.netProfitUsd,
+        score: decision.edge?.score ?? 0,
+      },
+    };
+  }
+  if (decision.kind === "arb") {
+    const maxIn = Math.min(balances.WAX ?? 0, b.risk.maxPositionWax);
+    const floorPct =
+      b.strategy === "volume" ? -b.risk.maxEchoLossPct : b.risk.minEdgePct;
+    const fresh = findBestArb(
+      snap,
+      maxIn,
+      b.strategy === "volume" ? -b.risk.maxEchoLossPct : floorPct,
+      b.strategy === "volume",
+      b.risk.clipWax,
+    );
+    if (!fresh) {
+      const reason = "Pre-trade arb scan found no clip in the size band";
+      b.pushDecision({ kind: "hold", mode, reason, priceUsd: snap.leefUsd });
+      b.setLastReason(reason);
+      return { kind: "hold", reason };
+    }
+    decision = { ...decision, plan: fresh };
+  }
 
   // WAX resource preflight: never sign a live trade on an exhausted account.
   if (

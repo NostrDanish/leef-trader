@@ -18,8 +18,8 @@ default. Nothing secret is ever stored.
 
 | Key | Default | Meaning |
 |---|---|---|
-| `clipWax` | 10 | Max WAX per buy clip (the size optimizer may choose less). |
-| `maxPositionWax` | 60 | Max WAX-value held in LEEF at once. |
+| `clipWax` | 10 | **Minimum** WAX per entry (floor). Optimizer never sizes below this. |
+| `maxPositionWax` | 60 | **Maximum** WAX-value in LEEF (ceiling). This clip + open position cannot exceed it. Size is dynamic in [clip, remaining room]. |
 | `maxImpactPct` | 3 | Reject trades above this price impact. |
 | `cooldownSec` | 60 | Base cooldown; adaptive ×0.5 (arb/echo), ×2 (DCA), ×1.5 (after a loss), floor 15s. |
 | `maxTradesHour` | 10 | Hourly trade cap. |

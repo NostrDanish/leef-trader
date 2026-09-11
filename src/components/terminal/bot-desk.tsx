@@ -575,28 +575,39 @@ function RiskCard({ strategy }: { strategy: BotStrategy }) {
         Risk &amp; sizing
       </h3>
       <p className="mb-4 text-xs text-muted-foreground">
-        Per-clip size and the hard guardrails every strategy obeys.
+        Min clip is the floor, max position the ceiling. Each entry picks a
+        size in that band (e.g. 0.1–500 → 1, 25, 4.4, 453 — never 0.09 or 501).
       </p>
       <div className="space-y-3">
         <Knob
           ready={slidersOn}
-          label="Clip size"
+          label="Min clip"
           value={risk.clipWax}
-          min={1}
-          max={250}
-          step={1}
-          format={(v) => `${v} WAX`}
-          onChange={(clipWax) => setRisk({ clipWax })}
+          min={0.1}
+          max={500}
+          step={0.1}
+          format={(v) => `${v.toFixed(1)} WAX`}
+          onChange={(clipWax) =>
+            setRisk({
+              clipWax,
+              maxPositionWax: Math.max(risk.maxPositionWax, clipWax),
+            })
+          }
         />
         <Knob
           ready={slidersOn}
           label="Max position"
           value={risk.maxPositionWax}
-          min={10}
-          max={1000}
-          step={10}
-          format={(v) => `${v} WAX`}
-          onChange={(maxPositionWax) => setRisk({ maxPositionWax })}
+          min={0.1}
+          max={2000}
+          step={0.1}
+          format={(v) => `${v.toFixed(1)} WAX`}
+          onChange={(maxPositionWax) =>
+            setRisk({
+              maxPositionWax,
+              clipWax: Math.min(risk.clipWax, maxPositionWax),
+            })
+          }
         />
         <Knob
           ready={slidersOn}
