@@ -81,7 +81,7 @@ export function Tape({ snap }: { snap: LeefSnapshot }) {
           No swaps in this snapshot. Refresh to pull the live Alcor tape.
         </p>
       ) : (
-        <div className="-mx-4 overflow-x-auto px-4 sm:mx-0 sm:px-0">
+        <div className="-mx-4 min-w-0 overflow-x-auto px-4 sm:mx-0 sm:px-0">
           <table className="w-full min-w-[680px] text-left text-xs">
             <thead>
               <tr className="border-b border-border text-subtle">

@@ -33,7 +33,7 @@ export function PriceChart({
   const data = useMemo(() => points.slice(-180), [points]);
   const xEvery = Math.max(8, Math.floor(Math.max(data.length - 1, 1) / 5));
   return (
-    <ChartFrame className="h-72 sm:h-80">
+    <ChartFrame className="h-56 sm:h-72 lg:h-80">
         <ComposedChart data={data} margin={{ top: 8, right: 8, left: 0, bottom: 0 }}>
           <defs>
             <linearGradient id="tickFill" x1="0" y1="0" x2="0" y2="1">

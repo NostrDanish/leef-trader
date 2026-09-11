@@ -59,7 +59,7 @@ export function TerminalApp() {
   }, []);
 
   return (
-    <div className="flex min-h-screen flex-col bg-bg text-fg">
+    <div className="flex min-h-screen flex-col overflow-x-hidden bg-bg text-fg">
       <TerminalHeader
         snap={snap}
         fetching={isFetching}
@@ -80,7 +80,9 @@ export function TerminalApp() {
       )}
 
       <main className="mx-auto flex w-full max-w-7xl flex-1 flex-col gap-5 px-4 py-5 pb-24 sm:px-6 md:pb-5">
-        <DesktopNav poolCount={snap.pools.length} />
+        <div className="min-w-0">
+          <DesktopNav poolCount={snap.pools.length} />
+        </div>
         <MobileNav poolCount={snap.pools.length} />
 
         {tab === "overview" && <Overview snap={snap} ranked={ranked} />}
@@ -95,7 +97,7 @@ export function TerminalApp() {
         {tab === "portfolio" && <PortfolioDesk snap={snap} />}
       </main>
 
-      <footer className="border-t border-border py-4 text-xs text-subtle">
+      <footer className="border-t border-border py-4 pb-24 text-xs text-subtle md:pb-4">
         <div className="mx-auto flex max-w-7xl flex-col items-center justify-between gap-2 px-4 sm:flex-row sm:px-6">
           <span>LEEF analytics · leefmaincorp · Alcor AMM on WAX</span>
           <div className="flex items-center gap-4">

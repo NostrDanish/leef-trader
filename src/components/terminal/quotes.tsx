@@ -83,7 +83,7 @@ export function Quotes({
       )}
 
       <div className="grid gap-6 lg:grid-cols-5">
-        <Card className="p-4 sm:p-5 lg:col-span-2">
+        <Card className="min-w-0 p-4 sm:p-5 lg:col-span-2">
           <div className="mb-4">
             <h2 className="text-base font-medium tracking-tight">Size quote</h2>
             <p className="text-xs text-muted-foreground">
@@ -213,7 +213,7 @@ export function Quotes({
           </div>
         </Card>
 
-        <div className="lg:col-span-3 flex flex-col gap-3">
+        <div className="flex min-w-0 flex-col gap-3 lg:col-span-3">
           <div className="flex items-end justify-between gap-3">
             <div>
               <h3 className="text-sm font-medium">Ranked fills</h3>

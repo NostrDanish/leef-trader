@@ -106,7 +106,7 @@ export function PortfolioDesk({ snap }: { snap: LeefSnapshot }) {
 
       <div className="grid gap-5 lg:grid-cols-5">
         {/* ------------------------------ left rail ------------------------------ */}
-        <div className="flex flex-col gap-5 lg:col-span-2">
+        <div className="flex min-w-0 flex-col gap-5 lg:col-span-2">
           <Card className="p-4 sm:p-5">
             <h3 className="mb-1 flex items-center gap-2 text-sm font-medium">
               <PieChart className="size-4 text-accent" />
@@ -256,7 +256,7 @@ export function PortfolioDesk({ snap }: { snap: LeefSnapshot }) {
         </div>
 
         {/* ------------------------------ right rail ------------------------------ */}
-        <div className="flex flex-col gap-5 lg:col-span-3">
+        <div className="flex min-w-0 flex-col gap-5 lg:col-span-3">
           <Card className="border-accent/30 bg-accent/5 p-4 sm:p-5">
             <div className="flex flex-wrap items-center justify-between gap-2">
               <div className="text-xs font-medium uppercase tracking-wider text-accent">
@@ -309,7 +309,7 @@ export function PortfolioDesk({ snap }: { snap: LeefSnapshot }) {
                 the paper wallet.
               </p>
             ) : (
-              <div className="-mx-4 overflow-x-auto px-4 sm:mx-0 sm:px-0">
+              <div className="-mx-4 min-w-0 overflow-x-auto px-4 sm:mx-0 sm:px-0">
                 <table className="w-full min-w-[560px] text-left text-xs">
                   <thead className="text-subtle">
                     <tr className="border-b border-border">

@@ -150,7 +150,7 @@ export function BotDesk({ snap }: { snap: LeefSnapshot }) {
 
       <div className="grid gap-5 lg:grid-cols-5">
         {/* ------------------------------ left rail ------------------------------ */}
-        <div className="flex flex-col gap-5 lg:col-span-2">
+        <div className="flex min-w-0 flex-col gap-5 lg:col-span-2">
           <Card className="p-4 sm:p-5">
             <div className="mb-4 flex items-center justify-between gap-3">
               <div>
@@ -284,7 +284,7 @@ export function BotDesk({ snap }: { snap: LeefSnapshot }) {
         </div>
 
         {/* ------------------------------ right rail ------------------------------ */}
-        <div className="flex flex-col gap-5 lg:col-span-3">
+        <div className="flex min-w-0 flex-col gap-5 lg:col-span-3">
           <Card className="border-accent/30 bg-accent/5 p-4 sm:p-5">
             <div className="text-xs font-medium uppercase tracking-wider text-accent">
               Next evaluation · {strat.name}
