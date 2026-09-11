@@ -6,13 +6,13 @@ import {
   ComposedChart,
   Line,
   ReferenceLine,
-  ResponsiveContainer,
   Tooltip as RTooltip,
   XAxis,
   YAxis,
 } from "recharts";
 import type { ChartPoint, IndicatorId } from "@/lib/leef/indicators";
 import { fmtNum } from "@/lib/leef/format";
+import { ChartFrame } from "./chart-frame";
 
 const tooltipStyle = {
   background: "var(--color-surface-2)",
@@ -33,8 +33,7 @@ export function PriceChart({
   const data = useMemo(() => points.slice(-180), [points]);
   const xEvery = Math.max(8, Math.floor(Math.max(data.length - 1, 1) / 5));
   return (
-    <div className="h-72 sm:h-80">
-      <ResponsiveContainer width="100%" height="100%">
+    <ChartFrame className="h-72 sm:h-80">
         <ComposedChart data={data} margin={{ top: 8, right: 8, left: 0, bottom: 0 }}>
           <defs>
             <linearGradient id="tickFill" x1="0" y1="0" x2="0" y2="1">
@@ -159,16 +158,14 @@ export function PriceChart({
             />
           )}
         </ComposedChart>
-      </ResponsiveContainer>
-    </div>
+    </ChartFrame>
   );
 }
 
 export function MacdPane({ points }: { points: ChartPoint[] }) {
   const data = useMemo(() => points.slice(-180), [points]);
   return (
-    <div className="h-28">
-      <ResponsiveContainer width="100%" height="100%">
+    <ChartFrame className="h-28">
         <ComposedChart data={data} margin={{ top: 4, right: 8, left: 0, bottom: 0 }}>
           <CartesianGrid stroke="var(--color-border)" strokeDasharray="3 6" />
           <XAxis dataKey="label" hide />
@@ -199,16 +196,14 @@ export function MacdPane({ points }: { points: ChartPoint[] }) {
             isAnimationActive={false}
           />
         </ComposedChart>
-      </ResponsiveContainer>
-    </div>
+    </ChartFrame>
   );
 }
 
 export function RsiPane({ points }: { points: ChartPoint[] }) {
   const data = useMemo(() => points.slice(-180), [points]);
   return (
-    <div className="h-24">
-      <ResponsiveContainer width="100%" height="100%">
+    <ChartFrame className="h-24">
         <ComposedChart data={data} margin={{ top: 4, right: 8, left: 0, bottom: 0 }}>
           <CartesianGrid stroke="var(--color-border)" strokeDasharray="3 6" />
           <XAxis dataKey="label" hide />
@@ -232,7 +227,6 @@ export function RsiPane({ points }: { points: ChartPoint[] }) {
             isAnimationActive={false}
           />
         </ComposedChart>
-      </ResponsiveContainer>
-    </div>
+    </ChartFrame>
   );
 }

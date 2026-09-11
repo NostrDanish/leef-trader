@@ -5,11 +5,11 @@ import {
   Bar,
   BarChart,
   CartesianGrid,
-  ResponsiveContainer,
   Tooltip as RTooltip,
   XAxis,
   YAxis,
 } from "recharts";
+import { ChartFrame } from "./chart-frame";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
@@ -215,8 +215,7 @@ function VolumeAndPrint({ snap, pool }: { snap: LeefSnapshot; pool: LeefPool }) 
       <div>
         <h3 className="text-sm font-medium">Volume windows</h3>
         <p className="mb-3 text-xs text-muted-foreground">USD notional reported by Alcor.</p>
-        <div className="h-48">
-          <ResponsiveContainer width="100%" height="100%">
+        <ChartFrame className="h-48">
             <BarChart data={windows}>
               <CartesianGrid stroke="var(--color-border)" strokeDasharray="3 6" />
               <XAxis
@@ -238,8 +237,7 @@ function VolumeAndPrint({ snap, pool }: { snap: LeefSnapshot; pool: LeefPool }) 
               />
               <Bar dataKey="usd" fill="var(--color-accent)" radius={[4, 4, 0, 0]} />
             </BarChart>
-          </ResponsiveContainer>
-        </div>
+        </ChartFrame>
       </div>
       <div>
         <h3 className="text-sm font-medium">Recent prints</h3>
@@ -249,8 +247,7 @@ function VolumeAndPrint({ snap, pool }: { snap: LeefSnapshot; pool: LeefPool }) 
             : "No recent swaps in this snapshot — showing spot only."}
         </p>
         {spark.length >= 2 ? (
-          <div className="h-48">
-            <ResponsiveContainer width="100%" height="100%">
+          <ChartFrame className="h-48">
               <AreaChart data={spark}>
                 <defs>
                   <linearGradient id="pxFill" x1="0" y1="0" x2="0" y2="1">
@@ -285,8 +282,7 @@ function VolumeAndPrint({ snap, pool }: { snap: LeefSnapshot; pool: LeefPool }) 
                   strokeWidth={2}
                 />
               </AreaChart>
-            </ResponsiveContainer>
-          </div>
+          </ChartFrame>
         ) : (
           <div className="flex h-48 items-center rounded-lg border border-border bg-bg px-4 text-sm text-muted-foreground">
             Spot {fmtNum(pool.pairPerLeef, { digits: 8 })} {pool.pair.symbol} / LEEF
@@ -328,8 +324,7 @@ function DepthCurve({ pool }: { pool: LeefPool }) {
       {data.length < 2 ? (
         <p className="text-sm text-muted-foreground">Book is too thin to chart size.</p>
       ) : (
-        <div className="h-56">
-          <ResponsiveContainer width="100%" height="100%">
+        <ChartFrame className="h-56">
             <AreaChart data={data}>
               <defs>
                 <linearGradient id="impFill" x1="0" y1="0" x2="0" y2="1">
@@ -369,8 +364,7 @@ function DepthCurve({ pool }: { pool: LeefPool }) {
                 strokeWidth={2}
               />
             </AreaChart>
-          </ResponsiveContainer>
-        </div>
+        </ChartFrame>
       )}
     </div>
   );

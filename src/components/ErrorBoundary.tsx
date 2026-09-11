@@ -47,6 +47,21 @@ export class ErrorBoundary extends Component<ErrorBoundaryProps, ErrorBoundarySt
     });
   };
 
+  handleResetAppData = () => {
+    try {
+      const keys: string[] = [];
+      for (let i = 0; i < localStorage.length; i++) {
+        const k = localStorage.key(i);
+        // Only this app's keys — the Nostr login is left untouched.
+        if (k && k.startsWith('leef-')) keys.push(k);
+      }
+      for (const k of keys) localStorage.removeItem(k);
+    } catch {
+      // storage unavailable — just reload
+    }
+    window.location.reload();
+  };
+
   render() {
     if (this.state.hasError) {
       if (this.props.fallback) {
@@ -101,6 +116,12 @@ export class ErrorBoundary extends Component<ErrorBoundaryProps, ErrorBoundarySt
                 className="flex-1 px-4 py-2 bg-secondary text-secondary-foreground rounded-md hover:bg-secondary/90 transition-colors"
               >
                 Reload page
+              </button>
+              <button
+                onClick={this.handleResetAppData}
+                className="flex-1 px-4 py-2 bg-secondary text-secondary-foreground rounded-md hover:bg-secondary/90 transition-colors"
+              >
+                Reset app data
               </button>
             </div>
           </div>

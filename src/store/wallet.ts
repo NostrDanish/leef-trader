@@ -94,6 +94,9 @@ export const useWallet = create<WalletState>()(
     }),
     {
       name: "leef-wallet-v2",
+      // Versioned: a schema bump discards stale persisted state instead of
+      // shallow-merging it over the new shape (which can crash selectors).
+      version: 1,
       partialize: (s) => ({
         paperBalances: s.paperBalances,
         liveAccountHint: s.liveAccountHint,

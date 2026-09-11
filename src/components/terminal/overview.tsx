@@ -3,11 +3,11 @@ import {
   Bar,
   BarChart,
   CartesianGrid,
-  ResponsiveContainer,
   Tooltip as RTooltip,
   XAxis,
   YAxis,
 } from "recharts";
+import { ChartFrame } from "./chart-frame";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
@@ -128,8 +128,7 @@ export function Overview({
               All pools
             </Button>
           </div>
-          <div className="h-72">
-            <ResponsiveContainer width="100%" height="100%">
+          <ChartFrame className="h-72">
               <BarChart data={chartRows} layout="vertical" margin={{ left: 8, right: 12 }}>
                 <CartesianGrid stroke="var(--color-border)" strokeDasharray="3 6" horizontal={false} />
                 <XAxis
@@ -158,8 +157,7 @@ export function Overview({
                 <Bar dataKey="tvl" fill="var(--color-accent)" radius={[0, 4, 4, 0]} barSize={10} />
                 <Bar dataKey="vol" fill="var(--color-wax)" radius={[0, 4, 4, 0]} barSize={10} />
               </BarChart>
-            </ResponsiveContainer>
-          </div>
+          </ChartFrame>
         </Card>
 
         <Card className="flex flex-col p-5">

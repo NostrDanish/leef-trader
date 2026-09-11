@@ -166,6 +166,9 @@ export const useBot = create<BotState>()(
     }),
     {
       name: "leef-bot-v1",
+      // Versioned: a schema bump discards stale persisted state instead of
+      // shallow-merging it over the new shape (which can crash selectors).
+      version: 1,
       partialize: (s) => ({
         // Never persist `running` — a reload always stops the bot (the live
         // key is in-memory only, so it could not sign anyway).

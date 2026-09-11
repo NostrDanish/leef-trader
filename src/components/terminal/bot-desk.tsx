@@ -8,7 +8,8 @@ import {
   Waves,
 } from "lucide-react";
 import { useEffect, useState } from "react";
-import { Area, AreaChart, ResponsiveContainer, YAxis } from "recharts";
+import { Area, AreaChart, YAxis } from "recharts";
+import { ChartFrame } from "./chart-frame";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
@@ -354,8 +355,7 @@ export function BotDesk({ snap }: { snap: LeefSnapshot }) {
           {b.stats.equity.length > 1 && (
             <Card className="p-4 sm:p-5">
               <h3 className="mb-3 text-sm font-medium">Session equity</h3>
-              <div className="h-28">
-                <ResponsiveContainer width="100%" height="100%">
+              <ChartFrame className="h-28">
                   <AreaChart data={b.stats.equity} margin={{ top: 4, right: 8, left: 0, bottom: 0 }}>
                     <defs>
                       <linearGradient id="eqFill" x1="0" y1="0" x2="0" y2="1">
@@ -377,8 +377,7 @@ export function BotDesk({ snap }: { snap: LeefSnapshot }) {
                       isAnimationActive={false}
                     />
                   </AreaChart>
-                </ResponsiveContainer>
-              </div>
+              </ChartFrame>
             </Card>
           )}
 
