@@ -12,6 +12,7 @@ import {
 import { getChainInfo, pushSigned } from "./chain";
 import { memoForRoute } from "./memo";
 import { hasSecret, signDigest } from "./secret";
+import { walletSession } from "./session";
 import { formatAsset, metaOf } from "./tokens";
 
 /** Alcor's on-chain AMM contract on WAX. Swaps execute as token transfers into it. */
@@ -71,7 +72,33 @@ async function signAndPushTransfers(opts: {
   permission?: string;
   transfers: { contract: string; data: TransferActionData }[];
 }): Promise<{ txid: string }> {
-  if (!hasSecret()) throw new Error("Import a private key in this tab first");
+  // External wallet (Cloud Wallet / Anchor): the wallet builds, signs and
+  // broadcasts — and prompts the user for each transaction.
+  const sess = walletSession();
+  if (sess) {
+    const actor = String(sess.actor);
+    const permission = String(sess.permission);
+    const actions = opts.transfers.map((t) => ({
+      account: t.contract,
+      name: "transfer",
+      authorization: [{ actor, permission }],
+      data: {
+        from: actor,
+        to: ALCOR_SWAP_CONTRACT,
+        quantity: t.data.quantity,
+        memo: t.data.memo,
+      },
+    }));
+    const result = await sess.transact({ actions });
+    const response = (
+      result as { response?: { transaction_id?: string; processed?: { id?: string } } }
+    ).response;
+    const txid = response?.transaction_id ?? response?.processed?.id;
+    if (!txid) throw new Error("Wallet did not return a transaction id");
+    return { txid };
+  }
+
+  if (!hasSecret()) throw new Error("Connect a wallet or import a session key first");
 
   const rawInfo = (await getChainInfo()) as ChainInfo;
   const header = transactionHeaderFromInfo(rawInfo, 90);

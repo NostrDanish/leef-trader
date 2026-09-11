@@ -25,6 +25,7 @@ export function TerminalHeader({
   const chg = stats.change24;
   const mode = useWallet((s) => s.mode);
   const account = useWallet((s) => s.account);
+  const authType = useWallet((s) => s.authType);
   const botRunning = useBot((s) => s.running);
   const setTab = useTerminal((s) => s.setTab);
   const setImportOpen = useWallet((s) => s.setImportOpen);
@@ -99,7 +100,17 @@ export function TerminalHeader({
                 mode === "live" ? (botRunning ? "leef" : "plain") : botRunning ? "accent" : "plain"
               }
             >
-              {mode === "live" ? (botRunning ? "Live bot" : "Key") : botRunning ? "Paper bot" : "Wallet"}
+              {mode === "live"
+                ? botRunning
+                  ? "Live bot"
+                  : authType === "key"
+                    ? "Key"
+                    : authType === "wcw"
+                      ? "WCW"
+                      : "Anchor"
+                : botRunning
+                  ? "Paper bot"
+                  : "Wallet"}
             </Badge>
           </Button>
           <Button

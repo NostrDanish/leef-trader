@@ -29,6 +29,7 @@ function markUsd(symbol: string, qty: number, snap: LeefSnapshot): number {
 export function WalletDesk({ snap }: { snap: LeefSnapshot }) {
   const mode = useWallet((s) => s.mode);
   const account = useWallet((s) => s.account);
+  const authType = useWallet((s) => s.authType);
   const cpuPct = useWallet((s) => s.cpuPct);
   const netPct = useWallet((s) => s.netPct);
   const hint = useWallet((s) => s.liveAccountHint);
@@ -78,18 +79,21 @@ export function WalletDesk({ snap }: { snap: LeefSnapshot }) {
         <div>
           <h2 className="text-base font-medium tracking-tight">Wallet</h2>
           <p className="text-xs text-muted-foreground">
-            Holdings vs the 30s routed book. Keys stay in this tab — never on a server.
+            Holdings vs the 30s routed book.{" "}
+            {authType === "key" || !authType
+              ? "Keys stay in this tab — never on a server."
+              : "Signed by your wallet — keys never touch this app."}
           </p>
         </div>
         <div className="flex flex-wrap gap-2">
           <Button variant="outline" size="sm" onClick={() => setImportOpen(true)}>
             <KeyRound className="size-3.5" />
-            Import key
+            Connect wallet
           </Button>
           {mode === "live" ? (
             <Button variant="danger" size="sm" onClick={forgetLive}>
               <Trash2 className="size-3.5" />
-              Forget key
+              Disconnect
             </Button>
           ) : (
             <Button variant="secondary" size="sm" onClick={resetPaper}>
@@ -105,10 +109,16 @@ export function WalletDesk({ snap }: { snap: LeefSnapshot }) {
           <div className="mt-1 font-mono text-lg">{account}</div>
           <div className="mt-1 flex flex-wrap gap-1.5">
             <Badge variant={mode === "live" ? "leef" : "warn"}>
-              {mode === "live" ? "Live key" : "Paper"}
+              {mode === "live"
+                ? authType === "key"
+                  ? "Live key"
+                  : authType === "wcw"
+                    ? "Cloud Wallet"
+                    : "Anchor"
+                : "Paper"}
             </Badge>
             {hint && mode === "paper" && (
-              <Badge variant="plain">Re-import for {hint}</Badge>
+              <Badge variant="plain">Reconnect for {hint}</Badge>
             )}
           </div>
         </Card>
@@ -206,8 +216,9 @@ export function WalletDesk({ snap }: { snap: LeefSnapshot }) {
         </div>
         {mode === "paper" && (
           <p className="mt-3 text-xs text-subtle">
-            Paper starts with a simulated book so you can arm autoswap without a key.
-            Import a live key when you want holdings and broadcasts from chain.
+            Paper starts with a simulated book so you can run the bot and the
+            rebalancer risk-free. Connect Cloud Wallet / Anchor (sign per
+            trade) or import a session key (fully automatic) to go live.
           </p>
         )}
       </Card>

@@ -11,8 +11,10 @@ import {
   Wallet,
 } from "lucide-react";
 import { useEffect, useState } from "react";
+import { restoreWallet } from "@/lib/wallet/session";
 import { cn } from "@/lib/utils";
 import { type TabId, useTerminal } from "@/store/terminal";
+import { useWallet } from "@/store/wallet";
 import { BotDesk } from "./bot-desk";
 import { Dashboard } from "./dashboard";
 import { TerminalHeader } from "./header";
@@ -55,6 +57,21 @@ export function TerminalApp() {
   const tab = useTerminal((s) => s.tab);
   const setTab = useTerminal((s) => s.setTab);
   const [countdown, setCountdown] = useState(30);
+
+  // Restore an external wallet session (Cloud Wallet / Anchor) on load.
+  useEffect(() => {
+    const authType = useWallet.getState().authType;
+    if (authType !== "wcw" && authType !== "anchor") return;
+    let cancelled = false;
+    void restoreWallet().then((id) => {
+      if (cancelled) return;
+      if (id) useWallet.getState().setWalletSession(id);
+      else useWallet.setState({ authType: null });
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   useEffect(() => {
     setCountdown(30);

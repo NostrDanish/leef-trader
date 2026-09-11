@@ -24,6 +24,7 @@ import {
 import { fmtNum, fmtUsd } from "@/lib/leef/format";
 import type { LeefSnapshot } from "@/lib/leef/types";
 import { hasSecret } from "@/lib/wallet/secret";
+import { hasWalletSession } from "@/lib/wallet/session";
 import { cn } from "@/lib/utils";
 import { useBot, type BotDecisionLog } from "@/store/bot";
 import { useWallet } from "@/store/wallet";
@@ -46,6 +47,7 @@ export function BotDesk({ snap }: { snap: LeefSnapshot }) {
   const b = useBot();
   const mode = useWallet((s) => s.mode);
   const account = useWallet((s) => s.account);
+  const authType = useWallet((s) => s.authType);
   const setImportOpen = useWallet((s) => s.setImportOpen);
   const paperBalances = useWallet((s) => s.paperBalances);
   const liveBalances = useWallet((s) => s.liveBalances);
@@ -54,7 +56,7 @@ export function BotDesk({ snap }: { snap: LeefSnapshot }) {
   const [confirmForce, setConfirmForce] = useState<"buy" | "sell" | null>(null);
   const [busyForce, setBusyForce] = useState(false);
 
-  const liveReady = mode === "live" && hasSecret();
+  const liveReady = mode === "live" && (hasSecret() || hasWalletSession());
   const liveBook = snap.source === "live";
   const coolLeft = Math.max(0, Math.ceil((b.cooldownUntil - Date.now()) / 1000));
   const warmup = Math.min(b.series.length, BOT_WARMUP_POINTS);
@@ -132,7 +134,11 @@ export function BotDesk({ snap }: { snap: LeefSnapshot }) {
         <div className="flex items-start gap-2 rounded-lg border border-sell/30 bg-sell/10 px-3 py-2 text-xs text-sell">
           <ShieldAlert className="mt-0.5 size-3.5 shrink-0" />
           Live bot is spending real tokens from {account} via swap.alcor on the
-          WAX blockchain. Stops and goals are on; you can stop anytime.
+          WAX blockchain.{" "}
+          {authType === "key"
+            ? "The in-tab key signs automatically."
+            : "Your wallet will ask you to sign each trade (Cloud Wallet can whitelist it)."}
+          {" "}Stops and goals are on; you can stop anytime.
         </div>
       )}
       {!liveBook && (
@@ -197,7 +203,7 @@ export function BotDesk({ snap }: { snap: LeefSnapshot }) {
                 className="mt-2 w-full"
                 onClick={() => setImportOpen(true)}
               >
-                Import key for live trading
+                Connect wallet for live trading
               </Button>
             )}
             <div className="mt-3 flex flex-wrap items-center justify-between gap-2 text-xs text-subtle">

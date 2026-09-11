@@ -2,7 +2,6 @@ import { useEffect, useRef } from "react";
 import { evaluateBot, type Position } from "@/lib/leef/bot-engine";
 import { fmtNum } from "@/lib/leef/format";
 import type { LeefSnapshot } from "@/lib/leef/types";
-import { hasSecret } from "@/lib/wallet/secret";
 import { signAndPushArb, signAndPushSwap } from "@/lib/wallet/sign";
 import { useBot } from "@/store/bot";
 import { useWallet } from "@/store/wallet";
@@ -63,7 +62,7 @@ async function runBotOnceInner(
     force: opts?.force ?? null,
   });
 
-  const live = w.mode === "live" && hasSecret();
+  const live = w.canSign();
   const mode: "paper" | "live" = live ? "live" : "paper";
 
   // A position opened live can't be managed in paper mode (and vice versa).

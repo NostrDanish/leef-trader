@@ -7,7 +7,6 @@ import {
 } from "@/lib/leef/rebalance";
 import { fmtUsd } from "@/lib/leef/format";
 import type { LeefSnapshot } from "@/lib/leef/types";
-import { hasSecret } from "@/lib/wallet/secret";
 import { signAndPushBatch, type BatchLeg } from "@/lib/wallet/sign";
 import { usePortfolio } from "@/store/portfolio";
 import { useWallet } from "@/store/wallet";
@@ -26,7 +25,7 @@ export async function runRebalancer(snap: LeefSnapshot, opts?: { force?: boolean
   try {
     const p = usePortfolio.getState();
     const w = useWallet.getState();
-    const mode: "paper" | "live" = w.mode === "live" && hasSecret() ? "live" : "paper";
+    const mode: "paper" | "live" = w.canSign() ? "live" : "paper";
 
     if (!p.running && !opts?.force) return;
     if (snap.source !== "live") {

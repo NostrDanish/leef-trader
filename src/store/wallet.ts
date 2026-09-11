@@ -1,6 +1,7 @@
 import { create } from "zustand";
 import { persist } from "zustand/middleware";
 import { forgetSecret, hasSecret } from "@/lib/wallet/secret";
+import { hasWalletSession, logoutWallet, type WalletKind } from "@/lib/wallet/session";
 
 const PAPER_BALANCES: Record<string, number> = {
   WAX: 250,
@@ -18,6 +19,8 @@ type WalletState = {
   account: string;
   /** On-chain permission the session key authorizes (usually "active"). */
   permission: string;
+  /** How the live session signs: in-tab key, or an external wallet. */
+  authType: "key" | WalletKind | null;
   publicKey: string | null;
   liveAccountHint: string | null;
   paperBalances: Record<string, number>;
@@ -28,6 +31,7 @@ type WalletState = {
   setImportOpen: (v: boolean) => void;
   setAccount: (name: string) => void;
   setLiveSession: (p: { account: string; publicKey: string; permission?: string }) => void;
+  setWalletSession: (p: { account: string; permission: string; kind: WalletKind }) => void;
   setLiveBalances: (
     bal: Record<string, number>,
     res?: { cpuPct: number | null; netPct: number | null },
@@ -37,6 +41,8 @@ type WalletState = {
   forgetLive: () => void;
   balances: () => Record<string, number>;
   hasKey: () => boolean;
+  /** Live and able to sign — via session key or an external wallet. */
+  canSign: () => boolean;
 };
 
 export const useWallet = create<WalletState>()(
@@ -45,6 +51,7 @@ export const useWallet = create<WalletState>()(
       mode: "paper",
       account: "paper.leef",
       permission: "active",
+      authType: null,
       publicKey: null,
       liveAccountHint: null,
       paperBalances: { ...PAPER_BALANCES },
@@ -59,7 +66,17 @@ export const useWallet = create<WalletState>()(
           mode: "live",
           account,
           permission: permission ?? "active",
+          authType: "key",
           publicKey,
+          liveAccountHint: account,
+        }),
+      setWalletSession: ({ account, permission, kind }) =>
+        set({
+          mode: "live",
+          account,
+          permission,
+          authType: kind,
+          publicKey: null,
           liveAccountHint: account,
         }),
       setLiveBalances: (liveBalances, res) =>
@@ -80,10 +97,12 @@ export const useWallet = create<WalletState>()(
         }),
       forgetLive: () => {
         forgetSecret();
+        if (hasWalletSession()) void logoutWallet();
         set({
           mode: "paper",
           account: "paper.leef",
           permission: "active",
+          authType: null,
           publicKey: null,
           liveBalances: {},
           cpuPct: null,
@@ -95,6 +114,12 @@ export const useWallet = create<WalletState>()(
         return s.mode === "live" ? s.liveBalances : s.paperBalances;
       },
       hasKey: () => get().mode === "live" && hasSecret(),
+      canSign: () => {
+        const s = get();
+        if (s.mode !== "live") return false;
+        if (s.authType === "anchor" || s.authType === "wcw") return hasWalletSession();
+        return hasSecret();
+      },
     }),
     {
       name: "leef-wallet-v2",
@@ -104,10 +129,12 @@ export const useWallet = create<WalletState>()(
       migrate: () => ({
         paperBalances: { ...PAPER_BALANCES },
         liveAccountHint: null,
+        authType: null,
       }),
       partialize: (s) => ({
         paperBalances: s.paperBalances,
         liveAccountHint: s.liveAccountHint,
+        authType: s.authType,
       }),
     },
   ),

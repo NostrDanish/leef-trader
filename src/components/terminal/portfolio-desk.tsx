@@ -22,6 +22,7 @@ import { fmtNum, fmtUsd } from "@/lib/leef/format";
 import type { LeefSnapshot } from "@/lib/leef/types";
 import { findToken } from "@/lib/leef/universe";
 import { hasSecret } from "@/lib/wallet/secret";
+import { hasWalletSession } from "@/lib/wallet/session";
 import { cn } from "@/lib/utils";
 import { usePortfolio } from "@/store/portfolio";
 import { useWallet } from "@/store/wallet";
@@ -38,7 +39,7 @@ export function PortfolioDesk({ snap }: { snap: LeefSnapshot }) {
   const [confirmLive, setConfirmLive] = useState(false);
   const [sweeping, setSweeping] = useState(false);
 
-  const liveReady = mode === "live" && hasSecret();
+  const liveReady = mode === "live" && (hasSecret() || hasWalletSession());
   const liveBook = snap.source === "live";
 
   const { holdings, unknown } = holdingsFromBalances(balances, snap.universe);

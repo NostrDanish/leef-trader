@@ -1,7 +1,6 @@
 import { useEffect } from "react";
 import type { LeefSnapshot } from "@/lib/leef/types";
 import { accountResources, fetchAllBalances } from "@/lib/wallet/chain";
-import { hasSecret } from "@/lib/wallet/secret";
 import { tokenCatalog } from "@/lib/wallet/tokens";
 import { useWallet } from "@/store/wallet";
 
@@ -14,9 +13,10 @@ export function useWalletSync(snap: LeefSnapshot) {
   const fetchedAt = snap.fetchedAt;
   const mode = useWallet((s) => s.mode);
   const account = useWallet((s) => s.account);
+  const authType = useWallet((s) => s.authType);
 
   useEffect(() => {
-    if (mode !== "live" || !account || !hasSecret()) return;
+    if (mode !== "live" || !account || !useWallet.getState().canSign()) return;
     let cancelled = false;
     const known = tokenCatalog(snap).slice(0, 12);
     void (async () => {
@@ -52,5 +52,5 @@ export function useWalletSync(snap: LeefSnapshot) {
     return () => {
       cancelled = true;
     };
-  }, [mode, account, fetchedAt, snap]);
+  }, [mode, account, authType, fetchedAt, snap]);
 }
