@@ -97,7 +97,7 @@ export function Dashboard({ snap }: { snap: LeefSnapshot }) {
       </div>
 
       <div className="grid gap-6 lg:grid-cols-3">
-        <Card className="p-5 lg:col-span-2">
+        <Card className="p-4 sm:p-5 lg:col-span-2">
           <VolumeAndPrint snap={snap} pool={pool} />
         </Card>
         <Card className="flex flex-col p-5">
@@ -114,7 +114,7 @@ export function Dashboard({ snap }: { snap: LeefSnapshot }) {
         </Card>
       </div>
 
-      <Card className="p-5">
+      <Card className="p-4 sm:p-5">
         <DepthCurve pool={pool} />
       </Card>
     </div>

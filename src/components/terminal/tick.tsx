@@ -333,7 +333,7 @@ export function TickDesk({ snap, tick }: { snap: LeefSnapshot; tick: LiveTickSta
       </Card>
 
       <div className="grid gap-5 lg:grid-cols-5">
-        <Card className="p-5 lg:col-span-2">
+        <Card className="p-4 sm:p-5 lg:col-span-2">
           <h3 className="mb-1 text-sm font-medium">Signal engines</h3>
           <p className="mb-4 text-xs text-muted-foreground">
             Toggle which models vote. The blend is the average score, scaled by sensitivity.
@@ -389,7 +389,7 @@ export function TickDesk({ snap, tick }: { snap: LeefSnapshot; tick: LiveTickSta
           </div>
         </Card>
 
-        <Card className="p-5 lg:col-span-3">
+        <Card className="p-4 sm:p-5 lg:col-span-3">
           <div className="mb-4 flex items-center gap-2">
             <SlidersHorizontal className="size-4 text-accent" />
             <h3 className="text-sm font-medium">Customize ticker</h3>

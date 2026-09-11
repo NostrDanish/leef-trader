@@ -79,7 +79,7 @@ export function Quotes({
       )}
 
       <div className="grid gap-6 lg:grid-cols-5">
-        <Card className="p-5 lg:col-span-2">
+        <Card className="p-4 sm:p-5 lg:col-span-2">
           <div className="mb-4">
             <h2 className="text-base font-medium tracking-tight">Size quote</h2>
             <p className="text-xs text-muted-foreground">
@@ -137,7 +137,7 @@ export function Quotes({
             <div className="rounded-lg border border-border bg-bg p-3">
               <div className="mb-1 text-xs text-muted-foreground">Best fill</div>
               <div className="flex items-center gap-2">
-                <div className="h-12 flex-1 font-mono text-2xl font-medium tabular-nums text-leef">
+                <div className="h-12 min-w-0 flex-1 overflow-x-auto font-mono text-xl font-medium tabular-nums text-leef sm:text-2xl">
                   {best ? fmtNum(best.amountOut, { compact: true }) : "0.00"}
                 </div>
                 <TokenSelect

@@ -151,7 +151,7 @@ export function BotDesk({ snap }: { snap: LeefSnapshot }) {
       <div className="grid gap-5 lg:grid-cols-5">
         {/* ------------------------------ left rail ------------------------------ */}
         <div className="flex flex-col gap-5 lg:col-span-2">
-          <Card className="p-5">
+          <Card className="p-4 sm:p-5">
             <div className="mb-4 flex items-center justify-between gap-3">
               <div>
                 <h3 className="text-sm font-medium">Engine</h3>
@@ -239,7 +239,7 @@ export function BotDesk({ snap }: { snap: LeefSnapshot }) {
             </div>
           </Card>
 
-          <Card className="p-5">
+          <Card className="p-4 sm:p-5">
             <h3 className="mb-1 flex items-center gap-2 text-sm font-medium">
               <BrainCircuit className="size-4 text-accent" />
               Strategy
@@ -270,7 +270,9 @@ export function BotDesk({ snap }: { snap: LeefSnapshot }) {
                       </span>
                       <span className="block text-xs text-subtle">{s.tagline}</span>
                     </span>
-                    <Badge variant={on ? "accent" : "plain"}>{s.bestFor}</Badge>
+                    <span className="hidden min-[420px]:inline-flex">
+                      <Badge variant={on ? "accent" : "plain"}>{s.bestFor}</Badge>
+                    </span>
                   </button>
                 );
               })}
@@ -505,7 +507,7 @@ function GoalsCard() {
   const goals = useBot((s) => s.goals);
   const setGoals = useBot((s) => s.setGoals);
   return (
-    <Card className="p-5">
+    <Card className="p-4 sm:p-5">
       <h3 className="mb-1 text-sm font-medium">Goals &amp; guards</h3>
       <p className="mb-4 text-xs text-muted-foreground">
         Enforced on every position, any strategy. 0 disables the session guards.
@@ -567,7 +569,7 @@ function RiskCard({ strategy }: { strategy: BotStrategy }) {
   const [slidersOn, setSlidersOn] = useState(false);
   useEffect(() => setSlidersOn(true), []);
   return (
-    <Card className="p-5">
+    <Card className="p-4 sm:p-5">
       <h3 className="mb-1 flex items-center gap-2 text-sm font-medium">
         <Waves className="size-4 text-accent" />
         Risk &amp; sizing

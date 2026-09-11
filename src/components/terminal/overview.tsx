@@ -116,7 +116,7 @@ export function Overview({
       </div>
 
       <div className="grid gap-5 lg:grid-cols-3">
-        <Card className="p-5 lg:col-span-2">
+        <Card className="p-4 sm:p-5 lg:col-span-2">
           <div className="mb-4 flex items-start justify-between gap-3">
             <div>
               <h2 className="text-sm font-medium">Liquidity mix</h2>
@@ -202,7 +202,7 @@ export function Overview({
       </div>
 
       <div className="grid gap-5 lg:grid-cols-2">
-        <Card className="p-5">
+        <Card className="p-4 sm:p-5">
           <div className="mb-4">
             <h2 className="text-sm font-medium">WAX books · 1M LEEF</h2>
             <p className="text-xs text-muted-foreground">
@@ -254,7 +254,7 @@ export function Overview({
           )}
         </Card>
 
-        <Card className="p-5">
+        <Card className="p-4 sm:p-5">
           <div className="mb-4">
             <h2 className="text-sm font-medium">24h movers</h2>
             <p className="text-xs text-muted-foreground">Largest Alcor 24h change among listed books.</p>

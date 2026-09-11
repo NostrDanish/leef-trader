@@ -107,7 +107,7 @@ export function PortfolioDesk({ snap }: { snap: LeefSnapshot }) {
       <div className="grid gap-5 lg:grid-cols-5">
         {/* ------------------------------ left rail ------------------------------ */}
         <div className="flex flex-col gap-5 lg:col-span-2">
-          <Card className="p-5">
+          <Card className="p-4 sm:p-5">
             <h3 className="mb-1 flex items-center gap-2 text-sm font-medium">
               <PieChart className="size-4 text-accent" />
               Priority ladder
@@ -142,7 +142,7 @@ export function PortfolioDesk({ snap }: { snap: LeefSnapshot }) {
                         aria-label="Move up"
                         disabled={i === 0 || p.running}
                         onClick={() => p.moveLadder(i, -1)}
-                        className="inline-flex size-8 items-center justify-center rounded-md text-muted-foreground hover:bg-surface-2 hover:text-foreground disabled:opacity-30"
+                        className="inline-flex size-7 items-center justify-center rounded-md text-muted-foreground hover:bg-surface-2 hover:text-foreground disabled:opacity-30"
                       >
                         <ArrowUp className="size-3.5" />
                       </button>
@@ -151,7 +151,7 @@ export function PortfolioDesk({ snap }: { snap: LeefSnapshot }) {
                         aria-label="Move down"
                         disabled={i === p.ladder.length - 1 || p.running}
                         onClick={() => p.moveLadder(i, 1)}
-                        className="inline-flex size-8 items-center justify-center rounded-md text-muted-foreground hover:bg-surface-2 hover:text-foreground disabled:opacity-30"
+                        className="inline-flex size-7 items-center justify-center rounded-md text-muted-foreground hover:bg-surface-2 hover:text-foreground disabled:opacity-30"
                       >
                         <ArrowDown className="size-3.5" />
                       </button>
@@ -160,7 +160,7 @@ export function PortfolioDesk({ snap }: { snap: LeefSnapshot }) {
                         aria-label="Remove"
                         disabled={p.ladder.length <= 1 || p.running}
                         onClick={() => p.removeFromLadder(id)}
-                        className="inline-flex size-8 items-center justify-center rounded-md text-muted-foreground hover:bg-sell/10 hover:text-sell disabled:opacity-30"
+                        className="inline-flex size-7 items-center justify-center rounded-md text-muted-foreground hover:bg-sell/10 hover:text-sell disabled:opacity-30"
                       >
                         <Trash2 className="size-3.5" />
                       </button>
@@ -172,7 +172,7 @@ export function PortfolioDesk({ snap }: { snap: LeefSnapshot }) {
             <AddToken p={p} snap={snap} />
           </Card>
 
-          <Card className="p-5">
+          <Card className="p-4 sm:p-5">
             <h3 className="mb-1 text-sm font-medium">Engine</h3>
             <p className="mb-4 text-xs text-muted-foreground">{p.lastPlanNote}</p>
             {p.running ? (
@@ -282,7 +282,7 @@ export function PortfolioDesk({ snap }: { snap: LeefSnapshot }) {
             ) : (
               <div className="mt-2 flex flex-col gap-1.5">
                 {preview.legs.map((l, i) => (
-                  <div key={i} className="flex items-center gap-2 text-xs">
+                  <div key={i} className="flex flex-wrap items-center gap-2 text-xs">
                     <Badge variant={l.kind === "dust" ? "wax" : "accent"}>{l.kind}</Badge>
                     <span className="font-mono tabular-nums">
                       {fmtNum(l.amountIn, { compact: true })} {l.from.symbol}

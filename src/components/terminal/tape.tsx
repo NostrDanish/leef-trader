@@ -22,7 +22,7 @@ export function Tape({ snap }: { snap: LeefSnapshot }) {
   const sellUsd = rows.filter((t) => t.type === "sell").reduce((s, t) => s + t.usdVolume, 0);
 
   return (
-    <Card className="p-5">
+    <Card className="p-4 sm:p-5">
       <div className="mb-4 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
         <div>
           <h2 className="text-base font-medium">Tape</h2>

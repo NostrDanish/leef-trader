@@ -106,8 +106,11 @@ export function TerminalApp() {
       )}
 
       <main className="mx-auto flex w-full max-w-7xl flex-1 flex-col gap-5 px-4 py-5 sm:px-6">
-        <div className="flex items-center justify-between gap-3 border-b border-border pb-3">
-          <nav className="flex gap-1 overflow-x-auto" aria-label="Sections">
+        <div className="flex items-center justify-between gap-3 border-b border-border">
+          <nav
+            className="-mx-4 flex gap-1 overflow-x-auto px-4 pb-3 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden sm:mx-0 sm:px-0"
+            aria-label="Sections"
+          >
             {TABS.map((t) => {
               const Icon = t.icon;
               const active = tab === t.id;

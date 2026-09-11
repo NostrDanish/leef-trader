@@ -35,7 +35,7 @@ export function IlCalc({ snap }: { snap: LeefSnapshot }) {
   );
 
   return (
-    <Card className="p-5 sm:p-6">
+    <Card className="p-4 sm:p-6">
       <h2 className="text-base font-medium tracking-tight">Impermanent loss</h2>
       <p className="mb-6 text-xs text-muted-foreground">
         50/50 book using {pool ? `pool #${pool.id} LEEF / ${pool.pair.symbol}` : "combined TVL"} (
