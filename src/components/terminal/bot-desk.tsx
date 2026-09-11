@@ -4,6 +4,7 @@ import {
   CircleStop,
   Crosshair,
   RotateCcw,
+  ScanSearch,
   ShieldAlert,
   Waves,
 } from "lucide-react";
@@ -28,6 +29,7 @@ import { hasWalletSession } from "@/lib/wallet/session";
 import { cn } from "@/lib/utils";
 import { useBot, type BotDecisionLog } from "@/store/bot";
 import { useWallet } from "@/store/wallet";
+import { listQuoteTokens, suggestBotSettings, type AdvisorSuggestion } from "@/lib/leef/advisor";
 import { runBotOnce } from "./use-bot-loop";
 
 const KIND_VARIANT: Record<
@@ -81,6 +83,7 @@ export function BotDesk({ snap }: { snap: LeefSnapshot }) {
     tradesThisHour: b.tradesThisHour,
     sessionRealizedUsd: b.stats.realizedUsd,
     sessionStartEquityUsd: b.stats.startEquityUsd,
+    quote: b.quote,
   });
 
   function onStart() {
@@ -280,6 +283,7 @@ export function BotDesk({ snap }: { snap: LeefSnapshot }) {
           </Card>
 
           <GoalsCard />
+          <AdvisorCard snap={snap} />
           <RiskCard strategy={b.strategy} />
         </div>
 
@@ -293,7 +297,7 @@ export function BotDesk({ snap }: { snap: LeefSnapshot }) {
               {preview.kind === "buy" && (
                 <>
                   <Crosshair className="mr-1 inline size-3.5 text-leef" />
-                  Would buy with {fmtNum(preview.amountWax)} WAX on {preview.route.label} ·{" "}
+                  Would buy with {fmtNum(preview.amountWax)} {b.quote} on {preview.route.label} ·{" "}
                   {fmtNum(preview.route.amountOut, { compact: true })} LEEF · impact{" "}
                   {(preview.route.priceImpact * 100).toFixed(2)}%
                 </>
@@ -302,7 +306,7 @@ export function BotDesk({ snap }: { snap: LeefSnapshot }) {
                 <>
                   <Crosshair className="mr-1 inline size-3.5 text-sell" />
                   Would sell {fmtNum(preview.amountLeef, { compact: true })} LEEF on{" "}
-                  {preview.route.label} · {fmtNum(preview.route.amountOut, { digits: 2 })} WAX
+                  {preview.route.label} ·                   {fmtNum(preview.route.amountOut, { digits: 2 })} {b.quote}
                 </>
               )}
               {preview.kind === "arb" && (
@@ -500,6 +504,102 @@ function PositionPnl({ snap }: { snap: LeefSnapshot }) {
         entry ${(position.entryUsd * 1e6).toFixed(4)}/1M · {heldMin}m · {position.mode}
       </div>
     </>
+  );
+}
+
+function AdvisorCard({ snap }: { snap: LeefSnapshot }) {
+  const quote = useBot((s) => s.quote);
+  const setQuote = useBot((s) => s.setQuote);
+  const strategy = useBot((s) => s.strategy);
+  const setRisk = useBot((s) => s.setRisk);
+  const running = useBot((s) => s.running);
+  const balances = useWallet((s) => s.balances());
+  const cpuPct = useWallet((s) => s.cpuPct);
+  const netPct = useWallet((s) => s.netPct);
+  const ramPct = useWallet((s) => s.ramPct);
+  const [scan, setScan] = useState<AdvisorSuggestion | null>(null);
+
+  const quotes = listQuoteTokens(snap);
+
+  function runScan() {
+    setScan(
+      suggestBotSettings({
+        snap,
+        balances,
+        quote,
+        strategy,
+        cpuPct,
+        netPct,
+        ramPct,
+      }),
+    );
+  }
+
+  function applyScan() {
+    if (!scan) return;
+    setRisk(scan.risk);
+    setScan(null);
+  }
+
+  return (
+    <Card className="p-4 sm:p-5">
+      <h3 className="mb-1 flex items-center gap-2 text-sm font-medium">
+        <ScanSearch className="size-4 text-accent" />
+        Pair & wallet scan
+      </h3>
+      <p className="mb-3 text-xs text-muted-foreground">
+        Trade LEEF against WAX, WAXUSDC, PARAUSD, or another quote. Scan
+        suggests min clip, max position, and cooldown from this wallet and
+        CPU/NET/RAM — you apply or ignore.
+      </p>
+      <label className="mb-3 block text-xs text-muted-foreground">
+        Quote token
+        <select
+          className="mt-1 w-full rounded-md border border-border bg-background px-2 py-1.5 text-sm text-foreground"
+          value={quote}
+          disabled={running}
+          onChange={(e) => {
+            setQuote(e.target.value);
+            setScan(null);
+          }}
+        >
+          {quotes.map((q) => (
+            <option key={q} value={q}>
+              LEEF / {q}
+            </option>
+          ))}
+        </select>
+      </label>
+      <div className="flex flex-wrap gap-2">
+        <Button type="button" variant="outline" size="sm" onClick={runScan} disabled={running}>
+          Scan wallet & market
+        </Button>
+        {scan && (
+          <Button type="button" variant="leef" size="sm" onClick={applyScan} disabled={running}>
+            Apply suggestions
+          </Button>
+        )}
+      </div>
+      {scan && (
+        <div className="mt-3 space-y-1.5 text-xs">
+          {scan.why.map((w) => (
+            <p key={w.label}>
+              <span className="text-muted-foreground">{w.label}: </span>
+              {w.detail}
+            </p>
+          ))}
+          <p className="text-subtle">
+            Suggested cooldown {scan.risk.cooldownSec}s · {scan.risk.maxTradesHour}/hour · impact{" "}
+            {scan.risk.maxImpactPct}%
+          </p>
+          {scan.warnings.map((w) => (
+            <p key={w} className="text-warn">
+              {w}
+            </p>
+          ))}
+        </div>
+      )}
+    </Card>
   );
 }
 

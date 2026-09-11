@@ -1,6 +1,6 @@
 import { backedPools, isLeefToken, isWaxToken, quoteConstantProduct } from "./amm";
 import { bestExecutionRoute } from "./route-optimizer";
-import { realizedVolPerSec } from "./cost-model";
+import { realizedVolPerSec, usdPriceOf } from "./cost-model";
 import {
   decorate,
   scoreSignal,
@@ -246,6 +246,8 @@ export type BotInput = {
   tradesThisHour: number;
   sessionRealizedUsd: number;
   sessionStartEquityUsd: number;
+  /** Quote token bought with / sold into (WAX, WAXUSDC, USDT, …). Default WAX. */
+  quote?: string;
   /** Force a manual trade, bypassing strategy entry/exit logic. */
   force?: "buy" | "sell" | null;
 };
@@ -331,14 +333,22 @@ export function adaptiveCooldownSec(
   return Math.max(15, Math.round(baseSec * factor));
 }
 
-function bestBuyRoute(snap: LeefSnapshot, amountWax: number): SwapRoute | null {
-  if (amountWax <= 0) return null;
-  return bestExecutionRoute(snap.pools, snap.aux, amountWax, "WAX", "LEEF");
+function bestBuyRoute(
+  snap: LeefSnapshot,
+  amountIn: number,
+  quote = "WAX",
+): SwapRoute | null {
+  if (amountIn <= 0) return null;
+  return bestExecutionRoute(snap.pools, snap.aux, amountIn, quote, "LEEF");
 }
 
-function bestSellRoute(snap: LeefSnapshot, amountLeef: number): SwapRoute | null {
+function bestSellRoute(
+  snap: LeefSnapshot,
+  amountLeef: number,
+  quote = "WAX",
+): SwapRoute | null {
   if (amountLeef <= 0) return null;
-  return bestExecutionRoute(snap.pools, snap.aux, amountLeef, "LEEF", "WAX");
+  return bestExecutionRoute(snap.pools, snap.aux, amountLeef, "LEEF", quote);
 }
 
 /* ------------------------------------------------------------------ */
@@ -461,12 +471,16 @@ function hold(reason: string): Decision {
 export function evaluateBot(input: BotInput): Decision {
   const { snap, risk, goals, position, strategy } = input;
   const now = input.now;
+  const quote = (input.quote ?? "WAX").toUpperCase();
   const leefUsd = snap.leefUsd;
   const waxUsd = snap.waxUsd;
 
   if (!input.running && !input.force) return hold("Bot is stopped");
   if (snap.source !== "live") return hold("Book is stale — waiting for live Alcor data");
   if (!(leefUsd > 0) || !(waxUsd > 0)) return hold("Waiting for a priced book");
+  if (quote !== "WAX" && !(usdPriceOf(quote, snap) > 0)) {
+    return hold(`No USD mark for ${quote} — pick another quote token`);
+  }
 
   // Quote freshness: never act on an obsolete book. The snapshot cadence is
   // 30s; the default 45s budget tolerates exactly one missed pull.
@@ -512,7 +526,7 @@ export function evaluateBot(input: BotInput): Decision {
   if (input.force === "buy") {
     const held = input.position?.entryWax ?? 0;
     const maxWax = Math.min(
-      input.balances.WAX ?? 0,
+      input.balances[quote] ?? 0,
       Math.max(0, risk.maxPositionWax - held),
     );
     if (maxWax + 1e-12 < risk.clipWax) {
@@ -521,7 +535,7 @@ export function evaluateBot(input: BotInput): Decision {
     const minWax = risk.clipWax;
     const sized = optimizeEntrySize({
       snap,
-      tokenIn: "WAX",
+      tokenIn: quote,
       tokenOut: "LEEF",
       expectedGrossPct: Math.max(goals.takeProfitPct, 0.5),
       minNetEdgePct: 0,
@@ -529,14 +543,14 @@ export function evaluateBot(input: BotInput): Decision {
       maxIn: maxWax,
       volPerSec: realizedVolPerSec(input.series),
     });
-    const route = sized?.best.route ?? bestBuyRoute(snap, minWax);
+    const route = sized?.best.route ?? bestBuyRoute(snap, minWax, quote);
     if (!route) return hold("No executable route in the clip–max band");
     const amountWax = sized?.best.amountIn ?? minWax;
     return {
       kind: "buy",
       amountWax,
       route,
-      reason: `Manual buy · ${amountWax.toFixed(2)} WAX (clip ${risk.clipWax}–${risk.maxPositionWax}) · ${route.label}`,
+      reason: `Manual buy · ${amountWax.toFixed(2)} ${quote} (clip ${risk.clipWax}–${risk.maxPositionWax}) · ${route.label}`,
       confidence: signal.confidence,
       expectedGrossPct: Math.max(goals.takeProfitPct, 0.5),
       edge: sized
@@ -551,13 +565,13 @@ export function evaluateBot(input: BotInput): Decision {
   /* ----------- position-independent scans (spread arb / volume) ---- */
 
   if (strategy === "spread" || strategy === "volume") {
-    const waxAvail = Math.min(risk.maxPositionWax, input.balances.WAX ?? 0);
+    const waxAvail = Math.min(risk.maxPositionWax, input.balances[quote] ?? 0);
     const isVolume = strategy === "volume";
     let arbDecision: Decision | null = null;
     let scanReason: string;
 
     if (waxAvail + 1e-12 < risk.clipWax) {
-      scanReason = "Not enough WAX for the min clip";
+      scanReason = `Not enough ${quote} for the min clip`;
     } else if (isVolume) {
       // Echo: round-trip allowed, gated by the loss budget (negative profit gate).
       const plan = findBestArb(snap, waxAvail, -risk.maxEchoLossPct, true, risk.clipWax);
@@ -599,7 +613,7 @@ export function evaluateBot(input: BotInput): Decision {
 
   /* ------------------- entry sizing (NetEdgeEngine) ---------------- */
 
-  const waxAvail = input.balances.WAX ?? 0;
+  const waxAvail = input.balances[quote] ?? 0;
   const heldWax = input.position?.entryWax ?? 0;
   const roomWax = Math.max(0, risk.maxPositionWax - heldWax);
   const maxWax = Math.min(waxAvail, roomWax);
@@ -618,12 +632,12 @@ export function evaluateBot(input: BotInput): Decision {
     maxWaxArg: number,
   ): Decision => {
     if (!(maxWaxArg > 0.01) || maxWaxArg + 1e-12 < minWax) {
-      return hold("Position cap reached, clip larger than remaining room, or no WAX");
+      return hold(`Position cap reached, clip larger than remaining room, or no ${quote}`);
     }
     if (!(expectedGrossPct > 0)) return hold("No positive expected move on this book — sitting out");
     const sized = optimizeEntrySize({
       snap,
-      tokenIn: "WAX",
+      tokenIn: quote,
       tokenOut: "LEEF",
       expectedGrossPct,
       minNetEdgePct: risk.minNetEdgePct,
@@ -633,7 +647,7 @@ export function evaluateBot(input: BotInput): Decision {
     });
     if (!sized) {
       return hold(
-        `No size in ${minWax.toFixed(2)}–${maxWaxArg.toFixed(2)} WAX clears net edge ≥ ${risk.minNetEdgePct}% after all costs`,
+        `No size in ${minWax.toFixed(2)}–${maxWaxArg.toFixed(2)} ${quote} clears net edge ≥ ${risk.minNetEdgePct}% after all costs`,
       );
     }
     const v = sized.best;
@@ -656,7 +670,7 @@ export function evaluateBot(input: BotInput): Decision {
       route: v.route,
       reason:
         `${reason} · net edge ${v.netEdgePct.toFixed(2)}% ≈ $${v.netProfitUsd.toFixed(3)} ` +
-        `on ${v.amountIn.toFixed(2)} WAX · score ${score.score}/100`,
+        `on ${v.amountIn.toFixed(2)} ${quote} · score ${score.score}/100`,
       confidence,
       expectedGrossPct,
       edge: { netEdgePct: v.netEdgePct, netProfitUsd: v.netProfitUsd, score: score.score },
@@ -669,7 +683,7 @@ export function evaluateBot(input: BotInput): Decision {
 
   if (position && position.amountLeef > 0) {
     const pnlPct = (leefUsd / position.entryUsd - 1) * 100;
-    const sellRoute = bestSellRoute(snap, position.amountLeef);
+    const sellRoute = bestSellRoute(snap, position.amountLeef, quote);
 
     const sellAll = (reason: string): Decision | null => {
       if (!sellRoute) return null;

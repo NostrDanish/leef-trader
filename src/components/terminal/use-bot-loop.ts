@@ -6,7 +6,7 @@ import {
   type ArbPlan,
   type Position,
 } from "@/lib/leef/bot-engine";
-import { realizedVolPerSec } from "@/lib/leef/cost-model";
+import { realizedVolPerSec, usdPriceOf } from "@/lib/leef/cost-model";
 import { optimizeEntrySize } from "@/lib/leef/net-edge";
 import { fmtNum } from "@/lib/leef/format";
 import { getLeefSnapshot } from "@/lib/leef/snapshot";
@@ -23,9 +23,12 @@ import { useWallet } from "@/store/wallet";
 import { toast } from "@/hooks/useToast";
 
 function equityUsdOf(balances: Record<string, number>, snap: LeefSnapshot): number {
-  return (
-    (balances.WAX ?? 0) * snap.waxUsd + (balances.LEEF ?? 0) * snap.leefUsd
-  );
+  let usd = (balances.LEEF ?? 0) * snap.leefUsd;
+  for (const [sym, qty] of Object.entries(balances)) {
+    if (sym === "LEEF") continue;
+    usd += qty * usdPriceOf(sym, snap);
+  }
+  return usd;
 }
 
 /**
@@ -148,6 +151,7 @@ async function runBotOnceInner(
     tradesThisHour: b.tradesThisHour,
     sessionRealizedUsd: b.stats.realizedUsd,
     sessionStartEquityUsd: b.stats.startEquityUsd,
+    quote: b.quote,
     force: opts?.force ?? null,
   });
 
@@ -207,11 +211,11 @@ async function runBotOnceInner(
   if (decision.kind === "buy") {
     const held = b.position?.entryWax ?? 0;
     const maxIn = Math.min(
-      balances.WAX ?? 0,
+      balances[b.quote || "WAX"] ?? 0,
       Math.max(0, b.risk.maxPositionWax - held),
     );
     if (maxIn + 1e-12 < b.risk.clipWax) {
-      const reason = `Remaining room ${maxIn.toFixed(2)} WAX is under min clip ${b.risk.clipWax.toFixed(2)} — sitting out`;
+      const reason = `Remaining room ${maxIn.toFixed(2)} ${b.quote || "WAX"} is under min clip ${b.risk.clipWax.toFixed(2)} — sitting out`;
       b.pushDecision({ kind: "hold", mode, reason, priceUsd: snap.leefUsd });
       b.setLastReason(reason);
       return { kind: "hold", reason };
@@ -221,7 +225,7 @@ async function runBotOnceInner(
       decision.expectedGrossPct ?? Math.max(b.goals.takeProfitPct * 0.5, 0.2);
     const fresh = optimizeEntrySize({
       snap: book,
-      tokenIn: "WAX",
+      tokenIn: b.quote || "WAX",
       tokenOut: "LEEF",
       expectedGrossPct: thesis,
       minNetEdgePct: b.risk.minNetEdgePct,
@@ -230,7 +234,7 @@ async function runBotOnceInner(
       volPerSec: realizedVolPerSec(b.series),
     });
     if (!fresh) {
-      const reason = `Pre-trade size scan found nothing in ${minIn.toFixed(2)}–${maxIn.toFixed(2)} WAX`;
+      const reason = `Pre-trade size scan found nothing in ${minIn.toFixed(2)}–${maxIn.toFixed(2)} ${b.quote || "WAX"}`;
       b.pushDecision({ kind: "hold", mode, reason, priceUsd: snap.leefUsd });
       b.setLastReason(reason);
       return { kind: "hold", reason };
@@ -248,7 +252,7 @@ async function runBotOnceInner(
     };
   }
   if (decision.kind === "arb") {
-    const maxIn = Math.min(balances.WAX ?? 0, b.risk.maxPositionWax);
+    const maxIn = Math.min(balances[b.quote || "WAX"] ?? 0, b.risk.maxPositionWax);
     const floorPct =
       b.strategy === "volume" ? -b.risk.maxEchoLossPct : b.risk.minEdgePct;
     const fresh = findBestArb(
@@ -272,7 +276,7 @@ async function runBotOnceInner(
       book.aux,
       decision.amountLeef,
       "LEEF",
-      "WAX",
+      b.quote || "WAX",
     );
     if (!routed) {
       const reason = "Pre-trade sell: no executable route for this LEEF size";
@@ -332,7 +336,7 @@ async function runBotOnceInner(
           note = " · broadcast, confirmation pending (quoted estimate held)";
         }
       } else {
-        w.applyPaperFill("WAX", decision.amountWax, "LEEF", amountLeef);
+        w.applyPaperFill(b.quote || "WAX", decision.amountWax, "LEEF", amountLeef);
       }
       // Average into an existing position (DCA) or open a fresh one.
       const prev = b.position;
@@ -411,7 +415,7 @@ async function runBotOnceInner(
           note = " · broadcast, confirmation pending (quoted estimate held)";
         }
       } else {
-        w.applyPaperFill("LEEF", decision.amountLeef, "WAX", waxOut);
+        w.applyPaperFill("LEEF", decision.amountLeef, b.quote || "WAX", waxOut);
       }
       const pnlUsd = position ? waxOut * snap.waxUsd - position.entryCostUsd : 0;
       b.setPosition(null);

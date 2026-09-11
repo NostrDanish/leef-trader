@@ -59,6 +59,8 @@ const MAX_LOG = 60;
 type BotState = {
   running: boolean;
   strategy: BotStrategy;
+  /** Quote token for LEEF trades (WAX, WAXUSDC, USDT, PARAUSD, …). */
+  quote: string;
   goals: BotGoals;
   risk: BotRisk;
   position: Position | null;
@@ -74,6 +76,7 @@ type BotState = {
   start: (equityUsd: number) => void;
   stop: (reason?: string) => void;
   setStrategy: (s: BotStrategy) => void;
+  setQuote: (q: string) => void;
   setGoals: (p: Partial<BotGoals>) => void;
   setRisk: (p: Partial<BotRisk>) => void;
   pushSeries: (p: PricePoint) => void;
@@ -111,6 +114,7 @@ export const useBot = create<BotState>()(
     (set, get) => ({
       running: false,
       strategy: "signal",
+      quote: "WAX",
       goals: { ...DEFAULT_GOALS },
       risk: { ...DEFAULT_RISK },
       position: null,
@@ -136,6 +140,12 @@ export const useBot = create<BotState>()(
         set({ running: false, lastReason: reason ?? "Bot stopped" }),
       setStrategy: (strategy) =>
         set({ strategy, gridAnchor: null, lastReason: `Strategy: ${strategy}` }),
+      setQuote: (quote) =>
+        set({
+          quote: quote.toUpperCase(),
+          gridAnchor: null,
+          lastReason: `Quote: ${quote.toUpperCase()}`,
+        }),
       setGoals: (p) => set((s) => ({ goals: { ...s.goals, ...p } })),
       setRisk: (p) => set((s) => ({ risk: { ...s.risk, ...p } })),
       pushSeries: (p) =>
@@ -236,12 +246,13 @@ export const useBot = create<BotState>()(
       // Versioned + merging migrate: fields added to the schema after a user
       // saved state (e.g. risk.minNetEdgePct, stats.byStrategy) get filled
       // from defaults instead of crashing selectors with undefined.
-      version: 4,
+      version: 5,
       migrate: (persisted) => {
         const p = (
           persisted && typeof persisted === "object" ? persisted : {}
         ) as Partial<{
           strategy: BotStrategy;
+          quote: string;
           goals: Partial<BotGoals>;
           risk: Partial<BotRisk>;
           position: Position | null;
@@ -252,6 +263,7 @@ export const useBot = create<BotState>()(
         }>;
         return {
           strategy: p.strategy ?? "signal",
+          quote: typeof p.quote === "string" && p.quote ? p.quote.toUpperCase() : "WAX",
           goals: { ...DEFAULT_GOALS, ...(p.goals ?? {}) },
           risk: { ...DEFAULT_RISK, ...(p.risk ?? {}) },
           position: p.position ?? null,
@@ -269,6 +281,7 @@ export const useBot = create<BotState>()(
         // Never persist `running` — a reload always stops the bot (the live
         // key is in-memory only, so it could not sign anyway).
         strategy: s.strategy,
+        quote: s.quote,
         goals: s.goals,
         risk: s.risk,
         position: s.position,

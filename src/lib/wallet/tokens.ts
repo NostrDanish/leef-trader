@@ -13,6 +13,7 @@ const BASE: TokenMeta[] = [
   { symbol: "USDT", contract: "usdt.alcor", decimals: 4, alcorId: "usdt-usdt.alcor" },
   { symbol: "WAXUSDC", contract: "eth.token", decimals: 6, alcorId: "waxusdc-eth.token" },
   { symbol: "WAXUSDT", contract: "eth.token", decimals: 6, alcorId: "waxusdt-eth.token" },
+  { symbol: "PARAUSD", contract: "parareserves", decimals: 6, alcorId: "parausd-parareserves" },
 ];
 
 export function tokenCatalog(snap?: Pick<LeefSnapshot, "pools">): TokenMeta[] {
