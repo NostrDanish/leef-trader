@@ -50,6 +50,10 @@ export async function executeSwap(opts: {
       slippagePct: opts.slippage,
       snap: opts.snap,
     });
+    // NOTE: `expectedOut` is the router's quoted output, not the chain-verified
+    // fill. It is fine for the immediate UX ack, but it is NOT accounting
+    // truth — Phase 3 reconciliation must parse the actual token transfers out
+    // of the confirmed transaction and correct balances/positions from that.
     return {
       mode: "live",
       amountOut: exec.expectedOut,

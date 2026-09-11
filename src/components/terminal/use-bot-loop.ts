@@ -2,7 +2,8 @@ import { useEffect, useRef } from "react";
 import { evaluateBot, type ArbPlan, type Position } from "@/lib/leef/bot-engine";
 import { fmtNum } from "@/lib/leef/format";
 import type { LeefSnapshot } from "@/lib/leef/types";
-import { fetchAlcorRoute, parseAssetAmount } from "@/lib/wallet/alcor-route";
+import { fetchAlcorRoute, parseAssetAmount, type AlcorRouteQuote } from "@/lib/wallet/alcor-route";
+import { arbFloorViolation, memoMinOutSum } from "@/lib/wallet/policy";
 import { signAndPushArb, signAndPushSwap } from "@/lib/wallet/sign";
 import { useBot } from "@/store/bot";
 import { useWallet } from "@/store/wallet";
@@ -14,12 +15,18 @@ function equityUsdOf(balances: Record<string, number>, snap: LeefSnapshot): numb
   );
 }
 
-/** Replace the local constant-product quote with Alcor's CLMM route before broadcast. */
+/**
+ * Replace the local constant-product quote with Alcor's CLMM route before
+ * broadcast. The return leg's min-out must enforce the profit floor on-chain
+ * — when the quoted output clears the floor but the slippage-guarded min-out
+ * doesn't, the sell leg is re-quoted once with a tighter guard that still
+ * clears it. (Slippage only moves minReceived, not the quoted output.)
+ */
 async function quoteArbPlan(
   plan: ArbPlan,
   account: string,
   slippagePct: number,
-  snap: LeefSnapshot,
+  minProfitPct: number,
 ): Promise<ArbPlan> {
   const buy = await fetchAlcorRoute({
     tokenInId: "wax-eosio.token",
@@ -30,15 +37,34 @@ async function quoteArbPlan(
   });
   const leefOut = parseAssetAmount(buy.output);
   if (!(leefOut > 0)) throw new Error("Alcor returned no LEEF for the echo");
-  const sell = await fetchAlcorRoute({
-    tokenInId: "leef-leefmaincorp",
-    tokenOutId: "wax-eosio.token",
-    amount: leefOut,
-    slippagePct,
-    receiver: account,
-  });
-  const waxOut = parseAssetAmount(sell.output);
+
+  const fetchSell = (slip: number) =>
+    fetchAlcorRoute({
+      tokenInId: "leef-leefmaincorp",
+      tokenOutId: "wax-eosio.token",
+      amount: leefOut,
+      slippagePct: slip,
+      receiver: account,
+    });
+
+  let sell: AlcorRouteQuote = await fetchSell(slippagePct);
+  let waxOut = parseAssetAmount(sell.output);
   if (!(waxOut > 0)) throw new Error("Alcor returned no WAX for the echo");
+
+  const floorWax = plan.waxIn * (1 + minProfitPct / 100);
+  const legsOf = (q: AlcorRouteQuote) =>
+    q.swaps.map((s) => ({ input: s.input, memo: s.memo }));
+  if (
+    waxOut >= floorWax &&
+    memoMinOutSum(legsOf(sell), account) < floorWax
+  ) {
+    const slipMax = (1 - floorWax / waxOut) * 100;
+    if (slipMax >= 0.05) {
+      sell = await fetchSell(Math.min(slippagePct, slipMax * 0.9));
+      waxOut = parseAssetAmount(sell.output) || waxOut;
+    }
+  }
+
   return {
     ...plan,
     leefMid: leefOut,
@@ -252,11 +278,20 @@ async function runBotOnceInner(
 
     if (decision.kind === "arb") {
       let plan = decision.plan;
+      // The hard floor this arb must enforce on-chain: spread arbs enforce the
+      // profit floor; volume echoes enforce the loss budget (negative floor).
+      const floorPct =
+        b.strategy === "volume" ? -b.risk.maxEchoLossPct : b.risk.minEdgePct;
       {
         try {
           // Always re-quote through Alcor's CLMM router — the local
           // constant-product estimate is not what the chain will fill.
-          plan = await quoteArbPlan(plan, live ? w.account : "paper.leef", b.risk.slippage, snap);
+          plan = await quoteArbPlan(
+            plan,
+            live ? w.account : "paper.leef",
+            b.risk.slippage,
+            floorPct,
+          );
         } catch (err) {
           const msg = err instanceof Error ? err.message : "Alcor router failed";
           b.pushDecision({ kind: "error", mode, reason: msg, priceUsd: snap.leefUsd });
@@ -278,6 +313,24 @@ async function runBotOnceInner(
           b.pushDecision({ kind: "hold", mode, reason, priceUsd: snap.leefUsd });
           return { kind: "hold", reason };
         }
+        // Transaction-level invariant, checked on the ENFORCED memo min-outs
+        // (not the quoted output) before we ask for any signature. The signer
+        // re-checks the same invariant at the signing boundary.
+        if (live) {
+          const floorViolation = arbFloorViolation({
+            waxIn: plan.waxIn,
+            minProfitPct: floorPct,
+            buyLegs: plan.buyLegs ?? [],
+            sellLegs: plan.sellLegs ?? [],
+            account: w.account,
+          });
+          if (floorViolation) {
+            const reason = `Arb blocked — ${floorViolation}`;
+            b.setLastReason(reason);
+            b.pushDecision({ kind: "hold", mode, reason, priceUsd: snap.leefUsd });
+            return { kind: "hold", reason };
+          }
+        }
       }
       let txid: string | undefined;
       if (live) {
@@ -285,11 +338,7 @@ async function runBotOnceInner(
           account: w.account,
           permission: w.permission,
           plan,
-          // Volume echoes enforce the loss budget (negative floor); spread
-          // arbs enforce the profit floor.
-          minProfitPct:
-            b.strategy === "volume" ? -b.risk.maxEchoLossPct : b.risk.minEdgePct,
-          slippagePct: b.risk.slippage,
+          minProfitPct: floorPct,
           snap,
         });
         txid = res.txid;

@@ -1,4 +1,5 @@
 import type { AuxPool, LeefPool, QuoteLeg, SwapRoute, TokenRef } from "./types";
+import { LEEF_CONTRACT, LEEF_SYMBOL, WAX_CONTRACT, WAX_SYMBOL } from "./types";
 
 /** Alcor fee units: 3000 = 0.30%. */
 export function feeToPct(fee: number): number {
@@ -68,17 +69,18 @@ export function q64Price(
   }
 }
 
+/**
+ * Canonical token identity. A token is contract + symbol + precision — never
+ * a symbol alone. Any "LEEF" not issued by leefmaincorp (and any "WAX" not
+ * issued by eosio.token) is a different token, full stop: it must not feed
+ * pricing, routing, arb scans or signing. Fail closed.
+ */
 export function isLeefToken(t: { symbol?: string; contract?: string }): boolean {
-  const sym = t.symbol?.toUpperCase() ?? "";
-  const c = t.contract ?? "";
-  return sym === "LEEF" && (c === "leefmaincorp" || c === "token.leef" || c.length > 0);
+  return t.symbol?.toUpperCase() === LEEF_SYMBOL && t.contract === LEEF_CONTRACT;
 }
 
 export function isWaxToken(t: { symbol?: string; contract?: string }): boolean {
-  return (
-    t.symbol?.toUpperCase() === "WAX" &&
-    (t.contract === "eosio.token" || !t.contract)
-  );
+  return t.symbol?.toUpperCase() === WAX_SYMBOL && t.contract === WAX_CONTRACT;
 }
 
 function reservesForSwap(

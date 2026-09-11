@@ -121,6 +121,7 @@ export async function runRebalancer(snap: LeefSnapshot, opts?: { force?: boolean
         account: w.account,
         permission: w.permission,
         legs: batchLegs,
+        snap,
       });
       const totalUsd = ready.reduce((s, l) => s + l.estUsd, 0);
       p.markRun();

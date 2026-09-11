@@ -1,12 +1,15 @@
 {
-  "name": "mkstack",
+  "name": "leef-trader",
   "private": true,
-  "version": "0.0.0",
+  "version": "0.1.0",
   "type": "module",
   "scripts": {
-    "dev": "npm i --silent && vite",
-    "build": "npm i --silent && vite build -l error && cp dist/index.html dist/404.html && echo 'Project built successfully!'",
-    "test": "npm i --silent && tsc --noEmit && eslint --cache && vitest run --reporter=dot --silent && vite build -l error && cp dist/index.html dist/404.html && echo 'All tests passed!'"
+    "dev": "vite",
+    "build": "vite build -l error && cp dist/index.html dist/404.html && echo 'Project built successfully!'",
+    "lint": "eslint --cache",
+    "typecheck": "tsc --noEmit",
+    "preview": "vite preview",
+    "test": "tsc --noEmit && eslint --cache && vitest run --reporter=dot --silent && vite build -l error && cp dist/index.html dist/404.html && echo 'All tests passed!'"
   },
   "dependencies": {
     "@fontsource/ibm-plex-mono": "^5.3.0",

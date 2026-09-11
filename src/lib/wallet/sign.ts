@@ -1,6 +1,7 @@
 import type { ArbPlan } from "@/lib/leef/bot-engine";
 import type { LeefSnapshot, SwapRoute } from "@/lib/leef/types";
-import { fetchAlcorRoute } from "./alcor-route";
+import { LEEF_CONTRACT, WAX_CONTRACT } from "@/lib/leef/types";
+import { fetchAlcorRoute, parseAssetAmount } from "./alcor-route";
 import {
   packAddLiquid,
   packCollect,
@@ -17,61 +18,58 @@ import {
   type TransferActionData,
 } from "./antelope";
 import { getChainInfo, pushSigned } from "./chain";
-import { memoForRoute } from "./memo";
+import {
+  ALCOR_SWAP_CONTRACT,
+  arbFloorViolation,
+  assertActionPolicy,
+  type PolicyContext,
+} from "./policy";
 import { hasSecret, signDigest } from "./secret";
 import { walletSession } from "./session";
 import { formatAsset, metaOf } from "./tokens";
 
-/** Alcor's on-chain AMM contract on WAX. Swaps execute as token transfers into it. */
-export const ALCOR_SWAP_CONTRACT = "swap.alcor";
+export { ALCOR_SWAP_CONTRACT };
 
 type TransferSpec = { quantity: string; memo: string };
 
 export type SwapExecution = {
   txid: string;
-  /** Total expected output in tokenOut units. */
+  /** Total expected output in tokenOut units (router quote — see note in trade.ts). */
   expectedOut: number;
-  /** Whether the memo came from Alcor's CLMM router or the local constant-product book. */
-  routeSource: "alcor" | "local";
 };
 
+/**
+ * Live execution requires a fresh route from Alcor's CLMM router. There is
+ * deliberately NO fallback to the local constant-product estimate here: the
+ * local model is fine for ranking and paper fills, but handing real money to
+ * a different pricing model than the one that executes is how funds get
+ * lost. Router down / pair unrouted / malformed quote → the trade throws and
+ * nothing is signed.
+ */
 async function buildTransfers(opts: {
   account: string;
   route: SwapRoute;
   amountIn: number;
   slippagePct: number;
   snap: LeefSnapshot;
-}): Promise<{ transfers: TransferSpec[]; expectedOut: number; source: "alcor" | "local" }> {
+}): Promise<{ transfers: TransferSpec[]; expectedOut: number }> {
   const tokenIn = metaOf(opts.route.tokenIn, opts.snap);
   const tokenOut = metaOf(opts.route.tokenOut, opts.snap);
 
-  try {
-    const quote = await fetchAlcorRoute({
-      tokenInId: tokenIn.alcorId,
-      tokenOutId: tokenOut.alcorId,
-      amount: opts.amountIn,
-      slippagePct: opts.slippagePct,
-      receiver: opts.account,
-    });
-    return {
-      transfers: quote.swaps.map((s) => ({
-        quantity: s.input,
-        memo: s.memo.replaceAll("<receiver>", opts.account),
-      })),
-      expectedOut: Number(quote.output) || opts.route.amountOut,
-      source: "alcor",
-    };
-  } catch {
-    // Router offline or pair unrouted — fall back to our local constant-product
-    // quote and hand-build the swap.alcor memo for the best route we found.
-    const quantity = formatAsset(opts.amountIn, tokenIn);
-    const memo = memoForRoute(opts.route, opts.account, opts.slippagePct, tokenOut);
-    return {
-      transfers: [{ quantity, memo }],
-      expectedOut: opts.route.amountOut,
-      source: "local",
-    };
-  }
+  const quote = await fetchAlcorRoute({
+    tokenInId: tokenIn.alcorId,
+    tokenOutId: tokenOut.alcorId,
+    amount: opts.amountIn,
+    slippagePct: opts.slippagePct,
+    receiver: opts.account,
+  });
+  return {
+    transfers: quote.swaps.map((s) => ({
+      quantity: s.input,
+      memo: s.memo.replaceAll("<receiver>", opts.account),
+    })),
+    expectedOut: parseAssetAmount(quote.output) || opts.route.amountOut,
+  };
 }
 
 /** An action in both worlds: plain fields for wallet UIs, packed bytes for the local signer. */
@@ -86,7 +84,13 @@ async function dispatchActions(opts: {
   account: string;
   permission?: string;
   actions: ActionSpec[];
+  policy?: PolicyContext;
 }): Promise<{ txid: string }> {
+  // Policy firewall: EVERY action list — session key, Cloud Wallet or Anchor —
+  // is validated before a signer ever sees it. The signer is never asked to
+  // sign an arbitrary transaction.
+  assertActionPolicy(opts.actions, opts.account, opts.policy);
+
   // External wallet (Cloud Wallet / Anchor): the wallet builds, signs and
   // broadcasts — and prompts the user for each transaction.
   const sess = walletSession();
@@ -146,6 +150,7 @@ async function signAndPushTransfers(opts: {
   account: string;
   permission?: string;
   transfers: { contract: string; data: TransferActionData }[];
+  policy?: PolicyContext;
 }): Promise<{ txid: string }> {
   // Wallet sessions sign as the wallet's own actor — normalize `from` to it.
   const sess = walletSession();
@@ -156,6 +161,7 @@ async function signAndPushTransfers(opts: {
     actions: opts.transfers.map((t) =>
       transferSpec(t.contract, { ...t.data, from }),
     ),
+    policy: opts.policy,
   });
 }
 
@@ -177,7 +183,7 @@ export async function signAndPushSwap(opts: {
   snap: LeefSnapshot;
 }): Promise<SwapExecution> {
   const tokenIn = metaOf(opts.route.tokenIn, opts.snap);
-  const { transfers, expectedOut, source } = await buildTransfers(opts);
+  const { transfers, expectedOut } = await buildTransfers(opts);
   const { txid } = await signAndPushTransfers({
     account: opts.account,
     permission: opts.permission,
@@ -190,8 +196,9 @@ export async function signAndPushSwap(opts: {
         memo: t.memo,
       },
     })),
+    policy: { snap: opts.snap },
   });
-  return { txid, expectedOut, routeSource: source };
+  return { txid, expectedOut };
 }
 
 export type BatchLeg = {
@@ -212,6 +219,8 @@ export async function signAndPushBatch(opts: {
   account: string;
   permission?: string;
   legs: BatchLeg[];
+  /** Snapshot the legs were planned against — feeds the policy token catalog. */
+  snap: LeefSnapshot;
 }): Promise<{ txid: string }> {
   if (opts.legs.length === 0) throw new Error("Nothing to execute");
   return await signAndPushTransfers({
@@ -226,93 +235,79 @@ export async function signAndPushBatch(opts: {
         memo: l.memo.replaceAll("<receiver>", opts.account),
       },
     })),
+    policy: { snap: opts.snap },
   });
 }
 
 /**
  * Atomic two-leg arbitrage in a single WAX transaction:
  *
- *   1. transfer WAX → swap.alcor   (buy LEEF on the cheap pool, min-out guard)
- *   2. transfer LEEF → swap.alcor  (sell it on the rich pool, min-out = profit floor)
+ *   1. transfer WAX → swap.alcor   (buy LEEF via the router's legs)
+ *   2. transfer LEEF → swap.alcor  (sell it via the router's legs)
  *
  * Actions run sequentially inside one transaction, so leg 2 spends the LEEF
- * leg 1 just bought. If either min-out fails, the WHOLE transaction reverts
- * and the wallet never moves — the arb either pays at least minProfitPct or
- * costs nothing but the (tiny) CPU of a failed tx.
+ * leg 1 just bought. If any leg's min-out fails, the WHOLE transaction
+ * reverts and the wallet never moves.
+ *
+ * Two hard invariants are enforced BEFORE anything is signed:
+ *
+ *  - Router legs only. The local constant-product estimate is never turned
+ *    into a live transaction — no legs, no trade.
+ *  - Transaction-level profit floor: the sell legs' on-chain min-outs (what
+ *    swap.alcor actually guarantees) must sum to at least
+ *    waxIn × (1 + minProfitPct). A quoted profit with a slippage band that
+ *    can dip below the floor is rejected here, at the signing boundary.
  */
 export async function signAndPushArb(opts: {
   account: string;
   permission?: string;
   plan: ArbPlan;
-  /** Hard profit floor enforced on-chain for leg 2, percent. */
+  /** Hard profit floor the sell legs must enforce on-chain, percent. */
   minProfitPct: number;
-  /** Leg-1 min-out buffer, percent. */
-  slippagePct: number;
   snap: LeefSnapshot;
 }): Promise<{ txid: string }> {
-  const leefMeta = metaOf("LEEF", opts.snap);
-  const waxMeta = metaOf("WAX", opts.snap);
   const plan = opts.plan;
 
-  // Preferred path: execute the exact legs Alcor's router returned. The return
-  // leg is often SPLIT across routes, so each split becomes its own transfer.
-  if (plan.buyLegs?.length && plan.sellLegs?.length) {
-    const transfers = [
-      ...plan.buyLegs.map((l) => ({
-        contract: waxMeta.contract,
-        data: {
-          from: opts.account,
-          to: ALCOR_SWAP_CONTRACT,
-          quantity: l.input,
-          memo: l.memo,
-        },
-      })),
-      ...plan.sellLegs.map((l) => ({
-        contract: leefMeta.contract,
-        data: {
-          from: opts.account,
-          to: ALCOR_SWAP_CONTRACT,
-          quantity: l.input,
-          memo: l.memo,
-        },
-      })),
-    ];
-    return await signAndPushTransfers({
-      account: opts.account,
-      permission: opts.permission,
-      transfers,
-    });
+  if (!plan.buyLegs?.length || !plan.sellLegs?.length) {
+    throw new Error(
+      "Live arb needs fresh Alcor router legs — the local estimate is never used for real execution",
+    );
   }
 
-  // Fallback: single-route memos from the local constant-product plan.
-  const leefMin = plan.leefMid * (1 - opts.slippagePct / 100);
-  const waxFloor = plan.waxIn * (1 + opts.minProfitPct / 100);
-  const leg1Memo = `swapexactin#${plan.buyPool.id}#${opts.account}#${formatAsset(leefMin, leefMeta).split(" ")[0]} ${leefMeta.symbol}@${leefMeta.contract}#0`;
-  const leg2Memo = `swapexactin#${plan.sellPool.id}#${opts.account}#${formatAsset(waxFloor, waxMeta).split(" ")[0]} ${waxMeta.symbol}@${waxMeta.contract}#0`;
+  const violation = arbFloorViolation({
+    waxIn: plan.waxIn,
+    minProfitPct: opts.minProfitPct,
+    buyLegs: plan.buyLegs,
+    sellLegs: plan.sellLegs,
+    account: opts.account,
+  });
+  if (violation) throw new Error(violation);
 
+  const transfers = [
+    ...plan.buyLegs.map((l) => ({
+      contract: WAX_CONTRACT,
+      data: {
+        from: opts.account,
+        to: ALCOR_SWAP_CONTRACT,
+        quantity: l.input,
+        memo: l.memo.replaceAll("<receiver>", opts.account),
+      },
+    })),
+    ...plan.sellLegs.map((l) => ({
+      contract: LEEF_CONTRACT,
+      data: {
+        from: opts.account,
+        to: ALCOR_SWAP_CONTRACT,
+        quantity: l.input,
+        memo: l.memo.replaceAll("<receiver>", opts.account),
+      },
+    })),
+  ];
   return await signAndPushTransfers({
     account: opts.account,
     permission: opts.permission,
-    transfers: [
-      {
-        contract: waxMeta.contract,
-        data: {
-          from: opts.account,
-          to: ALCOR_SWAP_CONTRACT,
-          quantity: formatAsset(plan.waxIn, waxMeta),
-          memo: leg1Memo,
-        },
-      },
-      {
-        contract: leefMeta.contract,
-        data: {
-          from: opts.account,
-          to: ALCOR_SWAP_CONTRACT,
-          quantity: formatAsset(leefMin, leefMeta),
-          memo: leg2Memo,
-        },
-      },
-    ],
+    transfers,
+    policy: { snap: opts.snap },
   });
 }
 
@@ -378,6 +373,7 @@ export async function signAndPushAddLiquidity(opts: {
         dataBytes: packAddLiquid(addData),
       },
     ],
+    policy: { extraTokens: [opts.tokenA, opts.tokenB] },
   });
 }
 
@@ -444,5 +440,6 @@ export async function signAndPushRemoveLiquidity(opts: {
     account: owner,
     permission: opts.permission,
     actions,
+    policy: {},
   });
 }
