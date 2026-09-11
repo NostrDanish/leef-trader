@@ -1,15 +1,38 @@
-import { ArrowUpRight, KeyRound, RefreshCw } from "lucide-react";
+import { ArrowUpRight, KeyRound, RefreshCw, ShieldAlert } from "lucide-react";
 import { LoginArea } from "@/components/auth/LoginArea";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { marketStats } from "@/lib/leef/analytics";
 import { fmtNum, fmtUsd } from "@/lib/leef/format";
 import type { LeefSnapshot } from "@/lib/leef/types";
+import { toast } from "@/hooks/useToast";
 import { cn } from "@/lib/utils";
 import { useBot } from "@/store/bot";
+import { usePortfolio } from "@/store/portfolio";
 import { useTerminal } from "@/store/terminal";
 import { useWallet } from "@/store/wallet";
 import { TokenMark } from "./token-mark";
+
+/**
+ * Emergency stop: halts the bot AND the rebalancer immediately. Open
+ * positions are left untouched (nothing is sold); restarting is a deliberate
+ * manual action from each desk. The session key stays in memory — use
+ * "forget key" on the wallet desk to drop it.
+ */
+function emergencyStopAll() {
+  const botWasRunning = useBot.getState().running;
+  const rebalWasRunning = usePortfolio.getState().running;
+  useBot.getState().stop("Emergency stop — automation halted");
+  usePortfolio.getState().stop();
+  toast({
+    title: "Emergency stop",
+    description:
+      botWasRunning || rebalWasRunning
+        ? "All automation halted. Open positions were NOT closed — manage them from the Bot desk."
+        : "Nothing was running.",
+    variant: "destructive",
+  });
+}
 
 export function TerminalHeader({
   snap,
@@ -27,6 +50,7 @@ export function TerminalHeader({
   const account = useWallet((s) => s.account);
   const authType = useWallet((s) => s.authType);
   const botRunning = useBot((s) => s.running);
+  const rebalRunning = usePortfolio((s) => s.running);
   const setTab = useTerminal((s) => s.setTab);
   const setImportOpen = useWallet((s) => s.setImportOpen);
 
@@ -87,6 +111,18 @@ export function TerminalHeader({
         </div>
 
         <div className="flex items-center gap-2">
+          {(botRunning || rebalRunning) && (
+            <Button
+              variant="danger"
+              size="sm"
+              onClick={emergencyStopAll}
+              aria-label="Emergency stop — halt the bot and the rebalancer"
+              title="Emergency stop — halt all automation (positions stay open)"
+            >
+              <ShieldAlert className="size-3.5" />
+              <span className="hidden md:inline">Stop all</span>
+            </Button>
+          )}
           <Button
             variant="secondary"
             size="sm"

@@ -1,6 +1,8 @@
 import { compareAllRoutes } from "@/lib/leef/amm";
 import type { LeefSnapshot } from "@/lib/leef/types";
+import { assetDelta, waitForTransaction } from "./reconcile";
 import { signAndPushSwap } from "./sign";
+import { metaOf } from "./tokens";
 import { useWallet } from "@/store/wallet";
 
 export type SwapOutcome = {
@@ -8,6 +10,8 @@ export type SwapOutcome = {
   amountOut: number;
   routeLabel: string;
   txid?: string;
+  /** Live only: whether the chain confirmed the fill (else quoted estimate). */
+  confirmed?: boolean;
 };
 
 /**
@@ -50,15 +54,23 @@ export async function executeSwap(opts: {
       slippagePct: opts.slippage,
       snap: opts.snap,
     });
-    // NOTE: `expectedOut` is the router's quoted output, not the chain-verified
-    // fill. It is fine for the immediate UX ack, but it is NOT accounting
-    // truth — Phase 3 reconciliation must parse the actual token transfers out
-    // of the confirmed transaction and correct balances/positions from that.
+    // Reconcile against the chain: the actual transfer is the truth, the
+    // router quote is only an estimate. On "unknown" we return the estimate
+    // and never retry blindly — the next wallet sync corrects balances.
+    const rec = await waitForTransaction(exec.txid);
+    if (rec.status === "failed") throw new Error(rec.error);
+    let amountOut = exec.expectedOut;
+    if (rec.status === "confirmed") {
+      const outMeta = metaOf(opts.tokenOut, opts.snap);
+      const actual = assetDelta(rec.transfers, w.account, outMeta.symbol, outMeta.contract);
+      if (actual > 0) amountOut = actual;
+    }
     return {
       mode: "live",
-      amountOut: exec.expectedOut,
+      amountOut,
       routeLabel: route.label,
       txid: exec.txid,
+      confirmed: rec.status === "confirmed",
     };
   }
 

@@ -27,6 +27,7 @@ type WalletState = {
   liveBalances: Record<string, number>;
   cpuPct: number | null;
   netPct: number | null;
+  ramPct: number | null;
   importOpen: boolean;
   setImportOpen: (v: boolean) => void;
   setAccount: (name: string) => void;
@@ -34,7 +35,7 @@ type WalletState = {
   setWalletSession: (p: { account: string; permission: string; kind: WalletKind }) => void;
   setLiveBalances: (
     bal: Record<string, number>,
-    res?: { cpuPct: number | null; netPct: number | null },
+    res?: { cpuPct: number | null; netPct: number | null; ramPct?: number | null },
   ) => void;
   resetPaper: () => void;
   applyPaperFill: (tokenIn: string, amountIn: number, tokenOut: string, amountOut: number) => void;
@@ -58,6 +59,7 @@ export const useWallet = create<WalletState>()(
       liveBalances: {},
       cpuPct: null,
       netPct: null,
+      ramPct: null,
       importOpen: false,
       setImportOpen: (importOpen) => set({ importOpen }),
       setAccount: (account) => set({ account: account.trim().toLowerCase() }),
@@ -84,6 +86,7 @@ export const useWallet = create<WalletState>()(
           liveBalances,
           cpuPct: res?.cpuPct ?? get().cpuPct,
           netPct: res?.netPct ?? get().netPct,
+          ramPct: res?.ramPct ?? get().ramPct,
         }),
       resetPaper: () => set({ paperBalances: { ...PAPER_BALANCES } }),
       applyPaperFill: (tokenIn, amountIn, tokenOut, amountOut) =>
@@ -107,6 +110,7 @@ export const useWallet = create<WalletState>()(
           liveBalances: {},
           cpuPct: null,
           netPct: null,
+          ramPct: null,
         });
       },
       balances: () => {

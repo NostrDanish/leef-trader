@@ -28,7 +28,31 @@ export type ChainAccount = {
   name: string;
   cpuPct: number | null;
   netPct: number | null;
+  ramPct: number | null;
 };
+
+/**
+ * Execution preflight: WAX resources too exhausted to trade reliably.
+ * Returns the reason, or null when the account is healthy. Fail open on
+ * unknown (null) readings — the chain itself rejects an unpayable tx — but
+ * never trade through a KNOWN-exhausted resource.
+ */
+export function waxResourceBlock(
+  cpuPct: number | null,
+  netPct: number | null,
+  ramPct: number | null,
+): string | null {
+  if (cpuPct != null && cpuPct > 0.95) {
+    return `WAX CPU ${(cpuPct * 100).toFixed(0)}% used — pausing trades until it regenerates`;
+  }
+  if (netPct != null && netPct > 0.98) {
+    return `WAX NET ${(netPct * 100).toFixed(0)}% used — pausing trades until it regenerates`;
+  }
+  if (ramPct != null && ramPct > 0.98) {
+    return `WAX RAM ${(ramPct * 100).toFixed(0)}% used — pausing trades`;
+  }
+  return null;
+}
 
 export type KeyAccount = {
   name: string;
@@ -96,13 +120,22 @@ export async function accountResources(name: string): Promise<ChainAccount> {
   const raw = (await rpcPost("/v1/chain/get_account", { account_name: name })) as {
     cpu_limit?: { used?: number; max?: number };
     net_limit?: { used?: number; max?: number };
+    ram_quota?: number;
+    ram_usage?: number;
   };
   const pct = (lim?: { used?: number; max?: number }) => {
     const max = lim?.max ?? 0;
     const used = lim?.used ?? 0;
     return max > 0 ? used / max : null;
   };
-  return { name, cpuPct: pct(raw.cpu_limit), netPct: pct(raw.net_limit) };
+  const ramQuota = typeof raw.ram_quota === "number" ? raw.ram_quota : 0;
+  const ramUsage = typeof raw.ram_usage === "number" ? raw.ram_usage : 0;
+  return {
+    name,
+    cpuPct: pct(raw.cpu_limit),
+    netPct: pct(raw.net_limit),
+    ramPct: ramQuota > 0 ? ramUsage / ramQuota : null,
+  };
 }
 
 export async function fetchBalances(
@@ -140,7 +173,8 @@ export async function getChainInfo(): Promise<unknown> {
 /* Full wallet token scan (Hyperion)                                   */
 /* ------------------------------------------------------------------ */
 
-const HYPERION = [
+/** Hyperion history endpoints (also used by the reconciler). */
+export const HYPERION = [
   "https://api.waxsweden.org",
   "https://wax.eosphere.io",
   "https://wax.eosusa.io",

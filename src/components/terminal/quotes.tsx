@@ -307,8 +307,12 @@ function TradeButton({ snap }: { snap: LeefSnapshot }) {
         <div className="flex items-start gap-2 rounded-lg border border-leef/30 bg-leef/10 px-3 py-2 text-xs">
           <CheckCircle2 className="mt-0.5 size-3.5 shrink-0 text-leef" />
           <span>
-            {done.mode === "live" ? "Live fill" : "Paper fill"} ·{" "}
-            {fmtNum(done.amountOut, { compact: true })} {tokenOut} on {done.routeLabel}
+            {done.mode === "live"
+              ? done.confirmed
+                ? "Live fill · confirmed on-chain"
+                : "Live fill · confirmation pending — amount is the router quote"
+              : "Paper fill"}{" "}
+            · {fmtNum(done.amountOut, { compact: true })} {tokenOut} on {done.routeLabel}
             {done.txid && (
               <>
                 {" · "}

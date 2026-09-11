@@ -3,7 +3,10 @@ import { evaluateBot, type ArbPlan, type Position } from "@/lib/leef/bot-engine"
 import { fmtNum } from "@/lib/leef/format";
 import type { LeefSnapshot } from "@/lib/leef/types";
 import { fetchAlcorRoute, parseAssetAmount, type AlcorRouteQuote } from "@/lib/wallet/alcor-route";
+import { LEEF_CONTRACT, WAX_CONTRACT } from "@/lib/leef/types";
+import { waxResourceBlock } from "@/lib/wallet/chain";
 import { arbFloorViolation, memoMinOutSum } from "@/lib/wallet/policy";
+import { assetDelta, waitForTransaction } from "@/lib/wallet/reconcile";
 import { signAndPushArb, signAndPushSwap } from "@/lib/wallet/sign";
 import { useBot } from "@/store/bot";
 import { useWallet } from "@/store/wallet";
@@ -177,11 +180,25 @@ async function runBotOnceInner(
 
   if (opts?.dry) return decision;
 
+  // WAX resource preflight: never sign a live trade on an exhausted account.
+  if (
+    live &&
+    (decision.kind === "buy" || decision.kind === "sell" || decision.kind === "arb")
+  ) {
+    const block = waxResourceBlock(w.cpuPct, w.netPct, w.ramPct);
+    if (block) {
+      b.pushDecision({ kind: "hold", mode, reason: block, priceUsd: snap.leefUsd });
+      b.setLastReason(block);
+      return { kind: "hold", reason: block };
+    }
+  }
+
   try {
     if (decision.kind === "buy") {
       const minOut = decision.route.amountOut * (1 - b.risk.slippage / 100);
       let amountLeef = minOut;
       let txid: string | undefined;
+      let note = "";
       if (live) {
         const exec = await signAndPushSwap({
           account: w.account,
@@ -193,6 +210,18 @@ async function runBotOnceInner(
         });
         txid = exec.txid;
         amountLeef = exec.expectedOut > 0 ? exec.expectedOut : minOut;
+        // Reconcile against the chain — the actual transfer, not the quote,
+        // sizes the position. On "unknown" we keep the estimate and never
+        // retry blindly; the next wallet sync corrects the balances.
+        const rec = await waitForTransaction(txid);
+        if (rec.status === "failed") throw new Error(rec.error);
+        if (rec.status === "confirmed") {
+          const actual = assetDelta(rec.transfers, w.account, "LEEF", LEEF_CONTRACT);
+          if (actual > 0) amountLeef = actual;
+          note = " · confirmed on-chain";
+        } else {
+          note = " · broadcast, confirmation pending (quoted estimate held)";
+        }
       } else {
         w.applyPaperFill("WAX", decision.amountWax, "LEEF", amountLeef);
       }
@@ -225,21 +254,22 @@ async function runBotOnceInner(
       b.pushDecision({
         kind: "buy",
         mode,
-        reason: decision.reason,
+        reason: decision.reason + note,
         priceUsd: snap.leefUsd,
         txid,
       });
       toast({
         title: `${live ? "Live" : "Paper"} buy · ${fmtNum(amountLeef, { compact: true })} LEEF`,
-        description: decision.reason + (txid ? ` · tx ${txid.slice(0, 10)}…` : ""),
+        description: decision.reason + note + (txid ? ` · tx ${txid.slice(0, 10)}…` : ""),
       });
       return decision;
     }
 
     if (decision.kind === "sell") {
       const position = b.position;
-      const waxOut = decision.route.amountOut;
+      let waxOut = decision.route.amountOut;
       let txid: string | undefined;
+      let note = "";
       if (live) {
         const exec = await signAndPushSwap({
           account: w.account,
@@ -250,6 +280,16 @@ async function runBotOnceInner(
           snap,
         });
         txid = exec.txid;
+        if (exec.expectedOut > 0) waxOut = exec.expectedOut;
+        const rec = await waitForTransaction(txid);
+        if (rec.status === "failed") throw new Error(rec.error);
+        if (rec.status === "confirmed") {
+          const actual = assetDelta(rec.transfers, w.account, "WAX", WAX_CONTRACT);
+          if (actual > 0) waxOut = actual;
+          note = " · confirmed on-chain";
+        } else {
+          note = " · broadcast, confirmation pending (quoted estimate held)";
+        }
       } else {
         w.applyPaperFill("LEEF", decision.amountLeef, "WAX", waxOut);
       }
@@ -261,7 +301,7 @@ async function runBotOnceInner(
       b.pushDecision({
         kind: "sell",
         mode,
-        reason: decision.reason,
+        reason: decision.reason + note,
         priceUsd: snap.leefUsd,
         txid,
         pnlUsd,
@@ -270,7 +310,7 @@ async function runBotOnceInner(
         title: `${live ? "Live" : "Paper"} sell · ${fmtNum(waxOut, { digits: 2 })} WAX · ${
           pnlUsd >= 0 ? "+" : ""
         }$${pnlUsd.toFixed(2)}`,
-        description: decision.reason + (txid ? ` · tx ${txid.slice(0, 10)}…` : ""),
+        description: decision.reason + note + (txid ? ` · tx ${txid.slice(0, 10)}…` : ""),
         variant: pnlUsd < 0 ? "destructive" : "default",
       });
       return decision;
@@ -333,6 +373,9 @@ async function runBotOnceInner(
         }
       }
       let txid: string | undefined;
+      let note = "";
+      /** Net WAX delta read from the confirmed transaction (null = estimate). */
+      let realizedWax: number | null = null;
       if (live) {
         const res = await signAndPushArb({
           account: w.account,
@@ -342,11 +385,22 @@ async function runBotOnceInner(
           snap,
         });
         txid = res.txid;
+        const rec = await waitForTransaction(txid);
+        if (rec.status === "failed") throw new Error(rec.error);
+        if (rec.status === "confirmed") {
+          realizedWax = assetDelta(rec.transfers, w.account, "WAX", WAX_CONTRACT);
+          note = " · confirmed on-chain";
+        } else {
+          note = " · broadcast, confirmation pending (quoted estimate held)";
+        }
       } else {
         // Same symbol in and out — the fill nets the profit onto the balance.
         w.applyPaperFill("WAX", plan.waxIn, "WAX", plan.waxOut);
       }
-      const pnlUsd = (plan.waxOut - plan.waxIn) * snap.waxUsd;
+      const pnlUsd =
+        realizedWax != null
+          ? realizedWax * snap.waxUsd
+          : (plan.waxOut - plan.waxIn) * snap.waxUsd;
       b.markTrade(b.risk.cooldownSec);
       b.recordResult(pnlUsd, equityUsd + pnlUsd);
       if (b.strategy === "volume") {
@@ -355,17 +409,17 @@ async function runBotOnceInner(
       b.pushDecision({
         kind: "arb",
         mode,
-        reason: decision.reason,
+        reason: decision.reason + note,
         priceUsd: snap.leefUsd,
         txid,
         pnlUsd,
       });
-      const diff = plan.waxOut - plan.waxIn;
+      const diff = realizedWax ?? plan.waxOut - plan.waxIn;
       toast({
         title: `${live ? "Live" : "Paper"} ${b.strategy === "volume" ? "echo" : "arb"} · ${
           diff >= 0 ? "+" : ""
         }${fmtNum(diff, { digits: 3 })} WAX`,
-        description: decision.reason + (txid ? ` · tx ${txid.slice(0, 10)}…` : ""),
+        description: decision.reason + note + (txid ? ` · tx ${txid.slice(0, 10)}…` : ""),
       });
       return decision;
     }

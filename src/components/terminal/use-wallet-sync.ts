@@ -27,6 +27,7 @@ export function useWalletSync(snap: LeefSnapshot) {
             name: account,
             cpuPct: null,
             netPct: null,
+            ramPct: null,
           })),
         ]);
         if (cancelled) return;
