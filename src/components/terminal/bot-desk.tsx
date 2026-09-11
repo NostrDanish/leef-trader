@@ -750,18 +750,19 @@ function Knob({
   format: (v: number) => string;
   onChange: (v: number) => void;
 }) {
+  const safe = Number.isFinite(value) ? value : min;
   return (
     <label className="block">
       <span className="mb-1 flex items-center justify-between text-xs">
         <span className="text-muted-foreground">{label}</span>
-        <span className="font-mono tabular-nums text-foreground">{format(value)}</span>
+        <span className="font-mono tabular-nums text-foreground">{format(safe)}</span>
       </span>
       {ready ? (
         <Slider
           min={min}
           max={max}
           step={step}
-          value={[value]}
+          value={[safe]}
           onValueChange={([v]) => {
             if (typeof v !== "number") return;
             const n = Number((Math.round(v / step) * step).toFixed(4));

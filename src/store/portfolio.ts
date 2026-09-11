@@ -102,14 +102,31 @@ export const usePortfolio = create<PortfolioState>()(
     {
       name: "leef-portfolio-v1",
       version: 1,
-      migrate: () => ({
-        ladder: [...DEFAULT_LADDER],
-        settings: { ...DEFAULT_REBALANCE },
-        cycles: 0,
-        sweptUsd: 0,
-        movedUsd: 0,
-        log: [],
-      }),
+      // Merging migrate: fields added to settings later get filled from
+      // defaults instead of crashing on undefined.
+      migrate: (persisted) => {
+        const p = (
+          persisted && typeof persisted === "object" ? persisted : {}
+        ) as Partial<{
+          ladder: string[];
+          settings: Partial<RebalanceSettings>;
+          cycles: number;
+          sweptUsd: number;
+          movedUsd: number;
+          log: PortfolioLogEntry[];
+        }>;
+        return {
+          ladder:
+            Array.isArray(p.ladder) && p.ladder.length > 0
+              ? p.ladder
+              : [...DEFAULT_LADDER],
+          settings: { ...DEFAULT_REBALANCE, ...(p.settings ?? {}) },
+          cycles: typeof p.cycles === "number" ? p.cycles : 0,
+          sweptUsd: typeof p.sweptUsd === "number" ? p.sweptUsd : 0,
+          movedUsd: typeof p.movedUsd === "number" ? p.movedUsd : 0,
+          log: Array.isArray(p.log) ? p.log : [],
+        };
+      },
       partialize: (s) => ({
         ladder: s.ladder,
         settings: s.settings,

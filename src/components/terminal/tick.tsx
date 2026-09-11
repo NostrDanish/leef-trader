@@ -567,12 +567,13 @@ function Knob({
   muted?: boolean;
   ready: boolean;
 }) {
+  const safe = Number.isFinite(value) ? value : min;
   return (
     <label className={cn("block", muted && "opacity-40")}>
       <span className="mb-1 flex items-center justify-between text-xs">
         <span className="text-muted-foreground">{label}</span>
         <span className="font-mono tabular-nums text-fg">
-          {format ? format(value) : String(value)}
+          {format ? format(safe) : String(safe)}
         </span>
       </span>
       {ready ? (
@@ -580,7 +581,7 @@ function Knob({
           min={min}
           max={max}
           step={step}
-          value={[value]}
+          value={[safe]}
           onValueChange={([v]) => {
             if (typeof v !== "number") return;
             const n = Number((Math.round(v / step) * step).toFixed(4));

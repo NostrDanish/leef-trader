@@ -126,11 +126,23 @@ export const useWallet = create<WalletState>()(
       // Versioned: a schema bump discards stale persisted state instead of
       // shallow-merging it over the new shape (which can crash selectors).
       version: 1,
-      migrate: () => ({
-        paperBalances: { ...PAPER_BALANCES },
-        liveAccountHint: null,
-        authType: null,
-      }),
+      migrate: (persisted) => {
+        const p = (
+          persisted && typeof persisted === "object" ? persisted : {}
+        ) as Partial<{
+          paperBalances: Record<string, number>;
+          liveAccountHint: string | null;
+          authType: "key" | WalletKind | null;
+        }>;
+        return {
+          paperBalances:
+            p.paperBalances && typeof p.paperBalances === "object"
+              ? p.paperBalances
+              : { ...PAPER_BALANCES },
+          liveAccountHint: p.liveAccountHint ?? null,
+          authType: p.authType ?? null,
+        };
+      },
       partialize: (s) => ({
         paperBalances: s.paperBalances,
         liveAccountHint: s.liveAccountHint,
