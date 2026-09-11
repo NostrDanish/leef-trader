@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { listQuoteTokens, suggestBotSettings } from "./advisor";
+import { listQuoteTokens, suggestBotSettings, suggestPair } from "./advisor";
 import { DEFAULT_RISK } from "./bot-engine";
 import type { LeefPool, LeefSnapshot } from "./types";
 
@@ -64,7 +64,9 @@ describe("advisor", () => {
     const s = suggestBotSettings({
       snap: snap(),
       balances: { WAX: 200 },
+      base: "LEEF",
       quote: "WAX",
+      focus: ["LEEF", "WAX"],
       strategy: "signal",
       cpuPct: 0.2,
       netPct: 0.1,
@@ -80,7 +82,9 @@ describe("advisor", () => {
     const ok = suggestBotSettings({
       snap: snap(),
       balances: { WAX: 200 },
+      base: "LEEF",
       quote: "WAX",
+      focus: [],
       strategy: "signal",
       cpuPct: 0.2,
       netPct: 0.1,
@@ -89,7 +93,9 @@ describe("advisor", () => {
     const tight = suggestBotSettings({
       snap: snap(),
       balances: { WAX: 200 },
+      base: "LEEF",
       quote: "WAX",
+      focus: [],
       strategy: "signal",
       cpuPct: 0.96,
       netPct: 0.1,
@@ -105,12 +111,20 @@ describe("advisor", () => {
     suggestBotSettings({
       snap: snap(),
       balances: { WAX: 50 },
+      base: "LEEF",
       quote: "WAX",
+      focus: [],
       strategy: "dca",
       cpuPct: null,
       netPct: null,
       ramPct: null,
     });
     expect(DEFAULT_RISK).toEqual(before);
+  });
+
+  it("suggests a quote the wallet actually holds", () => {
+    const pair = suggestPair(snap(), { WAXUSDC: 40, WAX: 1 }, ["LEEF", "WAXUSDC"]);
+    expect(pair.base).toBe("LEEF");
+    expect(pair.quote).toBe("WAXUSDC");
   });
 });

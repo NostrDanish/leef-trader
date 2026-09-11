@@ -246,6 +246,8 @@ export type BotInput = {
   tradesThisHour: number;
   sessionRealizedUsd: number;
   sessionStartEquityUsd: number;
+  /** Asset being accumulated (default LEEF). */
+  base?: string;
   /** Quote token bought with / sold into (WAX, WAXUSDC, USDT, …). Default WAX. */
   quote?: string;
   /** Force a manual trade, bypassing strategy entry/exit logic. */
@@ -337,18 +339,20 @@ function bestBuyRoute(
   snap: LeefSnapshot,
   amountIn: number,
   quote = "WAX",
+  base = "LEEF",
 ): SwapRoute | null {
   if (amountIn <= 0) return null;
-  return bestExecutionRoute(snap.pools, snap.aux, amountIn, quote, "LEEF");
+  return bestExecutionRoute(snap.pools, snap.aux, amountIn, quote, base);
 }
 
 function bestSellRoute(
   snap: LeefSnapshot,
   amountLeef: number,
   quote = "WAX",
+  base = "LEEF",
 ): SwapRoute | null {
   if (amountLeef <= 0) return null;
-  return bestExecutionRoute(snap.pools, snap.aux, amountLeef, "LEEF", quote);
+  return bestExecutionRoute(snap.pools, snap.aux, amountLeef, base, quote);
 }
 
 /* ------------------------------------------------------------------ */
@@ -472,6 +476,7 @@ export function evaluateBot(input: BotInput): Decision {
   const { snap, risk, goals, position, strategy } = input;
   const now = input.now;
   const quote = (input.quote ?? "WAX").toUpperCase();
+  const base = (input.base ?? "LEEF").toUpperCase();
   const leefUsd = snap.leefUsd;
   const waxUsd = snap.waxUsd;
 
@@ -536,14 +541,14 @@ export function evaluateBot(input: BotInput): Decision {
     const sized = optimizeEntrySize({
       snap,
       tokenIn: quote,
-      tokenOut: "LEEF",
+      tokenOut: base,
       expectedGrossPct: Math.max(goals.takeProfitPct, 0.5),
       minNetEdgePct: 0,
       minIn: minWax,
       maxIn: maxWax,
       volPerSec: realizedVolPerSec(input.series),
     });
-    const route = sized?.best.route ?? bestBuyRoute(snap, minWax, quote);
+    const route = sized?.best.route ?? bestBuyRoute(snap, minWax, quote, base);
     if (!route) return hold("No executable route in the clip–max band");
     const amountWax = sized?.best.amountIn ?? minWax;
     return {
@@ -638,7 +643,7 @@ export function evaluateBot(input: BotInput): Decision {
     const sized = optimizeEntrySize({
       snap,
       tokenIn: quote,
-      tokenOut: "LEEF",
+      tokenOut: base,
       expectedGrossPct,
       minNetEdgePct: risk.minNetEdgePct,
       minIn: minWax,
@@ -683,7 +688,7 @@ export function evaluateBot(input: BotInput): Decision {
 
   if (position && position.amountLeef > 0) {
     const pnlPct = (leefUsd / position.entryUsd - 1) * 100;
-    const sellRoute = bestSellRoute(snap, position.amountLeef, quote);
+    const sellRoute = bestSellRoute(snap, position.amountLeef, quote, base);
 
     const sellAll = (reason: string): Decision | null => {
       if (!sellRoute) return null;

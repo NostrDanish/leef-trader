@@ -29,7 +29,14 @@ import { hasWalletSession } from "@/lib/wallet/session";
 import { cn } from "@/lib/utils";
 import { useBot, type BotDecisionLog } from "@/store/bot";
 import { useWallet } from "@/store/wallet";
-import { listQuoteTokens, suggestBotSettings, type AdvisorSuggestion } from "@/lib/leef/advisor";
+import {
+  FOCUS_PRESETS,
+  listBaseTokens,
+  listQuoteTokens,
+  suggestBotSettings,
+  suggestPair,
+  type AdvisorSuggestion,
+} from "@/lib/leef/advisor";
 import { runBotOnce } from "./use-bot-loop";
 
 const KIND_VARIANT: Record<
@@ -84,6 +91,7 @@ export function BotDesk({ snap }: { snap: LeefSnapshot }) {
     sessionRealizedUsd: b.stats.realizedUsd,
     sessionStartEquityUsd: b.stats.startEquityUsd,
     quote: b.quote,
+    base: b.base,
   });
 
   function onStart() {
@@ -298,14 +306,14 @@ export function BotDesk({ snap }: { snap: LeefSnapshot }) {
                 <>
                   <Crosshair className="mr-1 inline size-3.5 text-leef" />
                   Would buy with {fmtNum(preview.amountWax)} {b.quote} on {preview.route.label} ·{" "}
-                  {fmtNum(preview.route.amountOut, { compact: true })} LEEF · impact{" "}
+                  {fmtNum(preview.route.amountOut, { compact: true })} {b.base} · impact{" "}
                   {(preview.route.priceImpact * 100).toFixed(2)}%
                 </>
               )}
               {preview.kind === "sell" && (
                 <>
                   <Crosshair className="mr-1 inline size-3.5 text-sell" />
-                  Would sell {fmtNum(preview.amountLeef, { compact: true })} LEEF on{" "}
+                  Would sell {fmtNum(preview.amountLeef, { compact: true })} {b.base} on{" "}
                   {preview.route.label} ·                   {fmtNum(preview.route.amountOut, { digits: 2 })} {b.quote}
                 </>
               )}
@@ -508,8 +516,12 @@ function PositionPnl({ snap }: { snap: LeefSnapshot }) {
 }
 
 function AdvisorCard({ snap }: { snap: LeefSnapshot }) {
+  const base = useBot((s) => s.base);
+  const setBase = useBot((s) => s.setBase);
   const quote = useBot((s) => s.quote);
   const setQuote = useBot((s) => s.setQuote);
+  const focus = useBot((s) => s.focus);
+  const setFocus = useBot((s) => s.setFocus);
   const strategy = useBot((s) => s.strategy);
   const setRisk = useBot((s) => s.setRisk);
   const running = useBot((s) => s.running);
@@ -519,14 +531,21 @@ function AdvisorCard({ snap }: { snap: LeefSnapshot }) {
   const ramPct = useWallet((s) => s.ramPct);
   const [scan, setScan] = useState<AdvisorSuggestion | null>(null);
 
-  const quotes = listQuoteTokens(snap);
+  const bases = listBaseTokens(snap);
+  const quotes = listQuoteTokens(snap, base);
+  const focusChoices = [...new Set([...FOCUS_PRESETS, ...quotes, ...bases])];
 
   function runScan() {
+    const pair = suggestPair(snap, balances, focus);
+    setBase(pair.base);
+    setQuote(pair.quote);
     setScan(
       suggestBotSettings({
         snap,
         balances,
-        quote,
+        base: pair.base,
+        quote: pair.quote,
+        focus,
         strategy,
         cpuPct,
         netPct,
@@ -537,7 +556,15 @@ function AdvisorCard({ snap }: { snap: LeefSnapshot }) {
 
   function applyScan() {
     if (!scan) return;
+    setBase(scan.base);
+    setQuote(scan.quote);
     setRisk(scan.risk);
+    setScan(null);
+  }
+
+  function toggleFocus(sym: string) {
+    if (focus.includes(sym)) setFocus(focus.filter((x) => x !== sym));
+    else setFocus([...focus, sym]);
     setScan(null);
   }
 
@@ -548,35 +575,74 @@ function AdvisorCard({ snap }: { snap: LeefSnapshot }) {
         Pair & wallet scan
       </h3>
       <p className="mb-3 text-xs text-muted-foreground">
-        Trade LEEF against WAX, WAXUSDC, PARAUSD, or another quote. Scan
-        suggests min clip, max position, and cooldown from this wallet and
-        CPU/NET/RAM — you apply or ignore.
+        Not only LEEF/WAX — LEEF/USDC, LEEF/PARAUSD, WAX/USDC hops, whatever
+        books exist. Scan sizes from this wallet and CPU/NET/RAM. You apply.
       </p>
-      <label className="mb-3 block text-xs text-muted-foreground">
-        Quote token
-        <select
-          className="mt-1 w-full rounded-md border border-border bg-background px-2 py-1.5 text-sm text-foreground"
-          value={quote}
-          disabled={running}
-          onChange={(e) => {
-            setQuote(e.target.value);
-            setScan(null);
-          }}
-        >
-          {quotes.map((q) => (
-            <option key={q} value={q}>
-              LEEF / {q}
-            </option>
-          ))}
-        </select>
-      </label>
+      <div className="mb-3 grid grid-cols-2 gap-2">
+        <label className="block text-xs text-muted-foreground">
+          Base
+          <select
+            className="mt-1 w-full rounded-md border border-border bg-background px-2 py-1.5 text-sm text-foreground"
+            value={base}
+            disabled={running}
+            onChange={(e) => {
+              setBase(e.target.value);
+              setScan(null);
+            }}
+          >
+            {bases.map((q) => (
+              <option key={q} value={q}>
+                {q}
+              </option>
+            ))}
+          </select>
+        </label>
+        <label className="block text-xs text-muted-foreground">
+          Quote
+          <select
+            className="mt-1 w-full rounded-md border border-border bg-background px-2 py-1.5 text-sm text-foreground"
+            value={quote}
+            disabled={running}
+            onChange={(e) => {
+              setQuote(e.target.value);
+              setScan(null);
+            }}
+          >
+            {quotes.map((q) => (
+              <option key={q} value={q}>
+                {q}
+              </option>
+            ))}
+          </select>
+        </label>
+      </div>
+      <p className="mb-1 text-xs text-muted-foreground">Focus tokens (scan bias)</p>
+      <div className="mb-3 flex flex-wrap gap-1.5">
+        {focusChoices.slice(0, 12).map((sym) => {
+          const on = focus.includes(sym);
+          return (
+            <button
+              key={sym}
+              type="button"
+              disabled={running}
+              onClick={() => toggleFocus(sym)}
+              className={cn(
+                "rounded-full border px-2 py-0.5 text-xs",
+                on ? "border-accent/50 bg-accent/15 text-foreground" : "border-border text-muted-foreground",
+              )}
+            >
+              {sym}
+            </button>
+          );
+        })}
+      </div>
       <div className="flex flex-wrap gap-2">
         <Button type="button" variant="outline" size="sm" onClick={runScan} disabled={running}>
           Scan wallet & market
         </Button>
         {scan && (
           <Button type="button" variant="leef" size="sm" onClick={applyScan} disabled={running}>
-            Apply suggestions
+            Apply {scan.base}/{scan.quote} + sizes
           </Button>
         )}
       </div>

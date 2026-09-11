@@ -59,8 +59,12 @@ const MAX_LOG = 60;
 type BotState = {
   running: boolean;
   strategy: BotStrategy;
-  /** Quote token for LEEF trades (WAX, WAXUSDC, USDT, PARAUSD, …). */
+  /** Asset being accumulated (usually LEEF). */
+  base: string;
+  /** Quote token for trades (WAX, WAXUSDC, USDT, PARAUSD, …). */
   quote: string;
+  /** Tokens to bias the scan toward. Empty = no extra bias. */
+  focus: string[];
   goals: BotGoals;
   risk: BotRisk;
   position: Position | null;
@@ -76,7 +80,9 @@ type BotState = {
   start: (equityUsd: number) => void;
   stop: (reason?: string) => void;
   setStrategy: (s: BotStrategy) => void;
+  setBase: (q: string) => void;
   setQuote: (q: string) => void;
+  setFocus: (tokens: string[]) => void;
   setGoals: (p: Partial<BotGoals>) => void;
   setRisk: (p: Partial<BotRisk>) => void;
   pushSeries: (p: PricePoint) => void;
@@ -114,7 +120,9 @@ export const useBot = create<BotState>()(
     (set, get) => ({
       running: false,
       strategy: "signal",
+      base: "LEEF",
       quote: "WAX",
+      focus: ["LEEF", "WAX"],
       goals: { ...DEFAULT_GOALS },
       risk: { ...DEFAULT_RISK },
       position: null,
@@ -140,11 +148,21 @@ export const useBot = create<BotState>()(
         set({ running: false, lastReason: reason ?? "Bot stopped" }),
       setStrategy: (strategy) =>
         set({ strategy, gridAnchor: null, lastReason: `Strategy: ${strategy}` }),
+      setBase: (base) =>
+        set({
+          base: base.toUpperCase(),
+          gridAnchor: null,
+          lastReason: `Base: ${base.toUpperCase()}`,
+        }),
       setQuote: (quote) =>
         set({
           quote: quote.toUpperCase(),
           gridAnchor: null,
           lastReason: `Quote: ${quote.toUpperCase()}`,
+        }),
+      setFocus: (focus) =>
+        set({
+          focus: [...new Set(focus.map((s) => s.toUpperCase()))].slice(0, 8),
         }),
       setGoals: (p) => set((s) => ({ goals: { ...s.goals, ...p } })),
       setRisk: (p) => set((s) => ({ risk: { ...s.risk, ...p } })),
@@ -246,13 +264,15 @@ export const useBot = create<BotState>()(
       // Versioned + merging migrate: fields added to the schema after a user
       // saved state (e.g. risk.minNetEdgePct, stats.byStrategy) get filled
       // from defaults instead of crashing selectors with undefined.
-      version: 5,
+      version: 6,
       migrate: (persisted) => {
         const p = (
           persisted && typeof persisted === "object" ? persisted : {}
         ) as Partial<{
           strategy: BotStrategy;
+          base: string;
           quote: string;
+          focus: string[];
           goals: Partial<BotGoals>;
           risk: Partial<BotRisk>;
           position: Position | null;
@@ -263,7 +283,9 @@ export const useBot = create<BotState>()(
         }>;
         return {
           strategy: p.strategy ?? "signal",
+          base: typeof p.base === "string" && p.base ? p.base.toUpperCase() : "LEEF",
           quote: typeof p.quote === "string" && p.quote ? p.quote.toUpperCase() : "WAX",
+          focus: Array.isArray(p.focus) ? p.focus.map((s) => String(s).toUpperCase()) : ["LEEF", "WAX"],
           goals: { ...DEFAULT_GOALS, ...(p.goals ?? {}) },
           risk: { ...DEFAULT_RISK, ...(p.risk ?? {}) },
           position: p.position ?? null,
@@ -281,7 +303,9 @@ export const useBot = create<BotState>()(
         // Never persist `running` — a reload always stops the bot (the live
         // key is in-memory only, so it could not sign anyway).
         strategy: s.strategy,
+        base: s.base,
         quote: s.quote,
+        focus: s.focus,
         goals: s.goals,
         risk: s.risk,
         position: s.position,

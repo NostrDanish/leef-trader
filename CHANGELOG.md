@@ -2,6 +2,15 @@
 
 All notable changes to LEEF Trader. Dates are commit-era, not release tags.
 
+## Unreleased — pair + focus scan (not only LEEF/WAX)
+
+- Bot trades a **base/quote** pair (LEEF/WAX, LEEF/WAXUSDC, LEEF/PARAUSD, …).
+  Focus chips bias the wallet scan. Scan suggests pair + clip/max/cooldown
+  from balances and CPU/NET/RAM; you apply or ignore. Router hops if there
+  is no direct book.
+
+---
+
 ## Unreleased — dynamic clip band + pre-trade re-optimize
 
 - `clipWax` is the **minimum** order size; `maxPositionWax` is the **ceiling**

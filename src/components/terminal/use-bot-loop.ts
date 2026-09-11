@@ -152,6 +152,7 @@ async function runBotOnceInner(
     sessionRealizedUsd: b.stats.realizedUsd,
     sessionStartEquityUsd: b.stats.startEquityUsd,
     quote: b.quote,
+    base: b.base,
     force: opts?.force ?? null,
   });
 
@@ -226,7 +227,7 @@ async function runBotOnceInner(
     const fresh = optimizeEntrySize({
       snap: book,
       tokenIn: b.quote || "WAX",
-      tokenOut: "LEEF",
+      tokenOut: b.base || "LEEF",
       expectedGrossPct: thesis,
       minNetEdgePct: b.risk.minNetEdgePct,
       minIn,
@@ -275,7 +276,7 @@ async function runBotOnceInner(
       book.pools,
       book.aux,
       decision.amountLeef,
-      "LEEF",
+      b.base || "LEEF",
       b.quote || "WAX",
     );
     if (!routed) {
@@ -329,14 +330,14 @@ async function runBotOnceInner(
         const rec = await waitForTransaction(txid);
         if (rec.status === "failed") throw new Error(rec.error);
         if (rec.status === "confirmed") {
-          const actual = assetDelta(rec.transfers, w.account, "LEEF", LEEF_CONTRACT);
+          const actual = assetDelta(rec.transfers, w.account, b.base || "LEEF");
           if (actual > 0) amountLeef = actual;
           note = " · confirmed on-chain";
         } else {
           note = " · broadcast, confirmation pending (quoted estimate held)";
         }
       } else {
-        w.applyPaperFill(b.quote || "WAX", decision.amountWax, "LEEF", amountLeef);
+        w.applyPaperFill(b.quote || "WAX", decision.amountWax, b.base || "LEEF", amountLeef);
       }
       // Average into an existing position (DCA) or open a fresh one.
       const prev = b.position;
@@ -415,7 +416,7 @@ async function runBotOnceInner(
           note = " · broadcast, confirmation pending (quoted estimate held)";
         }
       } else {
-        w.applyPaperFill("LEEF", decision.amountLeef, b.quote || "WAX", waxOut);
+        w.applyPaperFill(b.base || "LEEF", decision.amountLeef, b.quote || "WAX", waxOut);
       }
       const pnlUsd = position ? waxOut * snap.waxUsd - position.entryCostUsd : 0;
       b.setPosition(null);

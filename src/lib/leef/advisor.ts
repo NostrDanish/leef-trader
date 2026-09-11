@@ -15,7 +15,10 @@ import type { LeefSnapshot } from "./types";
 export type AdvisorInput = {
   snap: LeefSnapshot;
   balances: Record<string, number>;
+  base: string;
   quote: string;
+  /** Tokens the user wants to focus on (empty = no extra bias). */
+  focus: string[];
   strategy: BotStrategy;
   cpuPct: number | null;
   netPct: number | null;
@@ -25,6 +28,7 @@ export type AdvisorInput = {
 export type AdvisorLine = { label: string; detail: string };
 
 export type AdvisorSuggestion = {
+  base: string;
   quote: string;
   risk: Pick<BotRisk, "clipWax" | "maxPositionWax" | "cooldownSec" | "maxTradesHour" | "maxImpactPct">;
   why: AdvisorLine[];
@@ -36,22 +40,71 @@ export type AdvisorSuggestion = {
 
 const STABLEISH = new Set(["USDT", "USDC", "WAXUSDT", "WAXUSDC", "PARAUSD", "DAI"]);
 
-/** Tokens the desk offers as quote (LEEF vs X). Universe + LEEF pool pairs. */
-export function listQuoteTokens(snap: LeefSnapshot): string[] {
+const CORE = ["LEEF", "WAX", "WAXUSDC", "WAXUSDT", "USDT", "PARAUSD"] as const;
+
+/** Bases you can accumulate (LEEF first, then other liquid names). */
+export function listBaseTokens(snap: LeefSnapshot): string[] {
+  const set = new Set<string>(["LEEF"]);
+  for (const u of snap.universe) {
+    if (u.symbol === "WAX") continue;
+    if (u.usdPrice > 0 && u.tvlUsd >= 20) set.add(u.symbol);
+  }
+  for (const p of snap.pools) set.add(p.leef.symbol.toUpperCase());
+  return [...set].sort((a, b) => (a === "LEEF" ? -1 : b === "LEEF" ? 1 : a.localeCompare(b)));
+}
+
+/** Quote side: WAX, stables, and whatever LEEF (or the base) actually books against. */
+export function listQuoteTokens(snap: LeefSnapshot, base = "LEEF"): string[] {
+  const b = base.toUpperCase();
   const set = new Set<string>(["WAX", "WAXUSDC", "WAXUSDT", "USDT", "PARAUSD"]);
   for (const u of snap.universe) {
-    if (u.symbol === "LEEF") continue;
+    if (u.symbol === b) continue;
     if (u.usdPrice > 0 && (u.tvlUsd >= 15 || STABLEISH.has(u.symbol))) set.add(u.symbol);
   }
   for (const p of snap.pools) {
     const s = p.pair.symbol.toUpperCase();
-    if (s && s !== "LEEF") set.add(s);
+    if (s && s !== b) set.add(s);
   }
-  return [...set].sort((a, b) => {
+  set.delete(b);
+  return [...set].sort((a, c) => {
     const rank = (x: string) =>
       x === "WAX" ? 0 : STABLEISH.has(x) ? 1 : x === "TLM" ? 2 : 3;
-    return rank(a) - rank(b) || a.localeCompare(b);
+    return rank(a) - rank(c) || a.localeCompare(c);
   });
+}
+
+export const FOCUS_PRESETS = CORE;
+
+/** Pick the deepest LEEF (or base) book vs a quote the wallet actually holds. */
+export function suggestPair(
+  snap: LeefSnapshot,
+  balances: Record<string, number>,
+  focus: string[],
+): { base: string; quote: string; reason: string } {
+  const focusUp = focus.map((s) => s.toUpperCase());
+  const base = focusUp.includes("LEEF") || focusUp.length === 0 ? "LEEF" : focusUp[0]!;
+  const quotes = listQuoteTokens(snap, base);
+  let best = "WAX";
+  let bestScore = -1;
+  let reason = "Default LEEF/WAX";
+  for (const q of quotes) {
+    const bal = balances[q] ?? 0;
+    const px = usdPriceOf(q, snap);
+    const usd = bal * px;
+    const books = snap.pools.filter((p) => p.pair.symbol.toUpperCase() === q);
+    const tvl = books.reduce((s, p) => s + p.tvlUsd, 0);
+    const focusBoost = focusUp.includes(q) ? 1.4 : 1;
+    const score = (usd + 1) * (tvl + 1) * focusBoost;
+    if (score > bestScore && (bal > 0 || q === "WAX")) {
+      best = q;
+      bestScore = score;
+      reason =
+        books.length > 0
+          ? `${books.length} ${base}/${q} book(s), wallet ${bal.toFixed(bal >= 10 ? 1 : 4)} ${q}`
+          : `Wallet holds ${q}; hops via WAX if no direct ${base}/${q} book`;
+    }
+  }
+  return { base, quote: best, reason };
 }
 
 function roundClip(n: number): number {
@@ -66,6 +119,7 @@ function roundClip(n: number): number {
  */
 export function suggestBotSettings(input: AdvisorInput): AdvisorSuggestion {
   const quote = input.quote.toUpperCase();
+  const base = (input.base ?? "LEEF").toUpperCase();
   const px = usdPriceOf(quote, input.snap);
   const bal = input.balances[quote] ?? 0;
   const quoteUsd = bal * px;
@@ -121,10 +175,10 @@ export function suggestBotSettings(input: AdvisorInput): AdvisorSuggestion {
   const leefBooks = input.snap.pools.filter((p) => p.pair.symbol.toUpperCase() === quote);
   const tvl = leefBooks.reduce((s, p) => s + p.tvlUsd, 0);
   if (quote !== "WAX" && leefBooks.length === 0) {
-    warnings.push(`No LEEF/${quote} book in the snapshot — routing will hop via WAX if a path exists`);
+    warnings.push(`No ${base}/${quote} book in the snapshot — routing will hop via WAX if a path exists`);
   }
   if (tvl > 0 && quoteUsd > tvl * 0.15) {
-    warnings.push(`Wallet ${quote} is large vs LEEF/${quote} TVL ($${tvl.toFixed(0)}) — keep clips small`);
+    warnings.push(`Wallet ${quote} is large vs ${base}/${quote} TVL ($${tvl.toFixed(0)}) — keep clips small`);
     clip = roundClip(clip * 0.5);
     maxPos = Math.max(clip, roundClip(maxPos * 0.6));
   }
@@ -149,12 +203,19 @@ export function suggestBotSettings(input: AdvisorInput): AdvisorSuggestion {
   });
   if (leefBooks.length > 0) {
     why.push({
-      label: "LEEF books",
-      detail: `${leefBooks.length} LEEF/${quote} pool(s) · TVL $${tvl.toFixed(0)}`,
+      label: "Books",
+      detail: `${leefBooks.length} ${base}/${quote} pool(s) · TVL $${tvl.toFixed(0)}`,
+    });
+  }
+  if (input.focus.length > 0) {
+    why.push({
+      label: "Focus",
+      detail: input.focus.join(", "),
     });
   }
 
   return {
+    base,
     quote,
     risk: {
       clipWax: clip,
