@@ -344,11 +344,26 @@ export function BotDesk({ snap }: { snap: LeefSnapshot }) {
               </div>
             </Card>
             <Card className="p-4">
-              <div className="text-xs uppercase tracking-wider text-subtle">Equity</div>
-              <div className="mt-1 font-mono text-lg tabular-nums">{fmtUsd(equityUsd, 2)}</div>
-              <div className="text-xs text-muted-foreground">
-                start {fmtUsd(b.stats.startEquityUsd, 2)}
+              <div className="text-xs uppercase tracking-wider text-subtle">
+                {b.strategy === "volume" ? "Volume made" : "Equity"}
               </div>
+              {b.strategy === "volume" ? (
+                <>
+                  <div className="mt-1 font-mono text-lg tabular-nums text-wax">
+                    {fmtUsd(b.stats.volumeUsd, 2)}
+                  </div>
+                  <div className="text-xs text-muted-foreground">
+                    echo cost {fmtUsd(b.stats.echoCostUsd, 2)} · equity {fmtUsd(equityUsd, 2)}
+                  </div>
+                </>
+              ) : (
+                <>
+                  <div className="mt-1 font-mono text-lg tabular-nums">{fmtUsd(equityUsd, 2)}</div>
+                  <div className="text-xs text-muted-foreground">
+                    start {fmtUsd(b.stats.startEquityUsd, 2)}
+                  </div>
+                </>
+              )}
             </Card>
           </div>
 
@@ -649,6 +664,18 @@ function RiskCard({ strategy }: { strategy: BotStrategy }) {
             step={0.25}
             format={(v) => `${v.toFixed(2)}%`}
             onChange={(gridStepPct) => setRisk({ gridStepPct })}
+          />
+        )}
+        {strategy === "volume" && (
+          <Knob
+            ready={slidersOn}
+            label="Max echo loss per round trip"
+            value={risk.maxEchoLossPct}
+            min={0.05}
+            max={3}
+            step={0.05}
+            format={(v) => `${v.toFixed(2)}%`}
+            onChange={(maxEchoLossPct) => setRisk({ maxEchoLossPct })}
           />
         )}
       </div>

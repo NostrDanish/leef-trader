@@ -5,6 +5,7 @@ import { Card } from "@/components/ui/card";
 import { compareAllRoutes } from "@/lib/leef/amm";
 import { fmtNum, fmtUsd } from "@/lib/leef/format";
 import type { LeefSnapshot } from "@/lib/leef/types";
+import { findToken } from "@/lib/leef/universe";
 import { tokenCatalog } from "@/lib/wallet/tokens";
 import { useBot } from "@/store/bot";
 import { useTerminal } from "@/store/terminal";
@@ -12,6 +13,9 @@ import { useWallet } from "@/store/wallet";
 import { PairMarks } from "./token-mark";
 
 function markUsd(symbol: string, qty: number, snap: LeefSnapshot): number {
+  // Priced universe first — it covers every liquid token on Alcor.
+  const u = findToken(snap.universe, symbol);
+  if (u && u.usdPrice > 0) return qty * u.usdPrice;
   if (symbol === "WAX") return qty * snap.waxUsd;
   if (symbol === "LEEF") return qty * snap.leefUsd;
   if (symbol === "USDT" || symbol === "WAXUSDC" || symbol === "WAXUSDT") return qty;
@@ -37,11 +41,15 @@ export function WalletDesk({ snap }: { snap: LeefSnapshot }) {
   const liveBalances = useWallet((s) => s.liveBalances);
   const balances = mode === "live" ? liveBalances : paperBalances;
   const catalog = tokenCatalog(snap);
-  const rows = catalog
-    .map((t) => {
-      const qty = balances[t.symbol] ?? 0;
-      return { ...t, qty, usd: markUsd(t.symbol, qty, snap) };
-    })
+  const catalogSyms = new Set(catalog.map((t) => t.symbol));
+  const rows = [
+    ...catalog.map((t) => ({ symbol: t.symbol, qty: balances[t.symbol] ?? 0 })),
+    // Anything else the wallet holds (Hyperion full scan / paper dust).
+    ...Object.keys(balances)
+      .filter((s) => !catalogSyms.has(s))
+      .map((s) => ({ symbol: s, qty: balances[s] ?? 0 })),
+  ]
+    .map((t) => ({ ...t, usd: markUsd(t.symbol, t.qty, snap) }))
     .filter((t) => t.qty > 0 || t.symbol === "WAX" || t.symbol === "LEEF")
     .sort((a, b) => b.usd - a.usd || b.qty - a.qty);
 

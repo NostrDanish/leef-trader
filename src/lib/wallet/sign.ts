@@ -130,6 +130,41 @@ export async function signAndPushSwap(opts: {
   return { txid, expectedOut, routeSource: source };
 }
 
+export type BatchLeg = {
+  /** Token contract to transfer from (e.g. "eosio.token"). */
+  contract: string;
+  /** Asset string, e.g. "10.00000000 WAX". */
+  quantity: string;
+  /** Ready swap.alcor memo from the Alcor router. */
+  memo: string;
+};
+
+/**
+ * Broadcast several independent swap transfers as ONE atomic transaction.
+ * Used by the rebalancer: every leg spends tokens the wallet already holds,
+ * and if any leg's min-out fails, the whole batch reverts.
+ */
+export async function signAndPushBatch(opts: {
+  account: string;
+  permission?: string;
+  legs: BatchLeg[];
+}): Promise<{ txid: string }> {
+  if (opts.legs.length === 0) throw new Error("Nothing to execute");
+  return await signAndPushTransfers({
+    account: opts.account,
+    permission: opts.permission,
+    transfers: opts.legs.map((l) => ({
+      contract: l.contract,
+      data: {
+        from: opts.account,
+        to: ALCOR_SWAP_CONTRACT,
+        quantity: l.quantity,
+        memo: l.memo.replaceAll("<receiver>", opts.account),
+      },
+    })),
+  });
+}
+
 /**
  * Atomic two-leg arbitrage in a single WAX transaction:
  *

@@ -1,4 +1,5 @@
 import type { AuxPool, LeefPool, LeefSnapshot, LiveTrade } from "./types";
+import type { UniverseToken } from "./universe";
 import { emptyToken } from "./amm";
 
 function leefPool(p: {
@@ -268,6 +269,41 @@ export function sampleTrades(): LiveTrade[] {
   ];
 }
 
+/** Static priced universe for the offline book (last known values). */
+export function fallbackUniverse(waxUsd = 0.00608, leefUsd = 1.496e-7): UniverseToken[] {
+  const t = (
+    symbol: string,
+    contract: string,
+    decimals: number,
+    usdPrice: number,
+    tvlUsd: number,
+    poolId: number,
+    stable = false,
+  ): UniverseToken => ({
+    symbol,
+    contract,
+    decimals,
+    alcorId: `${symbol.toLowerCase()}-${contract}`,
+    poolId,
+    waxPerToken: waxUsd > 0 ? usdPrice / waxUsd : 0,
+    usdPrice,
+    tvlUsd,
+    stable,
+  });
+  return [
+    t("WAX", "eosio.token", 8, waxUsd, 5000, 217),
+    t("LEEF", "leefmaincorp", 4, leefUsd, 1267, 217),
+    t("USDT", "usdt.alcor", 4, 1, 1780, 1095, true),
+    t("WAXUSDT", "eth.token", 6, 1, 2139, 32, true),
+    t("WAXUSDC", "eth.token", 6, 1, 480, 8425, true),
+    t("LSW", "lsw.alcor", 8, 0.00464, 301, 3273),
+    t("TLM", "alien.worlds", 4, 0.00119, 67, 230),
+    t("NBG", "newb.gm", 4, 0.000805, 40, 11502),
+    t("BUZZ", "buzztoken.gm", 4, 0.00000064, 31, 6019),
+    t("DUST", "niftywizards", 4, 0.0000105, 6, 220),
+  ];
+}
+
 export function fallbackSnapshot(warning?: string, fetchedAt = "2026-01-01T00:00:00.000Z"): LeefSnapshot {
   const pools = fallbackPools();
   const aux = fallbackAux();
@@ -287,6 +323,7 @@ export function fallbackSnapshot(warning?: string, fetchedAt = "2026-01-01T00:00
     pools,
     aux,
     trades: sampleTrades(),
+    universe: fallbackUniverse(waxUsd, leefUsd),
     warning:
       warning ??
       "Alcor API unreachable from this session. Showing the last known LEEF book.",

@@ -12,7 +12,7 @@ import type { LeefPool, LeefSnapshot, SwapRoute } from "./types";
 /* Strategy catalog                                                    */
 /* ------------------------------------------------------------------ */
 
-export type BotStrategy = "signal" | "meanrev" | "spread" | "grid" | "dca";
+export type BotStrategy = "signal" | "meanrev" | "spread" | "grid" | "dca" | "volume";
 
 export const STRATEGIES: {
   id: BotStrategy;
@@ -60,6 +60,14 @@ export const STRATEGIES: {
     detail:
       "Buys a fixed clip every cycle until the position cap is reached, then sits until the take-profit target. The slow, boring, survivable strategy.",
     bestFor: "Long-term stacking",
+  },
+  {
+    id: "volume",
+    name: "Volume maker",
+    tagline: "Boost book volume at bounded cost",
+    detail:
+      "Echoes WAX → LEEF → WAX in ONE atomic transaction every cycle — the chain sees real volume, you keep the spread minus a hard loss floor you set. If the round trip would cost more than your budget, the transaction reverts and nothing moves. Runs cheapest-book first; when a cross-pool spread appears it can even come out ahead.",
+    bestFor: "Warming the tape",
   },
 ];
 
@@ -114,6 +122,8 @@ export type BotRisk = {
   minEdgePct: number;
   /** Grid strategy: step size, percent. */
   gridStepPct: number;
+  /** Volume strategy: max acceptable round-trip loss, percent. */
+  maxEchoLossPct: number;
 };
 
 export const DEFAULT_GOALS: BotGoals = {
@@ -134,6 +144,7 @@ export const DEFAULT_RISK: BotRisk = {
   minConfidence: 55,
   minEdgePct: 1.2,
   gridStepPct: 2.5,
+  maxEchoLossPct: 0.8,
 };
 
 export type Position = {
@@ -254,17 +265,18 @@ export function findArb(
   snap: LeefSnapshot,
   waxIn: number,
   minProfitPct: number,
+  allowSamePool = false,
 ): ArbPlan | null {
   if (!(waxIn > 0)) return null;
   const waxPools = backedPools(snap.pools).filter((p) => isWaxToken(p.pair));
-  if (waxPools.length < 2) return null;
+  if (waxPools.length < 2 && !allowSamePool) return null;
 
   let best: ArbPlan | null = null;
   for (const buyPool of waxPools) {
     const q1 = quoteConstantProduct(waxIn, buyPool.pair.quantity, buyPool.leef.quantity, buyPool.fee);
     if (q1.amountOut <= 0 || q1.priceImpact > 0.2) continue;
     for (const sellPool of waxPools) {
-      if (sellPool.id === buyPool.id) continue;
+      if (!allowSamePool && sellPool.id === buyPool.id) continue;
       const q2 = quoteConstantProduct(q1.amountOut, sellPool.leef.quantity, sellPool.pair.quantity, sellPool.fee);
       if (q2.amountOut <= 0 || q2.priceImpact > 0.2) continue;
       const profitPct = q2.amountOut / waxIn - 1;
@@ -333,6 +345,73 @@ export function evaluateBot(input: BotInput): Decision {
   }
 
   const signal = botSignal(input.series);
+
+  /* ------------------------- manual overrides ---------------------- */
+
+  if (input.force === "buy") {
+    const amountWax = Math.min(risk.clipWax, input.balances.WAX ?? 0);
+    const route = bestBuyRoute(snap, amountWax);
+    if (!route) return hold("No backed route to buy with");
+    return {
+      kind: "buy",
+      amountWax,
+      route,
+      reason: `Manual buy clip · ${route.label}`,
+      confidence: signal.confidence,
+    };
+  }
+  if (input.force === "sell" && (!position || position.amountLeef <= 0)) {
+    return hold("No open position to sell");
+  }
+
+  /* ----------- position-independent scans (spread arb / volume) ---- */
+
+  if (strategy === "spread" || strategy === "volume") {
+    const waxAvail = Math.min(risk.clipWax, input.balances.WAX ?? 0);
+    const isVolume = strategy === "volume";
+    let arbDecision: Decision | null = null;
+    let scanReason: string;
+
+    if (waxAvail <= 0.5) {
+      scanReason = "Not enough WAX for an arb clip";
+    } else if (isVolume) {
+      // Echo: round-trip allowed, gated by the loss budget (negative profit gate).
+      const plan = findArb(snap, waxAvail, -risk.maxEchoLossPct, true);
+      if (plan) {
+        const costPct = -plan.profitPct * 100;
+        arbDecision = {
+          kind: "arb",
+          plan,
+          reason:
+            plan.profitPct >= 0
+              ? `Spread-funded echo #${plan.buyPool.id}→#${plan.sellPool.id} · est +${(plan.profitPct * 100).toFixed(2)}% — volume that pays`
+              : `Volume echo #${plan.buyPool.id}${plan.sellPool.id === plan.buyPool.id ? " round-trip" : `→#${plan.sellPool.id}`} · est cost ${costPct.toFixed(2)}% ≤ budget ${risk.maxEchoLossPct}%`,
+        };
+      }
+      scanReason = `Round trip costs more than the ${risk.maxEchoLossPct}% budget right now`;
+    } else {
+      // Leg 1's min-out buffer shrinks leg 2's input, so the on-chain profit
+      // floor needs the raw spread to clear it with slippage headroom.
+      const gatePct =
+        ((1 + risk.minEdgePct / 100) / Math.max(0.9, 1 - risk.slippage / 100) - 1) * 100;
+      const plan = findArb(snap, waxAvail, gatePct);
+      if (plan) {
+        arbDecision = {
+          kind: "arb",
+          plan,
+          reason: `Arb #${plan.buyPool.id}→#${plan.sellPool.id} · est +${(plan.profitPct * 100).toFixed(2)}% after fees · impact ${(plan.impactPct * 100).toFixed(1)}%`,
+        };
+      }
+      const probe = findArb(snap, waxAvail, -100);
+      scanReason = `No atomic arb ≥ ${risk.minEdgePct}% after fees+impact (${
+        probe ? `best spread ${(probe.profitPct * 100).toFixed(2)}%` : "no two WAX books"
+      })`;
+    }
+
+    if (arbDecision) return arbDecision;
+    // No arb/echo this cycle — still guard any open position below.
+    if (!position || position.amountLeef <= 0) return hold(scanReason);
+  }
 
   /* ---------------- position management (all strategies) ---------- */
 
@@ -437,44 +516,6 @@ export function evaluateBot(input: BotInput): Decision {
 
   /* ------------------------------ entries ------------------------- */
 
-  // Spread arb runs flat-or-not and never opens a directional position.
-  if (strategy === "spread") {
-    const waxAvail = Math.min(risk.clipWax, input.balances.WAX ?? 0);
-    if (waxAvail <= 0.5) return hold("Not enough WAX for an arb clip");
-    // Leg 1's min-out buffer shrinks leg 2's input, so the on-chain profit
-    // floor needs the raw spread to clear it with slippage headroom.
-    const gatePct =
-      ((1 + risk.minEdgePct / 100) / Math.max(0.9, 1 - risk.slippage / 100) - 1) * 100;
-    const plan = findArb(snap, waxAvail, gatePct);
-    if (!plan) {
-      const probe = findArb(snap, waxAvail, -100);
-      const spreadTxt = probe
-        ? `best spread ${(probe.profitPct * 100).toFixed(2)}%`
-        : "no two WAX books";
-      return hold(
-        `No atomic arb ≥ ${risk.minEdgePct}% after fees+impact (${spreadTxt})`,
-      );
-    }
-    return {
-      kind: "arb",
-      plan,
-      reason: `Arb #${plan.buyPool.id}→#${plan.sellPool.id} · est +${(plan.profitPct * 100).toFixed(2)}% after fees · impact ${(plan.impactPct * 100).toFixed(1)}%`,
-    };
-  }
-
-  if (input.force === "buy") {
-    const amountWax = Math.min(risk.clipWax, input.balances.WAX ?? 0);
-    const route = bestBuyRoute(snap, amountWax);
-    if (!route) return hold("No backed route to buy with");
-    return {
-      kind: "buy",
-      amountWax,
-      route,
-      reason: `Manual buy clip · ${route.label}`,
-      confidence: signal.confidence,
-    };
-  }
-
   const waxAvail = input.balances.WAX ?? 0;
   const clip = Math.min(risk.clipWax, waxAvail);
   const positionUsd = 0; // flat here
@@ -532,6 +573,7 @@ export function evaluateBot(input: BotInput): Decision {
       return tryBuy("Scheduled accumulation clip");
     }
     case "spread":
-      return hold("Spread scan only");
+    case "volume":
+      return hold("Scan only");
   }
 }

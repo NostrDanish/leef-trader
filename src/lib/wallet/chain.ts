@@ -136,6 +136,63 @@ export async function getChainInfo(): Promise<unknown> {
   return await rpcPost("/v1/chain/get_info", {}, 8_000);
 }
 
+/* ------------------------------------------------------------------ */
+/* Full wallet token scan (Hyperion)                                   */
+/* ------------------------------------------------------------------ */
+
+const HYPERION = [
+  "https://api.waxsweden.org",
+  "https://wax.eosphere.io",
+  "https://wax.eosusa.io",
+];
+
+export type TokenBalance = {
+  symbol: string;
+  contract: string;
+  decimals: number;
+  amount: number;
+};
+
+/**
+ * Every token balance of an account in one Hyperion call.
+ * Falls back to per-token /v1/chain/get_currency_balance for `known` tokens
+ * when no Hyperion endpoint answers.
+ */
+export async function fetchAllBalances(
+  account: string,
+  known: TokenMeta[],
+): Promise<TokenBalance[]> {
+  for (const base of HYPERION) {
+    try {
+      const raw = (await fetchJson(
+        `${base}/v2/state/get_tokens?account=${encodeURIComponent(account)}&limit=400`,
+        { timeoutMs: 10_000 },
+      )) as {
+        tokens?: { symbol?: string; precision?: number; amount?: number; contract?: string }[];
+      };
+      if (raw && Array.isArray(raw.tokens)) {
+        return raw.tokens
+          .filter((t) => t && typeof t.amount === "number" && t.symbol && t.contract)
+          .map((t) => ({
+            symbol: String(t.symbol).toUpperCase(),
+            contract: String(t.contract),
+            decimals: Number(t.precision ?? 4) || 4,
+            amount: t.amount as number,
+          }));
+      }
+    } catch {
+      /* try the next Hyperion endpoint */
+    }
+  }
+  const bal = await fetchBalances(account, known);
+  return known.map((t) => ({
+    symbol: t.symbol,
+    contract: t.contract,
+    decimals: t.decimals,
+    amount: bal[t.symbol] ?? 0,
+  }));
+}
+
 export async function pushSigned(signed: unknown): Promise<{ txid: string }> {
   const raw = (await rpcPost("/v1/chain/push_transaction", signed, 15_000)) as {
     transaction_id?: string;

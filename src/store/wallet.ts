@@ -7,6 +7,10 @@ const PAPER_BALANCES: Record<string, number> = {
   LEEF: 8_000_000,
   USDT: 18,
   WAXUSDC: 12,
+  // Dust tokens so the rebalancer has something to sweep in paper mode.
+  TLM: 1200,
+  DUST: 42_000,
+  LSW: 85,
 };
 
 type WalletState = {
@@ -97,6 +101,10 @@ export const useWallet = create<WalletState>()(
       // Versioned: a schema bump discards stale persisted state instead of
       // shallow-merging it over the new shape (which can crash selectors).
       version: 1,
+      migrate: () => ({
+        paperBalances: { ...PAPER_BALANCES },
+        liveAccountHint: null,
+      }),
       partialize: (s) => ({
         paperBalances: s.paperBalances,
         liveAccountHint: s.liveAccountHint,

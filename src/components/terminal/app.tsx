@@ -6,6 +6,7 @@ import {
   Layers,
   LayoutDashboard,
   LineChart,
+  PieChart,
   Radio,
   Wallet,
 } from "lucide-react";
@@ -20,12 +21,14 @@ import { ImportKeyDialog } from "./import-key";
 import { LiveStrip } from "./live-strip";
 import { Overview } from "./overview";
 import { PoolsTable } from "./pools";
+import { PortfolioDesk } from "./portfolio-desk";
 import { Quotes } from "./quotes";
 import { StatusBar } from "./status-bar";
 import { Tape } from "./tape";
 import { TickDesk } from "./tick";
 import { useBotLoop } from "./use-bot-loop";
 import { useLiveTick } from "./use-live-tick";
+import { usePortfolioLoop } from "./use-portfolio-loop";
 import { useSnapshot } from "./use-snapshot";
 import { useWalletSync } from "./use-wallet-sync";
 import { WalletDesk } from "./wallet-desk";
@@ -33,6 +36,7 @@ import { WalletDesk } from "./wallet-desk";
 const TABS: { id: TabId; label: string; icon: typeof GitCompare }[] = [
   { id: "tick", label: "Live tick", icon: Radio },
   { id: "bot", label: "AI Bot", icon: Bot },
+  { id: "portfolio", label: "Portfolio", icon: PieChart },
   { id: "wallet", label: "Wallet", icon: Wallet },
   { id: "overview", label: "Overview", icon: LayoutDashboard },
   { id: "pools", label: "Pools", icon: Layers },
@@ -47,6 +51,7 @@ export function TerminalApp() {
   const tick = useLiveTick(snap);
   useWalletSync(snap);
   useBotLoop(snap);
+  usePortfolioLoop(snap);
   const tab = useTerminal((s) => s.tab);
   const setTab = useTerminal((s) => s.setTab);
   const [countdown, setCountdown] = useState(30);
@@ -123,6 +128,7 @@ export function TerminalApp() {
         {tab === "tape" && <Tape snap={snap} />}
         {tab === "wallet" && <WalletDesk snap={snap} />}
         {tab === "bot" && <BotDesk snap={snap} />}
+        {tab === "portfolio" && <PortfolioDesk snap={snap} />}
       </main>
 
       <footer className="border-t border-border py-4 text-xs text-subtle">

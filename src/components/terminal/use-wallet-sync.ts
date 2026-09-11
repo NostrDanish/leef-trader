@@ -1,11 +1,15 @@
 import { useEffect } from "react";
 import type { LeefSnapshot } from "@/lib/leef/types";
-import { accountResources, fetchBalances } from "@/lib/wallet/chain";
+import { accountResources, fetchAllBalances } from "@/lib/wallet/chain";
 import { hasSecret } from "@/lib/wallet/secret";
 import { tokenCatalog } from "@/lib/wallet/tokens";
 import { useWallet } from "@/store/wallet";
 
-/** Keeps live on-chain balances + resources in sync on each snapshot pull. */
+/**
+ * Keeps live on-chain balances + resources in sync on each snapshot pull.
+ * Uses Hyperion's get_tokens so EVERY held token shows up (the rebalancer
+ * needs the full picture), with a per-token RPC fallback.
+ */
 export function useWalletSync(snap: LeefSnapshot) {
   const fetchedAt = snap.fetchedAt;
   const mode = useWallet((s) => s.mode);
@@ -14,11 +18,11 @@ export function useWalletSync(snap: LeefSnapshot) {
   useEffect(() => {
     if (mode !== "live" || !account || !hasSecret()) return;
     let cancelled = false;
-    const tokens = tokenCatalog(snap).slice(0, 12);
+    const known = tokenCatalog(snap).slice(0, 12);
     void (async () => {
       try {
-        const [bal, res] = await Promise.all([
-          fetchBalances(account, tokens),
+        const [all, res] = await Promise.all([
+          fetchAllBalances(account, known),
           accountResources(account).catch(() => ({
             name: account,
             cpuPct: null,
@@ -26,6 +30,20 @@ export function useWalletSync(snap: LeefSnapshot) {
           })),
         ]);
         if (cancelled) return;
+        const bal: Record<string, number> = {};
+        for (const t of all) {
+          const prev = bal[t.symbol];
+          if (prev == null) {
+            bal[t.symbol] = t.amount;
+            continue;
+          }
+          // Scam tokens clone real symbols — the contract with a priced,
+          // non-dust pool (the universe) wins the symbol slot.
+          const inUniverse = snap.universe.some(
+            (u) => u.symbol === t.symbol && u.contract === t.contract,
+          );
+          if (inUniverse) bal[t.symbol] = t.amount;
+        }
         useWallet.getState().setLiveBalances(bal, res);
       } catch {
         /* keep last live book */

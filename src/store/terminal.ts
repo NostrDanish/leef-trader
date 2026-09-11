@@ -11,7 +11,8 @@ export type TabId =
   | "il"
   | "tape"
   | "wallet"
-  | "bot";
+  | "bot"
+  | "portfolio";
 
 type TerminalState = {
   tab: TabId;

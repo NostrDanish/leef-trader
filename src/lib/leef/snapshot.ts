@@ -2,6 +2,7 @@ import { isWaxToken } from "./amm";
 import { fallbackSnapshot } from "./fallback";
 import { attachUsdPrices, parseAllPools, parseSwaps } from "./parse";
 import type { AuxPool, LeefPool, LeefSnapshot, LiveTrade } from "./types";
+import { buildUniverse, repriceUniverse, type UniverseToken } from "./universe";
 import { fetchJson } from "@/lib/fetchJson";
 
 const ALCOR_API = "https://wax.alcor.exchange/api/v2";
@@ -14,6 +15,7 @@ const FULL_REDISCOVERY_MS = 10 * 60_000;
 let cache: { at: number; snap: LeefSnapshot } | null = null;
 let lastFullLoadAt = 0;
 let tracked: { leef: number[]; aux: number[] } = { leef: [], aux: [] };
+let lastUniverse: UniverseToken[] = [];
 let inflight: Promise<LeefSnapshot> | null = null;
 
 async function leefUsdLive(): Promise<number | undefined> {
@@ -64,7 +66,11 @@ async function fetchPoolById(id: number): Promise<unknown> {
   return await fetchJson(`${ALCOR_POOLS}/${id}`, { timeoutMs: 10_000 });
 }
 
-async function loadFull(): Promise<{ leef: LeefPool[]; aux: AuxPool[] }> {
+async function loadFull(): Promise<{
+  leef: LeefPool[];
+  aux: AuxPool[];
+  universe: UniverseToken[];
+}> {
   const raw = await fetchJson(ALCOR_POOLS, { timeoutMs: 25_000 });
   const parsed = parseActivePools(raw);
   if (parsed.leef.length === 0) {
@@ -72,11 +78,18 @@ async function loadFull(): Promise<{ leef: LeefPool[]; aux: AuxPool[] }> {
   }
   lastFullLoadAt = Date.now();
   const aux = relevantAux(parsed.aux, parsed.leef);
+  // Price the token universe off the same raw book (needs a WAX/USD anchor).
+  const px0 = attachUsdPrices(parsed.leef, aux, undefined, undefined);
+  const universe = buildUniverse(
+    Array.isArray(raw) ? raw.filter((p) => p && (p as { active?: boolean }).active !== false) : [],
+    px0.waxUsd,
+  );
+  lastUniverse = universe;
   tracked = {
     leef: parsed.leef.map((p) => p.id),
-    aux: aux.map((p) => p.id),
+    aux: [...new Set([...aux.map((p) => p.id), ...universe.map((t) => t.poolId)])],
   };
-  return { leef: parsed.leef, aux };
+  return { leef: parsed.leef, aux, universe };
 }
 
 /**
@@ -153,6 +166,7 @@ async function loadLive(): Promise<LeefSnapshot> {
 
   const px = attachUsdPrices(book.leef, book.aux, undefined, leefUsdHint);
   book.leef.sort((a, b) => b.volume24Usd - a.volume24Usd || b.tvlUsd - a.tvlUsd);
+  const universe = repriceUniverse(lastUniverse, book.aux, px.waxUsd);
   const trades = await loadTrades(book.leef);
 
   return {
@@ -164,6 +178,7 @@ async function loadLive(): Promise<LeefSnapshot> {
     pools: book.leef,
     aux: book.aux,
     trades,
+    universe,
   };
 }
 

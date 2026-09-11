@@ -119,6 +119,8 @@ export type LeefSnapshot = {
   pools: LeefPool[];
   aux: AuxPool[];
   trades: LiveTrade[];
+  /** Priced tradable token universe on Alcor (for the rebalancer). */
+  universe: import("./universe").UniverseToken[];
   warning?: string;
 };
 

@@ -209,7 +209,10 @@ async function runBotOnceInner(
           account: w.account,
           permission: w.permission,
           plan,
-          minProfitPct: b.risk.minEdgePct,
+          // Volume echoes enforce the loss budget (negative floor); spread
+          // arbs enforce the profit floor.
+          minProfitPct:
+            b.strategy === "volume" ? -b.risk.maxEchoLossPct : b.risk.minEdgePct,
           slippagePct: b.risk.slippage,
           snap,
         });
@@ -221,6 +224,9 @@ async function runBotOnceInner(
       const pnlUsd = (plan.waxOut - plan.waxIn) * snap.waxUsd;
       b.markTrade(b.risk.cooldownSec);
       b.recordResult(pnlUsd, equityUsd + pnlUsd);
+      if (b.strategy === "volume") {
+        b.recordVolume((plan.waxIn + plan.waxOut) * snap.waxUsd, -pnlUsd);
+      }
       b.pushDecision({
         kind: "arb",
         mode,
@@ -229,8 +235,11 @@ async function runBotOnceInner(
         txid,
         pnlUsd,
       });
+      const diff = plan.waxOut - plan.waxIn;
       toast({
-        title: `${live ? "Live" : "Paper"} arb · +${fmtNum(plan.waxOut - plan.waxIn, { digits: 3 })} WAX`,
+        title: `${live ? "Live" : "Paper"} ${b.strategy === "volume" ? "echo" : "arb"} · ${
+          diff >= 0 ? "+" : ""
+        }${fmtNum(diff, { digits: 3 })} WAX`,
         description: decision.reason + (txid ? ` · tx ${txid.slice(0, 10)}…` : ""),
       });
       return decision;

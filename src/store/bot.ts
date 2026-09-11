@@ -27,6 +27,10 @@ export type BotStats = {
   trades: number;
   wins: number;
   realizedUsd: number;
+  /** Volume maker: gross USD notional cycled through the books. */
+  volumeUsd: number;
+  /** Volume maker: net USD cost of echo round trips (negative = profit). */
+  echoCostUsd: number;
   startedAt: number;
   startEquityUsd: number;
   equity: { t: number; usd: number }[];
@@ -62,6 +66,7 @@ type BotState = {
   setGridAnchor: (usd: number | null) => void;
   bumpPositionHigh: (usd: number) => void;
   recordResult: (pnlUsd: number, equityUsd: number) => void;
+  recordVolume: (volumeUsd: number, costUsd: number) => void;
   resetSession: (equityUsd: number) => void;
   setLastReason: (s: string) => void;
 };
@@ -70,6 +75,8 @@ const freshStats = (equityUsd: number): BotStats => ({
   trades: 0,
   wins: 0,
   realizedUsd: 0,
+  volumeUsd: 0,
+  echoCostUsd: 0,
   startedAt: Date.now(),
   startEquityUsd: equityUsd,
   equity: [{ t: Date.now(), usd: equityUsd }],
@@ -151,6 +158,14 @@ export const useBot = create<BotState>()(
             equity: [...s.stats.equity, { t: Date.now(), usd: equityUsd }].slice(-120),
           },
         })),
+      recordVolume: (volumeUsd, costUsd) =>
+        set((s) => ({
+          stats: {
+            ...s.stats,
+            volumeUsd: s.stats.volumeUsd + volumeUsd,
+            echoCostUsd: s.stats.echoCostUsd + costUsd,
+          },
+        })),
       resetSession: (equityUsd) =>
         set({
           stats: freshStats(equityUsd),
@@ -166,9 +181,19 @@ export const useBot = create<BotState>()(
     }),
     {
       name: "leef-bot-v1",
-      // Versioned: a schema bump discards stale persisted state instead of
-      // shallow-merging it over the new shape (which can crash selectors).
+      // Versioned: a schema bump replaces stale persisted state with clean
+      // defaults instead of shallow-merging it over the new shape.
       version: 1,
+      migrate: () => ({
+        strategy: "signal" as const,
+        goals: { ...DEFAULT_GOALS },
+        risk: { ...DEFAULT_RISK },
+        position: null,
+        gridAnchor: null,
+        stats: freshStats(0),
+        series: [],
+        decisions: [],
+      }),
       partialize: (s) => ({
         // Never persist `running` — a reload always stops the bot (the live
         // key is in-memory only, so it could not sign anyway).
