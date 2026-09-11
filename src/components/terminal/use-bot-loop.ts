@@ -64,6 +64,8 @@ async function quoteArbPlan(
 let lastHoldReason = "";
 let holdStreak = 0;
 let executing = false;
+/** Set when the API rate-limits us — evaluations pause until then. */
+let rateLimitedUntil = 0;
 
 /**
  * Evaluate the bot once against a snapshot. Exported so the desk can
@@ -320,6 +322,15 @@ async function runBotOnceInner(
     }
   } catch (err) {
     const msg = err instanceof Error ? err.message : "Trade failed";
+    if (msg.includes("429")) {
+      // Rate limited — back off instead of retrying every cycle.
+      rateLimitedUntil = Date.now() + 3 * 60_000;
+      const reason = "Rate limited by the API — backing off for 3 minutes";
+      b.pushDecision({ kind: "error", mode, reason, priceUsd: snap.leefUsd });
+      b.setLastReason(reason);
+      toast({ title: "Rate limited", description: reason });
+      return decision;
+    }
     b.pushDecision({ kind: "error", mode, reason: msg, priceUsd: snap.leefUsd });
     b.setLastReason(msg);
     toast({ title: "Trade failed", description: msg, variant: "destructive" });
@@ -379,6 +390,14 @@ export function useBotLoop(snap: LeefSnapshot) {
     }
     if (!b.running) return;
     if (!isNewSnap && !justStarted) return;
+    if (Date.now() < rateLimitedUntil) {
+      if (b.lastReason !== "rate-limited") {
+        b.setLastReason(
+          `Rate limited — paused until ${new Date(rateLimitedUntil).toISOString().slice(11, 19)} UTC`,
+        );
+      }
+      return;
+    }
     void runBotOnce(snap);
   }, [fetchedAt, running, snap]);
 }

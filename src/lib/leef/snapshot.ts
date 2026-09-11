@@ -85,9 +85,13 @@ async function loadFull(): Promise<{
     px0.waxUsd,
   );
   lastUniverse = universe;
+  // Only the tradeable books get per-id refreshes every 30s — everything
+  // else waits for the full rediscovery. Keeps request volume polite.
   tracked = {
-    leef: parsed.leef.map((p) => p.id),
-    aux: [...new Set([...aux.map((p) => p.id), ...universe.map((t) => t.poolId)])],
+    leef: parsed.leef
+      .filter((p) => p.leef.quantity >= 500_000 || p.tvlUsd >= 2 || p.volume24Usd >= 0.5)
+      .map((p) => p.id),
+    aux: aux.slice(0, 12).map((p) => p.id),
   };
   return { leef: parsed.leef, aux, universe };
 }
@@ -157,10 +161,9 @@ async function loadLive(): Promise<LeefSnapshot> {
   const [book, leefUsdHint] = await Promise.all([
     needFull
       ? loadFull()
-      : loadTracked(
-          cache?.snap.pools ?? fallbackPoolsSnapshot().pools,
-          cache?.snap.aux ?? [],
-        ).catch(() => loadFull()),
+      : // A failed light refresh keeps the last book — never escalate into an
+        // 11 MB full download at the exact moment the API is unhappy.
+        loadTracked(cache?.snap.pools ?? [], cache?.snap.aux ?? []),
     leefUsdLive(),
   ]);
 
