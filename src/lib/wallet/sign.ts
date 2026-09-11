@@ -74,6 +74,8 @@ async function buildTransfers(opts: {
  */
 export async function signAndPushSwap(opts: {
   account: string;
+  /** Permission the session key authorizes on the account. */
+  permission?: string;
   route: SwapRoute;
   amountIn: number;
   slippagePct: number;
@@ -95,6 +97,7 @@ export async function signAndPushSwap(opts: {
       account: tokenIn.contract,
       name: "transfer",
       actor: opts.account,
+      permission: opts.permission ?? "active",
       data: {
         from: opts.account,
         to: ALCOR_SWAP_CONTRACT,

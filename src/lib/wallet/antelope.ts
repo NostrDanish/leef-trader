@@ -129,6 +129,27 @@ function base58CheckDecode(str: string, suffix: string | null): Uint8Array {
   return data;
 }
 
+/**
+ * WIF private keys (5H/5J/5K…) are Bitcoin-style base58check: the checksum
+ * is the first 4 bytes of DOUBLE SHA-256 — not the RIPEMD160 variant that
+ * PUB_/PVT_/SIG_ strings use.
+ */
+function wifDecode(str: string): Uint8Array {
+  const raw = base58Decode(str);
+  if (raw.length < 5) throw new Error("Key is too short");
+  const data = raw.slice(0, raw.length - 4);
+  const check = raw.slice(raw.length - 4);
+  const want = sha256(sha256(data)).slice(0, 4);
+  if (!want.every((b, i) => b === check[i])) {
+    throw new Error("Key checksum mismatch — a character is off");
+  }
+  if (data[0] !== 0x80) throw new Error("Not a WIF key");
+  if (data.length === 33) return data.slice(1);
+  // Bitcoin-style compressed-key WIF carries a trailing 0x01 marker.
+  if (data.length === 34 && data[33] === 0x01) return data.slice(1, 33);
+  throw new Error("Malformed WIF payload");
+}
+
 /* ------------------------------------------------------------------ */
 /* private / public key handling                                       */
 /* ------------------------------------------------------------------ */
@@ -155,13 +176,10 @@ export function parsePrivateKey(raw: string): AntelopeKeyPair {
   const attempts: (() => Uint8Array)[] = [];
   if (s.startsWith("PVT_K1_")) {
     attempts.push(() => base58CheckDecode(s.slice(7), "K1"));
-  } else if (s.startsWith("5")) {
-    attempts.push(() => {
-      const data = base58CheckDecode(s, null);
-      // WIF: 0x80 prefix, 32-byte key (EOSIO omits Bitcoin's 0x01 suffix).
-      if (data[0] !== 0x80) throw new Error("Not a WIF key");
-      return data.slice(1, 33);
-    });
+  } else if (s.startsWith("PVT_R1_")) {
+    throw new Error("R1 keys aren't supported — import the K1 key (WIF 5… or PVT_K1_)");
+  } else if (s.startsWith("5") || s.startsWith("K") || s.startsWith("L")) {
+    attempts.push(() => wifDecode(s));
   } else if (/^[0-9a-fA-F]{64}$/.test(s)) {
     attempts.push(() => hexToBytes(s));
   }
@@ -391,7 +409,14 @@ export type TransactionSpec = {
   expiration: number;
   refBlockNum: number;
   refBlockPrefix: number;
-  actions: { account: string; name: string; actor: string; data: TransferActionData }[];
+  actions: {
+    account: string;
+    name: string;
+    actor: string;
+    /** Permission the actor signs with, e.g. "active". */
+    permission: string;
+    data: TransferActionData;
+  }[];
 };
 
 function packTransfer(data: TransferActionData): Uint8Array {
@@ -419,7 +444,7 @@ export function packTransaction(spec: TransactionSpec): Uint8Array {
     w.name(action.name);
     w.varuint(1); // one authorization
     w.name(action.actor);
-    w.name("active");
+    w.name(action.permission);
     w.varuint(dataBytes.length);
     w.bytes(dataBytes);
   }

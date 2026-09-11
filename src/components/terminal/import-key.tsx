@@ -7,7 +7,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
-import { accountsForKeys } from "@/lib/wallet/chain";
+import { accountsForKeys, permissionForKey } from "@/lib/wallet/chain";
 import { describeKey, importSecret, parsePrivateKey } from "@/lib/wallet/secret";
 import { isAccountName } from "@/lib/wallet/tokens";
 import { useWallet } from "@/store/wallet";
@@ -31,21 +31,28 @@ export function ImportKeyDialog() {
       const pub = describeKey(parsed);
       let name = account.trim().toLowerCase();
       const found = await accountsForKeys([pub.publicKey, pub.legacy]);
-      if (!name && found[0]) name = found[0];
+      if (!name && found[0]) name = found[0].name;
       if (name && !isAccountName(name)) {
         throw new Error("Account names are 1–12 characters: a–z, 1–5, dots");
       }
       if (!name) {
         throw new Error("No account found for that key. Type the WAX account name.");
       }
-      if (found.length > 0 && !found.includes(name)) {
-        throw new Error(`That key is not on ${name}. Found ${found.join(", ")}`);
+      if (found.length > 0 && !found.some((f) => f.name === name)) {
+        throw new Error(
+          `That key is not on ${name}. Found ${found.map((f) => f.name).join(", ")}`,
+        );
       }
+      const permission =
+        found.find((f) => f.name === name)?.permission ??
+        (await permissionForKey(name, [pub.publicKey, pub.legacy]));
       importSecret(wif);
       setWif("");
-      setLive({ account: name, publicKey: pub.publicKey });
+      setLive({ account: name, publicKey: pub.publicKey, permission });
       setOpen(false);
-      toast({ title: `Session key for ${name} — stays in this tab only` });
+      toast({
+        title: `Session key for ${name}@${permission} — stays in this tab only`,
+      });
     } catch (err) {
       setError(err instanceof Error ? err.message : "Import failed");
     } finally {
@@ -87,8 +94,10 @@ export function ImportKeyDialog() {
           </label>
           {error && <p className="text-xs text-sell">{error}</p>}
           <p className="text-xs text-subtle">
-            Prefer a key that only has <span className="font-mono">active</span>{" "}
-            permission on a trading account — not your owner key.
+            A key holding the <span className="font-mono">active</span>{" "}
+            permission on a trading account is enough — never import an owner
+            key. The account and permission are detected from the key
+            automatically.
           </p>
           <div className="flex justify-end gap-2 pt-1">
             <Button variant="ghost" onClick={() => setOpen(false)}>

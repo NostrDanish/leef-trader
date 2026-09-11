@@ -117,6 +117,7 @@ export async function runClip(snap: LeefSnapshot, opts?: { force?: boolean }) {
   try {
     const exec = await signAndPushSwap({
       account: w.account,
+      permission: w.permission,
       route,
       amountIn: amount,
       slippagePct: w.auto.slippage,

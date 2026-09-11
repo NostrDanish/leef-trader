@@ -56,6 +56,8 @@ const DEFAULT_AUTO: AutoswapSettings = {
 type WalletState = {
   mode: "paper" | "live";
   account: string;
+  /** On-chain permission the session key authorizes (usually "active"). */
+  permission: string;
   publicKey: string | null;
   liveAccountHint: string | null;
   paperBalances: Record<string, number>;
@@ -72,7 +74,7 @@ type WalletState = {
   setImportOpen: (v: boolean) => void;
   setAuto: (p: Partial<AutoswapSettings>) => void;
   setAccount: (name: string) => void;
-  setLiveSession: (p: { account: string; publicKey: string }) => void;
+  setLiveSession: (p: { account: string; publicKey: string; permission?: string }) => void;
   setLiveBalances: (
     bal: Record<string, number>,
     res?: { cpuPct: number | null; netPct: number | null },
@@ -92,6 +94,7 @@ export const useWallet = create<WalletState>()(
     (set, get) => ({
       mode: "paper",
       account: "paper.leef",
+      permission: "active",
       publicKey: null,
       liveAccountHint: null,
       paperBalances: { ...PAPER_BALANCES },
@@ -113,10 +116,11 @@ export const useWallet = create<WalletState>()(
           return { auto };
         }),
       setAccount: (account) => set({ account: account.trim().toLowerCase() }),
-      setLiveSession: ({ account, publicKey }) =>
+      setLiveSession: ({ account, publicKey, permission }) =>
         set({
           mode: "live",
           account,
+          permission: permission ?? "active",
           publicKey,
           liveAccountHint: account,
           auto: { ...get().auto, armed: false },
@@ -142,6 +146,7 @@ export const useWallet = create<WalletState>()(
         set({
           mode: "paper",
           account: "paper.leef",
+          permission: "active",
           publicKey: null,
           liveBalances: {},
           cpuPct: null,

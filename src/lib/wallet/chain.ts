@@ -30,33 +30,66 @@ export type ChainAccount = {
   netPct: number | null;
 };
 
-/** Find WAX accounts controlled by the given public keys (K1 + legacy formats). */
-export async function accountsForKeys(keys: string[]): Promise<string[]> {
-  const names = new Set<string>();
+export type KeyAccount = {
+  name: string;
+  /** On-chain permission the key authorizes, e.g. "active". */
+  permission: string;
+};
+
+/** Find WAX accounts (and the permission) controlled by the given public keys. */
+export async function accountsForKeys(keys: string[]): Promise<KeyAccount[]> {
+  const found = new Map<string, string>();
   try {
     const raw = (await rpcPost("/v1/chain/get_accounts_by_authorizers", {
       accounts: [],
       keys,
-    })) as { accounts?: { account_name?: string }[] };
+    })) as { accounts?: { account_name?: string; permission_name?: string }[] };
     for (const row of raw.accounts ?? []) {
-      if (row.account_name) names.add(row.account_name);
+      if (row.account_name && !found.has(row.account_name)) {
+        found.set(row.account_name, row.permission_name || "active");
+      }
     }
   } catch {
     /* fall through to the history plugin */
   }
-  if (names.size === 0) {
+  if (found.size === 0) {
     for (const key of keys) {
       try {
         const raw = (await rpcPost("/v1/history/get_key_accounts", {
           public_key: key,
         })) as { account_names?: string[] };
-        for (const n of raw.account_names ?? []) names.add(n);
+        for (const n of raw.account_names ?? []) {
+          if (!found.has(n)) found.set(n, "active");
+        }
       } catch {
         /* node doesn't serve the history plugin */
       }
     }
   }
-  return [...names];
+  return [...found].map(([name, permission]) => ({ name, permission }));
+}
+
+/**
+ * Resolve which permission on `account` holds one of `keys` — so imports of a
+ * custom trading permission (not just "active") sign with the right auth.
+ */
+export async function permissionForKey(account: string, keys: string[]): Promise<string> {
+  try {
+    const raw = (await rpcPost("/v1/chain/get_account", { account_name: account })) as {
+      permissions?: {
+        perm_name?: string;
+        required_auth?: { keys?: { key?: string }[] };
+      }[];
+    };
+    for (const perm of raw.permissions ?? []) {
+      for (const k of perm.required_auth?.keys ?? []) {
+        if (k.key && keys.includes(k.key)) return perm.perm_name || "active";
+      }
+    }
+  } catch {
+    /* default below */
+  }
+  return "active";
 }
 
 export async function accountResources(name: string): Promise<ChainAccount> {
