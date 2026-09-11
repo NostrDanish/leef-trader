@@ -1,0 +1,23 @@
+{
+  "name": "LEEF Trader — WAX Auto Trader for Alcor",
+  "short_name": "LEEF Trader",
+  "description": "Live LEEF order books, routed quotes and an autoswap engine on the WAX blockchain. Keys stay in your tab; swaps settle on swap.alcor.",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#08090c",
+  "theme_color": "#08090c",
+  "icons": [
+    {
+      "src": "/favicon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any"
+    },
+    {
+      "src": "/icon.png",
+      "sizes": "1024x1024",
+      "type": "image/png",
+      "purpose": "any"
+    }
+  ]
+}

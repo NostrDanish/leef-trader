@@ -177,6 +177,10 @@ function fallbackPoolsSnapshot(): LeefSnapshot {
  * static snapshot) when the API is unreachable.
  */
 export async function getLeefSnapshot(): Promise<LeefSnapshot> {
+  // Hermetic test runs: never hit the network from vitest/jsdom.
+  if (import.meta.env.MODE === "test") {
+    return fallbackSnapshot("Test mode — static book.", new Date().toISOString());
+  }
   if (inflight) return inflight;
   inflight = (async () => {
     try {
