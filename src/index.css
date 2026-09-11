@@ -74,6 +74,28 @@
   }
 }
 
+/* LEEF terminal palette — extra brand colors used across the trading desks */
+@theme {
+  --font-sans: "IBM Plex Sans", ui-sans-serif, system-ui, sans-serif;
+  --font-mono: "IBM Plex Mono", ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+
+  --color-bg: #08090c;
+  --color-fg: #e8eae9;
+  --color-surface: #101218;
+  --color-surface-2: #171a22;
+  --color-surface-3: #1e232c;
+  --color-subtle: #5c6361;
+  --color-leef: #34d399;
+  --color-wax: #c8a44a;
+  --color-buy: #34d399;
+  --color-sell: #f07171;
+  --color-warn: #d4a017;
+
+  --ease-out: cubic-bezier(0.23, 1, 0.32, 1);
+  --motion-quick: 150ms;
+  --motion-fast: 250ms;
+}
+
 /* Container utility replacement for v4 (previously configured in tailwind.config) */
 @utility container {
   margin-inline: auto;
@@ -84,7 +106,7 @@
 }
 
 :root {
-  --radius: 0.75rem;
+  --radius: 0.625rem;
 
   --background: hsl(0 0% 100%);
   --foreground: hsl(222.2 84% 4.9%);
@@ -95,7 +117,7 @@
   --popover: hsl(0 0% 100%);
   --popover-foreground: hsl(222.2 84% 4.9%);
 
-  --primary: hsl(222.2 47.4% 11.2%);
+  --primary: hsl(173 80% 30%);
   --primary-foreground: hsl(210 40% 98%);
 
   --secondary: hsl(210 40% 96.1%);
@@ -104,7 +126,7 @@
   --muted: hsl(210 40% 96.1%);
   --muted-foreground: hsl(215.4 16.3% 46.9%);
 
-  --accent: hsl(210 40% 96.1%);
+  --accent: hsl(173 80% 36%);
   --accent-foreground: hsl(222.2 47.4% 11.2%);
 
   --destructive: hsl(0 84.2% 60.2%);
@@ -112,7 +134,7 @@
 
   --border: hsl(214.3 31.8% 91.4%);
   --input: hsl(214.3 31.8% 91.4%);
-  --ring: hsl(222.2 84% 4.9%);
+  --ring: hsl(173 80% 30%);
 
   --chart-1: hsl(12 76% 61%);
   --chart-2: hsl(173 58% 39%);
@@ -131,48 +153,48 @@
 }
 
 .dark {
-  --background: hsl(222.2 84% 4.9%);
-  --foreground: hsl(210 40% 98%);
+  --background: #08090c;
+  --foreground: #e8eae9;
 
-  --card: hsl(222.2 84% 4.9%);
-  --card-foreground: hsl(210 40% 98%);
+  --card: #101218;
+  --card-foreground: #e8eae9;
 
-  --popover: hsl(222.2 84% 4.9%);
-  --popover-foreground: hsl(210 40% 98%);
+  --popover: #171a22;
+  --popover-foreground: #e8eae9;
 
-  --primary: hsl(210 40% 98%);
-  --primary-foreground: hsl(222.2 47.4% 11.2%);
+  --primary: #5eead4;
+  --primary-foreground: #04201c;
 
-  --secondary: hsl(217.2 32.6% 17.5%);
-  --secondary-foreground: hsl(210 40% 98%);
+  --secondary: #1e232c;
+  --secondary-foreground: #e8eae9;
 
-  --muted: hsl(217.2 32.6% 17.5%);
-  --muted-foreground: hsl(215 20.2% 65.1%);
+  --muted: #171a22;
+  --muted-foreground: #8b918f;
 
-  --accent: hsl(217.2 32.6% 17.5%);
-  --accent-foreground: hsl(210 40% 98%);
+  --accent: #5eead4;
+  --accent-foreground: #04201c;
 
   --destructive: hsl(0 62.8% 30.6%);
   --destructive-foreground: hsl(210 40% 98%);
 
-  --border: hsl(217.2 32.6% 17.5%);
-  --input: hsl(217.2 32.6% 17.5%);
-  --ring: hsl(212.7 26.8% 83.9%);
+  --border: #23282f;
+  --input: #23282f;
+  --ring: #5eead4;
 
-  --chart-1: hsl(220 70% 50%);
-  --chart-2: hsl(160 60% 45%);
-  --chart-3: hsl(30 80% 55%);
-  --chart-4: hsl(280 65% 60%);
-  --chart-5: hsl(340 75% 55%);
+  --chart-1: #5eead4;
+  --chart-2: #34d399;
+  --chart-3: #c8a44a;
+  --chart-4: #f07171;
+  --chart-5: #d4a017;
 
-  --sidebar: hsl(240 5.9% 10%);
-  --sidebar-foreground: hsl(240 4.8% 95.9%);
-  --sidebar-primary: hsl(224.3 76.3% 48%);
-  --sidebar-primary-foreground: hsl(0 0% 100%);
-  --sidebar-accent: hsl(240 3.7% 15.9%);
-  --sidebar-accent-foreground: hsl(240 4.8% 95.9%);
-  --sidebar-border: hsl(240 3.7% 15.9%);
-  --sidebar-ring: hsl(217.2 91.2% 59.8%);
+  --sidebar: #101218;
+  --sidebar-foreground: #e8eae9;
+  --sidebar-primary: #5eead4;
+  --sidebar-primary-foreground: #04201c;
+  --sidebar-accent: #171a22;
+  --sidebar-accent-foreground: #e8eae9;
+  --sidebar-border: #23282f;
+  --sidebar-ring: #5eead4;
 }
 
 @layer base {
@@ -184,7 +206,92 @@
     border-color: var(--color-border, currentcolor);
   }
 
+  html {
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+  }
+
   body {
     @apply bg-background text-foreground;
+    font-family: var(--font-sans);
+    line-height: 1.5;
   }
+
+  button:not(:disabled),
+  [role="button"]:not(:disabled) {
+    cursor: pointer;
+  }
+
+  h1,
+  h2,
+  h3 {
+    text-wrap: balance;
+  }
+
+  p {
+    text-wrap: pretty;
+  }
+
+  ::selection {
+    background: color-mix(in oklab, var(--color-primary) 35%, transparent);
+    color: var(--color-foreground);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}
+
+.tabular {
+  font-variant-numeric: tabular-nums;
+}
+
+/* Live-tick strip */
+@keyframes ticker-scroll {
+  from {
+    transform: translateX(0);
+  }
+  to {
+    transform: translateX(-50%);
+  }
+}
+
+.ticker-track {
+  animation: ticker-scroll 32s linear infinite;
+}
+
+.ticker-paused {
+  animation-play-state: paused;
+}
+
+@keyframes tick-flash-buy {
+  from {
+    background-color: color-mix(in oklab, var(--color-buy) 28%, transparent);
+  }
+  to {
+    background-color: transparent;
+  }
+}
+
+@keyframes tick-flash-sell {
+  from {
+    background-color: color-mix(in oklab, var(--color-sell) 28%, transparent);
+  }
+  to {
+    background-color: transparent;
+  }
+}
+
+.tick-flash-buy {
+  animation: tick-flash-buy 700ms var(--ease-out);
+}
+
+.tick-flash-sell {
+  animation: tick-flash-sell 700ms var(--ease-out);
 }

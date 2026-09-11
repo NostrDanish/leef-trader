@@ -1,0 +1,159 @@
+import {
+  Activity,
+  Calculator,
+  GitCompare,
+  Layers,
+  LayoutDashboard,
+  LineChart,
+  Radio,
+  Wallet,
+  Zap,
+} from "lucide-react";
+import { useEffect, useState } from "react";
+import { cn } from "@/lib/utils";
+import { type TabId, useTerminal } from "@/store/terminal";
+import { AutoswapDesk } from "./autoswap-desk";
+import { Dashboard } from "./dashboard";
+import { TerminalHeader } from "./header";
+import { IlCalc } from "./il";
+import { ImportKeyDialog } from "./import-key";
+import { LiveStrip } from "./live-strip";
+import { Overview } from "./overview";
+import { PoolsTable } from "./pools";
+import { Quotes } from "./quotes";
+import { StatusBar } from "./status-bar";
+import { Tape } from "./tape";
+import { TickDesk } from "./tick";
+import { useLiveTick } from "./use-live-tick";
+import { useSnapshot } from "./use-snapshot";
+import { useWalletSync } from "./use-wallet-sync";
+import { WalletDesk } from "./wallet-desk";
+
+const TABS: { id: TabId; label: string; icon: typeof GitCompare }[] = [
+  { id: "tick", label: "Live tick", icon: Radio },
+  { id: "autoswap", label: "Autoswap", icon: Zap },
+  { id: "wallet", label: "Wallet", icon: Wallet },
+  { id: "overview", label: "Overview", icon: LayoutDashboard },
+  { id: "pools", label: "Pools", icon: Layers },
+  { id: "pool", label: "Pool desk", icon: LineChart },
+  { id: "quotes", label: "Quotes", icon: GitCompare },
+  { id: "il", label: "IL calc", icon: Calculator },
+  { id: "tape", label: "Tape", icon: Activity },
+];
+
+export function TerminalApp() {
+  const { snap, ranked, isFetching, refetch, dataUpdatedAt } = useSnapshot();
+  const tick = useLiveTick(snap);
+  useWalletSync(snap);
+  const tab = useTerminal((s) => s.tab);
+  const setTab = useTerminal((s) => s.setTab);
+  const [countdown, setCountdown] = useState(30);
+
+  useEffect(() => {
+    setCountdown(30);
+  }, [dataUpdatedAt]);
+
+  useEffect(() => {
+    const id = window.setInterval(() => {
+      setCountdown((c) => (c <= 1 ? 30 : c - 1));
+    }, 1000);
+    return () => window.clearInterval(id);
+  }, []);
+
+  return (
+    <div className="flex min-h-screen flex-col bg-bg text-fg">
+      <TerminalHeader
+        snap={snap}
+        fetching={isFetching}
+        onRefresh={() => {
+          void refetch();
+        }}
+      />
+      <StatusBar snap={snap} ranked={ranked} countdown={countdown} />
+      <LiveStrip tick={tick} />
+      <ImportKeyDialog />
+
+      {snap.warning && snap.source === "fallback" && (
+        <div className="mx-auto w-full max-w-7xl px-4 pt-4 sm:px-6">
+          <div className="rounded-lg border border-warn/30 bg-warn/10 px-3 py-2 text-xs text-warn">
+            {snap.warning}
+          </div>
+        </div>
+      )}
+
+      <main className="mx-auto flex w-full max-w-7xl flex-1 flex-col gap-5 px-4 py-5 sm:px-6">
+        <div className="flex items-center justify-between gap-3 border-b border-border pb-3">
+          <nav className="flex gap-1 overflow-x-auto" aria-label="Sections">
+            {TABS.map((t) => {
+              const Icon = t.icon;
+              const active = tab === t.id;
+              return (
+                <button
+                  key={t.id}
+                  type="button"
+                  onClick={() => setTab(t.id)}
+                  className={cn(
+                    "flex h-11 shrink-0 items-center gap-2 whitespace-nowrap rounded-md px-3 text-xs font-medium transition-colors",
+                    active
+                      ? "bg-accent/10 text-accent border border-accent/30"
+                      : "text-muted-foreground hover:bg-surface-2 hover:text-fg border border-transparent",
+                  )}
+                >
+                  <Icon className="size-3.5" />
+                  {t.label}
+                  {t.id === "pools" && (
+                    <span className="rounded-full bg-surface-3 px-1.5 font-mono text-accent">
+                      {snap.pools.length}
+                    </span>
+                  )}
+                </button>
+              );
+            })}
+          </nav>
+        </div>
+
+        {tab === "overview" && <Overview snap={snap} ranked={ranked} />}
+        {tab === "pools" && <PoolsTable ranked={ranked} />}
+        {tab === "pool" && <Dashboard snap={snap} />}
+        {tab === "quotes" && <Quotes snap={snap} ranked={ranked} />}
+        {tab === "tick" && <TickDesk snap={snap} tick={tick} />}
+        {tab === "il" && <IlCalc snap={snap} />}
+        {tab === "tape" && <Tape snap={snap} />}
+        {tab === "wallet" && <WalletDesk snap={snap} />}
+        {tab === "autoswap" && <AutoswapDesk snap={snap} />}
+      </main>
+
+      <footer className="border-t border-border py-4 text-xs text-subtle">
+        <div className="mx-auto flex max-w-7xl flex-col items-center justify-between gap-2 px-4 sm:flex-row sm:px-6">
+          <span>LEEF analytics · leefmaincorp · Alcor AMM on WAX</span>
+          <div className="flex items-center gap-4">
+            <a
+              className="hover:text-fg"
+              href="https://wax.alcor.exchange"
+              target="_blank"
+              rel="noreferrer"
+            >
+              Alcor
+            </a>
+            <a
+              className="hover:text-fg"
+              href="https://waxblock.io/tokens/LEEF-wax-leefmaincorp"
+              target="_blank"
+              rel="noreferrer"
+            >
+              Explorer
+            </a>
+            <a
+              className="hover:text-fg"
+              href="https://shakespeare.diy"
+              target="_blank"
+              rel="noreferrer"
+            >
+              Vibed with Shakespeare
+            </a>
+          </div>
+        </div>
+      </footer>
+    </div>
+  );
+}

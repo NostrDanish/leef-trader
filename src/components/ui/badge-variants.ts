@@ -14,6 +14,13 @@ export const badgeVariants = cva(
           "border-border text-foreground [a&]:hover:bg-accent [a&]:hover:text-accent-foreground",
         ghost: "[a&]:hover:bg-accent [a&]:hover:text-accent-foreground",
         link: "text-primary underline-offset-4 [a&]:hover:underline",
+        plain: "border-border bg-surface-2 text-muted-foreground",
+        accent: "border-accent/30 bg-accent/10 text-accent",
+        leef: "border-leef/30 bg-leef/10 text-leef",
+        wax: "border-wax/30 bg-wax/10 text-wax",
+        buy: "border-buy/30 bg-buy/10 text-buy",
+        sell: "border-sell/30 bg-sell/10 text-sell",
+        warn: "border-warn/30 bg-warn/10 text-warn",
       },
     },
     defaultVariants: {
