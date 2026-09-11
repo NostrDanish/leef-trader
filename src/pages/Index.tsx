@@ -3,9 +3,9 @@ import { TerminalApp } from '@/components/terminal/app';
 
 const Index = () => {
   useSeoMeta({
-    title: 'LEEF Trader — WAX Auto Trader for Alcor',
+    title: 'LEEF Trader — AI Auto Trading Bot for WAX / Alcor',
     description:
-      'Live LEEF order books, routed quotes and an autoswap engine on the WAX blockchain. Keys stay in your tab; swaps settle on swap.alcor.',
+      'AI signal engines, five trading strategies and atomic cross-pool arbitrage on the WAX blockchain. Import a session key, set your goals, hit start — keys never leave your tab.',
   });
 
   return <TerminalApp />;

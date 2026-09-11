@@ -47,7 +47,7 @@ export function TerminalHeader({
               </Badge>
             </div>
             <p className="hidden text-xs text-muted-foreground sm:block">
-              Alcor AMM desks for LEEF · leefmaincorp
+              AI bot + Alcor AMM desks for LEEF · leefmaincorp
             </p>
           </div>
         </div>
