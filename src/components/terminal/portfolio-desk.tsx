@@ -336,8 +336,7 @@ export function PortfolioDesk({ snap }: { snap: LeefSnapshot }) {
             </h3>
             {holdings.length === 0 ? (
               <p className="py-8 text-center text-sm text-muted-foreground">
-                No priced holdings found. Import a key for live holdings, or use
-                the paper wallet.
+                No priced holdings found. Connect a wallet for live balances.
               </p>
             ) : (
               <div className="-mx-4 min-w-0 overflow-x-auto px-4 sm:mx-0 sm:px-0">
@@ -376,7 +375,7 @@ export function PortfolioDesk({ snap }: { snap: LeefSnapshot }) {
                             {fmtNum(h.amount, { compact: true, digits: 4 })}
                           </td>
                           <td className="py-2.5 pr-3 font-mono tabular-nums">
-                            {fmtUsd(h.price.priceUsd, h.price.priceUsd < 0.01 ? 6 : 3)}
+                            {fmtUsd(h.price.priceUsd)}
                             {h.price.stableState && (
                               <span
                                 className={cn(

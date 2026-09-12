@@ -121,7 +121,14 @@ export function WalletDesk({ snap }: { snap: LeefSnapshot }) {
           <div className="mt-1 font-mono text-lg tabular-nums text-leef">
             {fmtNum(leef, { compact: true })}
           </div>
-          <div className="text-xs text-muted-foreground">{fmtUsd(leef * snap.leefUsd, 4)}</div>
+          <div className="text-xs text-muted-foreground">
+            {fmtUsd(leef * snap.leefUsd)}
+            {leef > 0 && (
+              <span className="mt-0.5 block text-[10px] text-subtle">
+                10M LEEF = {fmtNum(snap.waxPerLeef * 10_000_000, { digits: 4 })} WAX
+              </span>
+            )}
+          </div>
           {mode === "live" && cpuPct != null && (
             <div className="mt-3 border-t border-border pt-2 font-mono text-xs text-subtle">
               CPU {(cpuPct * 100).toFixed(0)}%
@@ -201,7 +208,7 @@ export function WalletDesk({ snap }: { snap: LeefSnapshot }) {
                     {fmtNum(r.amount, { compact: true, digits: 4 })}
                   </td>
                   <td className="py-2.5 font-mono tabular-nums text-muted-foreground">
-                    {r.usd > 0 ? fmtUsd(r.usd, 4) : "—"}
+                    {r.usd > 0 ? fmtUsd(r.usd) : "—"}
                   </td>
                 </tr>
               ))}

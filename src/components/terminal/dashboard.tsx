@@ -93,8 +93,8 @@ export function Dashboard({ snap }: { snap: LeefSnapshot }) {
           foot={pool.pair.contract}
         />
         <Metric
-          kicker="Spot · 1M LEEF"
-          value={`${fmtNum((pool.waxPerLeef ?? pool.pairPerLeef) * 1e6, { digits: 3 })} ${pool.pair.symbol === "WAX" ? "WAX" : pool.pair.symbol}`}
+          kicker="Spot · 10M LEEF"
+          value={`${fmtNum((pool.waxPerLeef ?? pool.pairPerLeef) * 1e7, { digits: 4 })} ${pool.pair.symbol === "WAX" ? "WAX" : pool.pair.symbol}`}
           sub={`1 ${pool.pair.symbol} = ${fmtNum(pool.leefPerPair, { compact: true })} LEEF`}
           foot={`Week ${pool.changeWeek >= 0 ? "+" : ""}${pool.changeWeek.toFixed(2)}%`}
         />

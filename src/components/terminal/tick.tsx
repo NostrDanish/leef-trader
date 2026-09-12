@@ -41,10 +41,10 @@ export function TickDesk({ snap, tick }: { snap: LeefSnapshot; tick: LiveTickSta
         <Card className="border-l-2 border-l-accent p-4">
           <div className="text-xs uppercase tracking-wider text-subtle">LEEF price</div>
           <div className="mt-1 font-mono text-xl tabular-nums text-fg">
-            {fmtUsd(snap.leefUsd, 8)}
+            {fmtUsd(snap.leefUsd)}
           </div>
           <div className="mt-2 font-mono text-xs text-muted-foreground">
-            1M = {fmtNum(snap.waxPerLeef * 1_000_000, { digits: 4 })} WAX
+            10M = {fmtNum(snap.waxPerLeef * 10_000_000, { digits: 4 })} WAX
           </div>
         </Card>
         <Card className="p-4">
@@ -118,8 +118,8 @@ export function TickDesk({ snap, tick }: { snap: LeefSnapshot; tick: LiveTickSta
                 <tr className="border-b border-border">
                   <th className="py-2 pr-3 font-medium">Book</th>
                   <th className="py-2 pr-3 font-medium">LEEF backing</th>
-                  <th className="py-2 pr-3 font-medium">Pair / 1M LEEF</th>
-                  <th className="py-2 pr-3 font-medium">USD / 1M</th>
+                  <th className="py-2 pr-3 font-medium">Pair / 10M LEEF</th>
+                  <th className="py-2 pr-3 font-medium">USD / 10M</th>
                   <th className="py-2 pr-3 font-medium">Buy</th>
                   <th className="py-2 font-medium">Sell</th>
                 </tr>
@@ -153,10 +153,10 @@ export function TickDesk({ snap, tick }: { snap: LeefSnapshot; tick: LiveTickSta
                         {fmtNum(b.leefBacking, { compact: true })}
                       </td>
                       <td className="py-2.5 pr-3 font-mono tabular-nums">
-                        {fmtNum(b.pairPerMillion, { digits: 5 })} {b.pool.pair.symbol}
+                        {fmtNum(b.pairPerMillion * 10, { digits: 4 })} {b.pool.pair.symbol}
                       </td>
                       <td className="py-2.5 pr-3 font-mono tabular-nums">
-                        {fmtUsd(b.usdPerMillion, 4)}
+                        {fmtUsd(b.usdPerMillion * 10)}
                       </td>
                       <td className={cn("py-2.5 pr-3 font-mono", b.bestBuy ? "text-buy" : "text-muted-foreground")}>
                         {b.buy ? `${fmtPct(b.buy.impact, 2, false)} impact` : "—"}

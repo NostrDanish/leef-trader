@@ -17,7 +17,7 @@ import {
   poolMix,
   waxBookRows,
 } from "@/lib/leef/analytics";
-import { fmtNum, fmtPct, fmtUsd } from "@/lib/leef/format";
+import { fmtLeefLot, fmtNum, fmtPct, fmtUsd } from "@/lib/leef/format";
 import { headline } from "@/lib/leef/rank";
 import type { LeefSnapshot, RankedPool } from "@/lib/leef/types";
 import { cn } from "@/lib/utils";
@@ -82,14 +82,14 @@ export function Overview({
 
       <div className="grid grid-cols-2 gap-3 lg:grid-cols-3 xl:grid-cols-6">
         <Kpi
-          label="LEEF"
-          value={fmtUsd(snap.leefUsd, 8)}
+          label="1 LEEF"
+          value={fmtUsd(snap.leefUsd)}
           sub={<Change n={stats.change24} suffix="24h" />}
         />
         <Kpi
-          label="1M LEEF"
-          value={`${fmtNum(snap.waxPerLeef * 1e6, { digits: 2 })} WAX`}
-          sub={`${fmtUsd(snap.waxUsd, 4)} / WAX`}
+          label="10M LEEF"
+          value={`${fmtLeefLot(snap.waxPerLeef, 4)} WAX`}
+          sub={`${fmtUsd(snap.leefUsd * 10_000_000)} · ${fmtUsd(snap.waxUsd, 4)} / WAX`}
           tone="wax"
         />
         <Kpi
@@ -204,9 +204,9 @@ export function Overview({
       <div className="grid gap-5 lg:grid-cols-2">
         <Card className="p-4 sm:p-5">
           <div className="mb-4">
-            <h2 className="text-sm font-medium">WAX books · 1M LEEF</h2>
+            <h2 className="text-sm font-medium">WAX books · 10M LEEF</h2>
             <p className="text-xs text-muted-foreground">
-              Spot WAX paid per million LEEF. Cheaper is a better buy.
+              Spot WAX paid per 10 million LEEF. Cheaper is a better buy.
             </p>
           </div>
           {waxBooks.length === 0 ? (
@@ -215,10 +215,10 @@ export function Overview({
             <div className="space-y-3">
               {waxBooks.map((p) => {
                 const max = Math.max(
-                  ...waxBooks.map((x) => x.waxPerMillionLeef ?? 0),
+                  ...waxBooks.map((x) => (x.waxPerMillionLeef ?? 0) * 10),
                   1,
                 );
-                const v = p.waxPerMillionLeef ?? 0;
+                const v = (p.waxPerMillionLeef ?? 0) * 10;
                 return (
                   <button
                     key={p.id}
@@ -238,7 +238,7 @@ export function Overview({
                         )}
                       </span>
                       <span className="font-mono tabular-nums">
-                        {fmtNum(v, { digits: 2 })} WAX
+                        {fmtNum(v, { digits: 4 })} WAX
                       </span>
                     </div>
                     <div className="h-1.5 overflow-hidden rounded-full bg-bg">

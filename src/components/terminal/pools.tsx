@@ -155,7 +155,7 @@ export function PoolsTable({ ranked }: { ranked: RankedPool[] }) {
               <tr className="border-b border-border text-subtle">
                 <th className="px-4 py-3 font-medium">Pair</th>
                 <th className="px-3 py-3 font-medium">24h</th>
-                <th className="px-3 py-3 font-medium">WAX / 1M</th>
+                <th className="px-3 py-3 font-medium">WAX / 10M</th>
                 <th className="px-3 py-3 font-medium">Volume</th>
                 <th className="px-3 py-3 font-medium">TVL</th>
                 <th className="px-3 py-3 font-medium">Fee APY</th>
@@ -197,7 +197,7 @@ export function PoolsTable({ ranked }: { ranked: RankedPool[] }) {
                   </td>
                   <td className="px-3 py-3 font-mono tabular-nums">
                     {p.waxPerMillionLeef != null
-                      ? fmtNum(p.waxPerMillionLeef, { digits: 2 })
+                      ? fmtNum(p.waxPerMillionLeef * 10, { digits: 4 })
                       : "—"}
                     {p.vsMedianWaxPct != null && Math.abs(p.vsMedianWaxPct) > 0.03 && (
                       <div

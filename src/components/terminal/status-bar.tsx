@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { marketStats } from "@/lib/leef/analytics";
-import { fmtNum, timeAgo } from "@/lib/leef/format";
+import { fmtLeefLot, fmtNum, fmtUsd, timeAgo } from "@/lib/leef/format";
 import { headline } from "@/lib/leef/rank";
 import type { LeefSnapshot, RankedPool } from "@/lib/leef/types";
 import type { LiveTickState } from "./use-live-tick";
@@ -82,10 +82,10 @@ export function StatusBar({
           </span>
           <span className="text-border">·</span>
           <span className="font-mono tabular-nums">
-            LEEF <strong className="text-fg">${fmtNum(snap.leefUsd, { digits: 8 })}</strong>
+            1 LEEF <strong className="text-fg">{fmtUsd(snap.leefUsd)}</strong>
           </span>
           <span className="font-mono tabular-nums">
-            1M <strong className="text-wax">{fmtNum(snap.waxPerLeef * 1_000_000, { digits: 4 })} WAX</strong>
+            10M <strong className="text-wax">{fmtLeefLot(snap.waxPerLeef, 4)} WAX</strong>
           </span>
           <span className="font-mono tabular-nums">
             WAX <strong className="text-fg">${fmtNum(snap.waxUsd, { digits: 5 })}</strong>

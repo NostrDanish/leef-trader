@@ -2,6 +2,16 @@
 
 All notable changes to LEEF Trader. Dates are commit-era, not release tags.
 
+## Unreleased — LEEF price is not $0: quote per 10M + enough USD digits
+
+1 LEEF ≈ $0.00000019 / 0.00000004 WAX, so 6–8 decimal USD printers
+showed $0.00. fmtUsd now keeps going to 10–12 dp for dust. Human quotes
+are per **10,000,000 LEEF** (≈ 40.87 WAX / ≈ $1.90 WAXUSDC) with a
+precise 1 LEEF line underneath. Wallet / portfolio / header / overview /
+tick / pools all use that.
+
+---
+
 ## Unreleased — type 0.00004, no fake paper bag, searchable pair
 
 - Min/max USD fields keep a typing draft: `0.` / `0.000` no longer snap

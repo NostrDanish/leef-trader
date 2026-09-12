@@ -1,3 +1,6 @@
+/** LEEF prints at 4dp (quantum 0.0001). Human quotes are per 10 million. */
+export const LEEF_LOT = 10_000_000;
+
 export function fmtNum(
   n: number,
   opts: { digits?: number; compact?: boolean; max?: number } = {},
@@ -17,24 +20,49 @@ export function fmtNum(
     else if (abs >= 1000) d = 2;
     else if (abs >= 1) d = 4;
     else if (abs >= 0.0001) d = 6;
-    else d = 8;
+    else if (abs >= 1e-8) d = 10;
+    else d = 12;
   }
   if (max !== undefined) d = Math.min(d, max);
+  const minD = abs > 0 && abs < 0.01 ? Math.min(d, 4) : Math.min(d, 2);
   return n.toLocaleString(undefined, {
-    minimumFractionDigits: Math.min(d, 2),
+    minimumFractionDigits: minD,
     maximumFractionDigits: d,
   });
 }
 
-export function fmtUsd(n: number, digits = 2): string {
+export function fmtUsd(n: number, digits?: number): string {
   if (!Number.isFinite(n)) return "$—";
-  if (Math.abs(n) > 0 && Math.abs(n) < 0.01) {
-    return `$${n.toLocaleString(undefined, { maximumFractionDigits: 6 })}`;
+  const abs = Math.abs(n);
+  let d = digits;
+  if (d === undefined) {
+    if (abs === 0) d = 2;
+    else if (abs >= 1) d = 2;
+    else if (abs >= 0.01) d = 4;
+    else if (abs >= 0.0001) d = 6;
+    else if (abs >= 1e-8) d = 10;
+    else d = 12;
+  }
+  if (abs > 0 && abs < 0.01) {
+    return `$${n.toLocaleString(undefined, {
+      minimumFractionDigits: Math.min(d, 4),
+      maximumFractionDigits: d,
+    })}`;
   }
   return `$${n.toLocaleString(undefined, {
-    minimumFractionDigits: digits,
-    maximumFractionDigits: digits,
+    minimumFractionDigits: Math.min(d, 2),
+    maximumFractionDigits: d,
   })}`;
+}
+
+/** 1 LEEF USD print — never rounds a live price to $0.00. */
+export function fmtLeefUsd(leefUsd: number): string {
+  return fmtUsd(leefUsd);
+}
+
+/** 10,000,000 LEEF in quote units (WAX / WAXUSDC / USD). */
+export function fmtLeefLot(amountPerLeef: number, digits = 6): string {
+  return fmtNum(amountPerLeef * LEEF_LOT, { digits });
 }
 
 export function fmtPct(n: number, digits = 2, signed = true): string {

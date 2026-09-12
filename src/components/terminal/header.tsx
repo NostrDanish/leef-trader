@@ -3,7 +3,7 @@ import { LoginArea } from "@/components/auth/LoginArea";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { marketStats } from "@/lib/leef/analytics";
-import { fmtNum, fmtUsd } from "@/lib/leef/format";
+import { fmtLeefLot, fmtNum, fmtUsd } from "@/lib/leef/format";
 import type { LeefSnapshot } from "@/lib/leef/types";
 import { toast } from "@/hooks/useToast";
 import { cn } from "@/lib/utils";
@@ -44,7 +44,7 @@ export function TerminalHeader({
   onRefresh: () => void;
 }) {
   const stats = marketStats(snap);
-  const waxPerM = snap.waxPerLeef * 1_000_000;
+  const waxPer10m = snap.waxPerLeef * 10_000_000;
   const chg = stats.change24;
   const mode = useWallet((s) => s.mode);
   const account = useWallet((s) => s.account);
@@ -79,15 +79,15 @@ export function TerminalHeader({
 
         <div className="hidden items-center gap-5 rounded-lg border border-border bg-surface px-4 py-2 text-xs xl:flex">
           <div>
-            <div className="text-subtle">1M LEEF</div>
+            <div className="text-subtle">10M LEEF</div>
             <div className="font-mono tabular-nums text-wax">
-              {fmtNum(waxPerM, { digits: 2 })} WAX
+              {fmtNum(waxPer10m, { digits: 4 })} WAX
             </div>
           </div>
           <div className="h-6 w-px bg-border" />
           <div>
-            <div className="text-subtle">LEEF</div>
-            <div className="font-mono tabular-nums">{fmtUsd(snap.leefUsd, 8)}</div>
+            <div className="text-subtle">1 LEEF</div>
+            <div className="font-mono tabular-nums">{fmtUsd(snap.leefUsd)}</div>
           </div>
           <div className="h-6 w-px bg-border" />
           <div>
