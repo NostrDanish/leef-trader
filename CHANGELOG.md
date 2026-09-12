@@ -2,6 +2,19 @@
 
 All notable changes to LEEF Trader. Dates are commit-era, not release tags.
 
+## Unreleased — recover Alcor quotes (HTTP 500) + unbootable HEAD
+
+Forensic report: `docs/FORENSIC_REPORT.md`.
+
+- **P0 HTTP 500:** Alcor `getRoute` crashes (`new Percent(parseFloat(slippage)*100, 10000)` → JSBI) on any slippage whose `×100` is not an IEEE-754 integer (live: 1.1, 0.55, 2.2, `slipMax*0.9`). `fetchAlcorRoute` now encodes slippage via `formatAlcorSlippageParam`, walking **down** (never widening) to a two-decimal string Alcor accepts. Single chokepoint — bot, arb re-quote, rebalancer, quotes desk all go through it.
+- **P0 HEAD crash:** `DEFAULT_OPERATIONAL_RESERVE_USD` is imported in `bot-engine.ts`; `tokenAmountForUsd` is defined and exported. Preview was throwing `Uncaught ReferenceError` in a loop.
+- Alcor 500s whose FetchContext contains `slippage=` are classified as `QUOTE_FAILURE` (30s backoff), not `SLIPPAGE_TOO_HIGH`.
+- Bot evaluation mutex (`cycleInFlight`) so overlapping snapshot + on-chain-spot ticks cannot double paper-fill.
+- `operationalReserveUsd.toFixed` is null-safe; bot store migrate version 8.
+- Wallet-safe sizing tests now include WAX/LEEF in the universe so they actually hit `requireTradePrice`.
+
+---
+
 ## Unreleased — reliability-first execution coordinator
 
 - Fixed mixed multi-hop verification: every sequential leg now spends the

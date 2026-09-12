@@ -42,6 +42,13 @@ describe("classifyTradeError", () => {
     expect(c.message).toMatch(/status=500/);
     expect(c.message).toMatch(/Alcor router/);
   });
+  it("does not steal Alcor 500s as SLIPPAGE_TOO_HIGH just because context lists slippage=", () => {
+    const raw =
+      "Alcor router quote | https://wax.alcor.exchange/api/v2/swapRouter/getRoute | input=wax-eosio.token output=leef-leefmaincorp amount=10.00000000 slippage=1.1 | status=500 | body=Internal error | HTTP 500: Internal error";
+    const c = classifyTradeError(new Error(raw));
+    expect(c.code).toBe("QUOTE_FAILURE");
+    expect(c.code).not.toBe("SLIPPAGE_TOO_HIGH");
+  });
   it("classifies a WAX RPC HTTP 500 as RPC_FAILURE when context names the endpoint", () => {
     const raw =
       "WAX push_transaction | https://wax.greymass.com/v1/chain/push_transaction | status=500 | body=Internal Service Error | HTTP 500: Internal Service Error";

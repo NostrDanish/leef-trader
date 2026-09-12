@@ -123,7 +123,7 @@ export const useBot = create<BotState>()(
   persist(
     (set, get) => ({
       running: false,
-      strategy: "signal",
+      strategy: "auto",
       base: "LEEF",
       quote: "WAX",
       focus: ["LEEF", "WAX"],
@@ -270,7 +270,7 @@ export const useBot = create<BotState>()(
       // Versioned + merging migrate: fields added to the schema after a user
       // saved state (e.g. risk.minNetEdgePct, stats.byStrategy) get filled
       // from defaults instead of crashing selectors with undefined.
-      version: 7,
+      version: 8,
       migrate: (persisted) => {
         const p = (
           persisted && typeof persisted === "object" ? persisted : {}
@@ -292,7 +292,7 @@ export const useBot = create<BotState>()(
         void _c;
         void _m;
         return {
-          strategy: p.strategy ?? "signal",
+          strategy: p.strategy ?? "auto",
           base: typeof p.base === "string" && p.base ? p.base.toUpperCase() : "LEEF",
           quote: typeof p.quote === "string" && p.quote ? p.quote.toUpperCase() : "WAX",
           focus: Array.isArray(p.focus) ? p.focus.map((s) => String(s).toUpperCase()) : ["LEEF", "WAX"],

@@ -84,7 +84,12 @@ export function classifyTradeError(err: unknown): { code: TradeErrorCode; messag
     return { code: "ROUTE_DISAPPEARED", message: shown };
   }
   if (/min.?out|minimum output|overdrawn/.test(m)) return { code: "MIN_OUT_FAILED", message: shown };
-  if (/slippage/.test(m)) return { code: "SLIPPAGE_TOO_HIGH", message: shown };
+  // Alcor's getRoute 500 "Internal error" is a router crash (IEEE-754 Percent),
+  // not an on-chain min-out/slippage rejection. Classify it as a quote failure
+  // BEFORE the generic /slippage/ match, which would otherwise steal it because
+  // FetchContext includes the `slippage=` query param.
+  if (isHttp5xx && isAlcorQuote) return { code: "QUOTE_FAILURE", message: shown };
+  if (/slippage/.test(m) && !isAlcorQuote) return { code: "SLIPPAGE_TOO_HIGH", message: shown };
   if (/insufficient (cpu|net|ram)/.test(m) || /cpu .*used/.test(m)) {
     if (/net/.test(m)) return { code: "INSUFFICIENT_NET", message: shown };
     if (/ram/.test(m)) return { code: "INSUFFICIENT_RAM", message: shown };

@@ -246,7 +246,14 @@ export function defiboxMemo(minOut: number, decimals: number, pairId: number): s
   return `swap,${units},${pairId}`;
 }
 
-/** Taco memo observed on-chain: `<min> <SYM>@<contract>` */
+/** Taco memo observed on-chain: `<min> <SYM>@<contract>`. Truncates toward
+ * zero — rounding up would demand more than the pool can pay and revert. */
 export function tacoMemo(minOut: number, symbol: string, contract: string, decimals: number): string {
-  return `${minOut.toFixed(decimals)} ${symbol}@${contract}`;
+  const d = Math.max(0, Math.min(18, decimals | 0));
+  const scale = 10 ** d;
+  const units = Math.floor(Math.max(0, minOut) * scale + 1e-9);
+  const whole = Math.floor(units / scale);
+  const frac = units % scale;
+  const body = d === 0 ? String(whole) : `${whole}.${String(frac).padStart(d, "0")}`;
+  return `${body} ${symbol}@${contract}`;
 }

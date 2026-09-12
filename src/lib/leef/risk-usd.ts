@@ -19,6 +19,14 @@ export const DEFAULT_MAX_POSITION_USD = 1_000;
 /** Reserve held back in the quote token so the wallet keeps operating capital. */
 export const DEFAULT_OPERATIONAL_RESERVE_USD = 0;
 
+/** Convert a USD notional to quote-token units at a live mark. */
+export function tokenAmountForUsd(usd: number, quoteUsd: number): number | null {
+  if (!(usd >= 0) || !Number.isFinite(usd) || !(quoteUsd > 0) || !Number.isFinite(quoteUsd)) {
+    return null;
+  }
+  return usd / quoteUsd;
+}
+
 export type UsdRisk = {
   minTradeUsd: number;
   maxPositionUsd: number;

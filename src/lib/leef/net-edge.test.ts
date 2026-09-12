@@ -46,16 +46,42 @@ function mkPool(waxReserve: number, leefReserve: number): LeefPool {
 
 function mkSnap(pools: LeefPool[]): LeefSnapshot {
   const waxPerLeef = pools[0]?.waxPerLeef ?? 0;
+  const leefUsd = waxPerLeef * WAX_USD;
   return {
     source: "live",
     fetchedAt: new Date().toISOString(),
     waxUsd: WAX_USD,
-    leefUsd: waxPerLeef * WAX_USD,
+    leefUsd,
     waxPerLeef,
     pools,
     aux: [],
     trades: [],
-    universe: [],
+    // The oracle resolves WAX/LEEF (and balances) through the universe — a
+    // test book without it fails closed exactly like production would.
+    universe: [
+      {
+        symbol: "WAX",
+        contract: "eosio.token",
+        decimals: 8,
+        alcorId: "wax-eosio.token",
+        poolId: 0,
+        waxPerToken: 1,
+        usdPrice: WAX_USD,
+        tvlUsd: 1_000_000,
+        stable: false,
+      },
+      {
+        symbol: "LEEF",
+        contract: "leefmaincorp",
+        decimals: 4,
+        alcorId: "leef-leefmaincorp",
+        poolId: pools[0]?.id ?? 1159,
+        waxPerToken: waxPerLeef,
+        usdPrice: leefUsd,
+        tvlUsd: pools[0]?.tvlUsd ?? 0,
+        stable: false,
+      },
+    ],
   };
 }
 
@@ -244,5 +270,108 @@ describe("bot edge gate (evaluateBot)", () => {
     const d = evaluateBot(botInput({ snap, gridAnchor: anchorAbove(snap) }));
     expect(d.kind).toBe("hold");
     expect(d.reason).toMatch(/old/);
+  });
+
+  it("regression: evaluating an exit with an open position does not throw", () => {
+    // bestSellRoute used to reference an out-of-scope identifier, crashing
+    // every sell evaluation with ReferenceError.
+    const snap = mkSnap([mkPool(50_000, 500_000_000)]);
+    const d = evaluateBot(
+      botInput({
+        snap,
+        strategy: "auto",
+        position: {
+          amountLeef: 1_000_000,
+          entryUsd: snap.leefUsd,
+          entryCostUsd: 10,
+          entryWax: 500,
+          since: Date.now() - 60_000,
+          highUsd: snap.leefUsd,
+          mode: "paper",
+        },
+        balances: { WAX: 50, "LEEF@leefmaincorp": 1_000_000 },
+      }),
+    );
+    expect(["hold", "sell", "buy", "arb", "stop"]).toContain(d.kind);
+  });
+
+  it("caps a sell at the actual wallet base balance, never above it", () => {
+    const snap = mkSnap([mkPool(50_000, 500_000_000)]);
+    const d = evaluateBot(
+      botInput({
+        snap,
+        force: "sell",
+        position: {
+          amountLeef: 1_000_000, // position tracking says 1M…
+          entryUsd: snap.leefUsd,
+          entryCostUsd: 10,
+          entryWax: 500,
+          since: Date.now() - 60_000,
+          highUsd: snap.leefUsd,
+          mode: "paper",
+        },
+        // …but the wallet provably holds only 400k.
+        balances: { WAX: 50, "LEEF@leefmaincorp": 400_000 },
+      }),
+    );
+    expect(d.kind).toBe("sell");
+    if (d.kind === "sell") {
+      expect(d.amountLeef).toBe(400_000);
+      expect(d.reason).toMatch(/capped at wallet balance/);
+    }
+  });
+
+  it("auto strategy: no deployable quote → clean hold, not a failed trade", () => {
+    const snap = mkSnap([mkPool(50_000, 500_000_000)]);
+    const d = evaluateBot(
+      botInput({
+        snap,
+        strategy: "auto",
+        balances: { WAX: 0 },
+      }),
+    );
+    expect(d.kind).toBe("hold");
+    expect(d.reason).toMatch(/Auto scan|no deployable|warming up/i);
+  });
+
+  it("auto strategy: picks the grid entry when it clears net edge", () => {
+    const snap = mkSnap([mkPool(50_000, 500_000_000)]);
+    const d = evaluateBot(
+      botInput({
+        snap,
+        strategy: "auto",
+        gridAnchor: anchorAbove(snap),
+        // Disable the echo fallback so a failed entry can't masquerade as a buy.
+        risk: { ...DEFAULT_RISK, maxEchoLossPct: 0 },
+      }),
+    );
+    expect(d.kind).toBe("buy");
+    if (d.kind === "buy") {
+      expect(d.reason).toMatch(/Auto:/);
+      expect(d.edge).toBeDefined();
+    }
+  });
+
+  it("auto strategy: takes a profitable arb when one exists", () => {
+    // Two WAX/LEEF pools with a wide price gap → atomic spread clears the gate.
+    const cheap = { ...mkPool(50_000, 500_000_000), id: 1159 };
+    const rich = { ...mkPool(52_000, 400_000_000), id: 217 };
+    const snap = mkSnap([cheap, rich]);
+    const d = evaluateBot(
+      botInput({
+        snap,
+        strategy: "auto",
+        // Pin the grid anchor at market so no grid thesis competes with the
+        // arb, and disable the echo fallback so the outcome is deterministic.
+        gridAnchor: snap.leefUsd,
+        risk: { ...DEFAULT_RISK, minEdgePct: 0.5, minNetEdgePct: 0.1, maxEchoLossPct: 0 },
+        balances: { WAX: 500 },
+      }),
+    );
+    expect(d.kind).toBe("arb");
+    if (d.kind === "arb") {
+      expect(d.arbKind).toBe("spread");
+      expect(d.reason).toMatch(/Auto: arb/);
+    }
   });
 });

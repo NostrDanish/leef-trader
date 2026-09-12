@@ -246,6 +246,7 @@ export async function quoteLegs(
           slippagePct: slippage,
           receiver: account,
           maxHops: 10,
+          decimalsIn: leg.from.decimals,
         });
         const impact = parseFloat(quote.priceImpact);
         out[i] = Number.isFinite(impact) && impact > maxImpactPct

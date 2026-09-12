@@ -5,7 +5,7 @@ import {
   type ArbPlan,
   type Position,
 } from "@/lib/leef/bot-engine";
-import { realizedVolPerSec } from "@/lib/leef/cost-model";
+import { realizedVolPerSec, usdPriceOf } from "@/lib/leef/cost-model";
 import { optimizeEntrySize } from "@/lib/leef/net-edge";
 import { fmtNum } from "@/lib/leef/format";
 import { fetchAlcorRouteCached } from "@/lib/leef/quote-verify";
@@ -126,6 +126,8 @@ let lastHoldReason = "";
 let holdStreak = 0;
 /** Set when the API rate-limits us — evaluations pause until then. */
 let rateLimitedUntil = 0;
+/** Evaluation mutex — paper fills and live quotes must not overlap. */
+let cycleInFlight = false;
 
 /** Keep polling an UNKNOWN txid. Never submits another trade. Unlocks only on fail/confirm. */
 function pollUnknown(txid: string): void {
@@ -158,7 +160,16 @@ export async function runBotOnce(
     }
     return null;
   }
-  return await runBotOnceInner(snap, opts);
+  // One evaluation at a time for BOTH paper and live. Without this, overlapping
+  // snapshot + on-chain-spot ticks can paper-fill (or quote) the same clip twice
+  // before markTrade's cooldown lands.
+  if (cycleInFlight) return null;
+  cycleInFlight = true;
+  try {
+    return await runBotOnceInner(snap, opts);
+  } finally {
+    cycleInFlight = false;
+  }
 }
 
 async function runBotOnceInner(
@@ -280,9 +291,9 @@ async function runBotOnceInner(
 
   // Last-second re-optimize: USD min is the floor, remaining USD capacity the ceiling.
   // Re-scan size + route on THIS book so we never fire the 30s-old candidate.
-    if (decision.kind === "buy") {
+  if (decision.kind === "buy") {
     if (bounds.maxIn + 1e-12 < bounds.minIn) {
-      const reason = `Effective maximum $${bounds.effectiveMaxUsd.toFixed(2)} is under min trade $${b.risk.minTradeUsd.toFixed(2)} (wallet $${bounds.walletUsd.toFixed(2)}, reserve $${b.risk.operationalReserveUsd.toFixed(2)}) — sitting out`;
+      const reason = `Effective maximum $${bounds.effectiveMaxUsd.toFixed(2)} is under min trade $${b.risk.minTradeUsd.toFixed(2)} (wallet $${bounds.walletUsd.toFixed(2)}, reserve $${(b.risk.operationalReserveUsd ?? 0).toFixed(2)}) — sitting out`;
       b.pushDecision({ kind: "hold", mode, reason, priceUsd: snap.leefUsd });
       b.setLastReason(reason);
       return { kind: "hold", reason };
@@ -325,13 +336,13 @@ async function runBotOnceInner(
   }
   if (decision.kind === "arb") {
     const maxIn = bounds.maxIn;
-    const floorPct =
-      b.strategy === "volume" ? -b.risk.maxEchoLossPct : b.risk.minEdgePct;
+    const isEcho = decision.arbKind === "volume" || (decision.arbKind == null && b.strategy === "volume");
+    const floorPct = isEcho ? -b.risk.maxEchoLossPct : b.risk.minEdgePct;
     const fresh = findBestArb(
       book,
       maxIn,
-      b.strategy === "volume" ? -b.risk.maxEchoLossPct : floorPct,
-      b.strategy === "volume",
+      isEcho ? -b.risk.maxEchoLossPct : floorPct,
+      isEcho,
       bounds.minIn,
     );
     if (!fresh) {
@@ -486,17 +497,21 @@ async function runBotOnceInner(
         w.applyPaperFill(b.quote || "WAX", decision.amountWax, b.base || "LEEF", amountLeef);
       }
       // Average into an existing position (DCA) or open a fresh one.
+      // Costs are USD: quote-side spend × the quote token's oracle price,
+      // base-side marks × the base token's oracle price — no WAX/LEEF wiring.
+      const quoteUsdPx = bounds.quoteUsd;
+      const baseUsdPx = usdPriceOf(b.base || "LEEF", book) || snap.leefUsd;
       const prev = b.position;
       const position: Position = prev
         ? {
             amountLeef: prev.amountLeef + amountLeef,
             entryUsd:
-              (prev.entryCostUsd + decision.amountWax * snap.waxUsd) /
+              (prev.entryCostUsd + decision.amountWax * quoteUsdPx) /
               Math.max(prev.amountLeef + amountLeef, 1e-9),
-            entryCostUsd: prev.entryCostUsd + decision.amountWax * snap.waxUsd,
+            entryCostUsd: prev.entryCostUsd + decision.amountWax * quoteUsdPx,
             entryWax: prev.entryWax + decision.amountWax,
             since: prev.since,
-            highUsd: Math.max(prev.highUsd, snap.leefUsd),
+            highUsd: Math.max(prev.highUsd, baseUsdPx),
             mode,
             // Weight the predicted edge by the new capital entering.
             predEdgePct:
@@ -509,17 +524,17 @@ async function runBotOnceInner(
           }
         : {
             amountLeef,
-            entryUsd: snap.leefUsd,
-            entryCostUsd: decision.amountWax * snap.waxUsd,
+            entryUsd: baseUsdPx,
+            entryCostUsd: decision.amountWax * quoteUsdPx,
             entryWax: decision.amountWax,
             since: Date.now(),
-            highUsd: snap.leefUsd,
+            highUsd: baseUsdPx,
             mode,
             predEdgePct: decision.edge?.netEdgePct,
             strategy: b.strategy,
           };
       b.setPosition(position);
-      b.setGridAnchor(snap.leefUsd);
+      b.setGridAnchor(baseUsdPx);
       b.markTrade(adaptiveCooldownSec(b.risk.cooldownSec, b.strategy, b.stats.lastPnlUsd));
       b.pushDecision({
         kind: "buy",
@@ -583,9 +598,9 @@ async function runBotOnceInner(
       } else {
         w.applyPaperFill(b.base || "LEEF", decision.amountLeef, b.quote || "WAX", waxOut);
       }
-      const pnlUsd = position ? waxOut * snap.waxUsd - position.entryCostUsd : 0;
+      const pnlUsd = position ? waxOut * bounds.quoteUsd - position.entryCostUsd : 0;
       b.setPosition(null);
-      b.setGridAnchor(snap.leefUsd);
+      b.setGridAnchor(usdPriceOf(b.base || "LEEF", book) || snap.leefUsd);
       b.markTrade(adaptiveCooldownSec(b.risk.cooldownSec, b.strategy, pnlUsd));
       b.recordResult(pnlUsd, equityUsd + pnlUsd);
       // Calibration: predicted edge (stored at entry) vs the realized edge.
@@ -618,8 +633,11 @@ async function runBotOnceInner(
       let plan = decision.plan;
       // The hard floor this arb must enforce on-chain: spread arbs enforce the
       // profit floor; volume echoes enforce the loss budget (negative floor).
-      const floorPct =
-        b.strategy === "volume" ? -b.risk.maxEchoLossPct : b.risk.minEdgePct;
+      // The decision's arbKind (not the globally selected strategy) decides —
+      // the auto strategy emits both kinds.
+      const isEcho =
+        decision.arbKind === "volume" || (decision.arbKind == null && b.strategy === "volume");
+      const floorPct = isEcho ? -b.risk.maxEchoLossPct : b.risk.minEdgePct;
       {
         try {
           // Always re-quote through Alcor's CLMM router — the local
@@ -638,14 +656,14 @@ async function runBotOnceInner(
           return decision;
         }
         const costPct = (1 - plan.waxOut / plan.waxIn) * 100;
-        if (b.strategy === "volume" && costPct > b.risk.maxEchoLossPct) {
+        if (isEcho && costPct > b.risk.maxEchoLossPct) {
           // Real round-trip cost exceeds the budget — skip, don't burn CPU.
           const reason = `Alcor round-trip costs ${costPct.toFixed(2)}% — above the ${b.risk.maxEchoLossPct}% budget`;
           b.setLastReason(reason);
           b.pushDecision({ kind: "hold", mode, reason, priceUsd: snap.leefUsd });
           return { kind: "hold", reason };
         }
-        if (b.strategy === "spread" && plan.profitPct * 100 < b.risk.minEdgePct) {
+        if (!isEcho && plan.profitPct * 100 < b.risk.minEdgePct) {
           const reason = `Alcor spread ${ (plan.profitPct * 100).toFixed(2)}% is below the ${b.risk.minEdgePct}% floor`;
           b.setLastReason(reason);
           b.pushDecision({ kind: "hold", mode, reason, priceUsd: snap.leefUsd });
@@ -729,7 +747,7 @@ async function runBotOnceInner(
           (realizedWax != null ? realizedWax / plan.waxIn : plan.waxOut / plan.waxIn - 1) * 100,
         latencyMs: live ? Date.now() - t0 : null,
       });
-      if (b.strategy === "volume") {
+      if (isEcho) {
         b.recordVolume((plan.waxIn + plan.waxOut) * snap.waxUsd, -pnlUsd);
       }
       b.pushDecision({
@@ -742,7 +760,7 @@ async function runBotOnceInner(
       });
       const diff = realizedWax ?? plan.waxOut - plan.waxIn;
       toast({
-        title: `${live ? "Live" : "Paper"} ${b.strategy === "volume" ? "echo" : "arb"} · ${
+        title: `${live ? "Live" : "Paper"} ${isEcho ? "echo" : "arb"} · ${
           diff >= 0 ? "+" : ""
         }${fmtNum(diff, { digits: 3 })} WAX`,
         description: decision.reason + note + (txid ? ` · tx ${txid.slice(0, 10)}…` : ""),
@@ -785,6 +803,9 @@ async function runBotOnceInner(
 function seedSeriesFromTape(snap: LeefSnapshot) {
   const b = useBot.getState();
   if (b.series.length >= 10 || snap.source !== "live" || !(snap.waxUsd > 0)) return;
+  // The tape is LEEF fills — seeding it for a non-LEEF base would skew the
+  // indicator warmup with the wrong asset's price history.
+  if ((b.base || "LEEF").toUpperCase() !== "LEEF") return;
   const mainWaxId = [...snap.pools]
     .filter((p) => p.pair.symbol.toUpperCase() === "WAX")
     .sort((a, b2) => b2.tvlUsd - a.tvlUsd)[0]?.id;
@@ -822,13 +843,16 @@ export async function botOnSnapshot(snap: LeefSnapshot): Promise<void> {
   if (isNewSnap) {
     lastSeenSnap = identity;
     seedSeriesFromTape(snap);
-    if (snap.leefUsd > 0) {
+    // The signal series tracks the BASE token's USD mark (LEEF by default,
+    // but any configured base) — strategy math is generic over it.
+    const baseUsd = usdPriceOf(b.base || "LEEF", snap) || snap.leefUsd;
+    if (baseUsd > 0) {
       const t = Date.parse(snap.fetchedAt) || Date.now();
       const last = b.series[b.series.length - 1];
-      if (!last || t - last.t > 15_000) b.pushSeries({ t, usd: snap.leefUsd });
+      if (!last || t - last.t > 15_000) b.pushSeries({ t, usd: baseUsd });
     }
-    if (b.position && snap.leefUsd > b.position.highUsd) {
-      b.bumpPositionHigh(snap.leefUsd);
+    if (b.position && baseUsd > b.position.highUsd) {
+      b.bumpPositionHigh(baseUsd);
     }
   }
   if (!b.running) return;

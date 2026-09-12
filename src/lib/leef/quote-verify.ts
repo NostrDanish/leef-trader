@@ -39,8 +39,9 @@ function alcorKey(opts: {
   slippagePct: number;
   receiver: string;
   maxHops: number;
+  decimalsIn?: number;
 }): string {
-  return `${opts.tokenInId}>${opts.tokenOutId}:${opts.amount.toFixed(8)}:${opts.slippagePct}:${opts.receiver}:${opts.maxHops}`;
+  return `${opts.tokenInId}>${opts.tokenOutId}:${opts.amount.toFixed(8)}:${opts.slippagePct}:${opts.receiver}:${opts.maxHops}:${opts.decimalsIn ?? "guess"}`;
 }
 
 export async function fetchAlcorRouteCached(opts: {
@@ -50,6 +51,8 @@ export async function fetchAlcorRouteCached(opts: {
   slippagePct: number;
   receiver: string;
   maxHops?: number;
+  /** Authoritative input-token precision — never guess from the id string. */
+  decimalsIn?: number;
 }): Promise<AlcorRouteQuote> {
   const maxHops = opts.maxHops ?? 10;
   const key = alcorKey({ ...opts, maxHops });
@@ -118,6 +121,7 @@ export async function verifyExecutableRoute(opts: {
         slippagePct: opts.slippagePct,
         receiver: opts.account,
         maxHops: Math.min(10, Math.max(2, opts.route.legs.length)),
+        decimalsIn: tokenIn.decimals,
       });
       const expectedOut = parseAssetAmount(quote.output);
       if (!(expectedOut > 0)) throw new TradeError("ROUTE_DISAPPEARED", "Alcor returned no output");
@@ -167,6 +171,7 @@ export async function verifyExecutableRoute(opts: {
         slippagePct: opts.slippagePct,
         receiver: opts.account,
         maxHops: 1,
+        decimalsIn: tin.decimals,
       });
       amountOut = parseAssetAmount(quote.output);
       if (!(amountOut > 0)) {

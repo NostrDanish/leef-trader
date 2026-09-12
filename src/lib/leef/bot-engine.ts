@@ -1,7 +1,7 @@
 import { backedPools, isLeefToken, isWaxToken, quoteConstantProduct } from "./amm";
 import { bestExecutionRoute } from "./route-optimizer";
 import { realizedVolPerSec, usdPriceOf } from "./cost-model";
-import { markPortfolioUsd } from "@/lib/wallet/balances";
+import { balanceForIdentifier, markPortfolioUsd } from "@/lib/wallet/balances";
 import {
   decorate,
   scoreSignal,
@@ -13,6 +13,7 @@ import { optimizeEntrySize, scoreOpportunity } from "./net-edge";
 import {
   DEFAULT_MAX_POSITION_USD,
   DEFAULT_MIN_TRADE_USD,
+  DEFAULT_OPERATIONAL_RESERVE_USD,
   usdToTokenBounds,
 } from "./risk-usd";
 import type { LeefPool, LeefSnapshot, SwapRoute } from "./types";
@@ -21,7 +22,7 @@ import type { LeefPool, LeefSnapshot, SwapRoute } from "./types";
 /* Strategy catalog                                                    */
 /* ------------------------------------------------------------------ */
 
-export type BotStrategy = "signal" | "meanrev" | "spread" | "grid" | "dca" | "volume";
+export type BotStrategy = "auto" | "signal" | "meanrev" | "spread" | "grid" | "dca" | "volume";
 
 export const STRATEGIES: {
   id: BotStrategy;
@@ -30,6 +31,14 @@ export const STRATEGIES: {
   detail: string;
   bestFor: string;
 }[] = [
+  {
+    id: "auto",
+    name: "Auto",
+    tagline: "Evaluates everything, picks the best net USD",
+    detail:
+      "The autonomous selector: every cycle it evaluates atomic arbitrage, signal entries, mean reversion, grid steps and position exits, ranks them by expected NET USD after all costs, and takes the single best action. When nothing profitable exists and a volume budget is set, it runs a bounded-cost echo. Otherwise it does nothing — and says why.",
+    bestFor: "Default — one mode that adapts",
+  },
   {
     id: "signal",
     name: "Signal rider",
@@ -231,7 +240,13 @@ export type Decision =
       edge?: { netEdgePct: number; netProfitUsd: number; score: number };
     }
   | { kind: "sell"; amountLeef: number; route: SwapRoute; reason: string; confidence: number }
-  | { kind: "arb"; plan: ArbPlan; reason: string }
+  | {
+      kind: "arb";
+      plan: ArbPlan;
+      reason: string;
+      /** spread = profit floor enforced; volume = loss budget enforced. */
+      arbKind?: "spread" | "volume";
+    }
   | { kind: "hold"; reason: string }
   | { kind: "stop"; reason: string };
 
@@ -355,8 +370,8 @@ function bestSellRoute(
   quote = "WAX",
   base = "LEEF",
 ): SwapRoute | null {
-  if (amountLeef <= 0) return null;
-  return bestExecutionRoute(snap.pools, snap.aux, amountLeef, base, quote);
+  if (baseAmount <= 0) return null;
+  return bestExecutionRoute(snap.pools, snap.aux, baseAmount, base, quote);
 }
 
 /* ------------------------------------------------------------------ */
@@ -483,10 +498,13 @@ export function evaluateBot(input: BotInput): Decision {
   const base = (input.base ?? "LEEF").toUpperCase();
   const leefUsd = snap.leefUsd;
   const waxUsd = snap.waxUsd;
+  /** USD mark of the asset being accumulated — generic, not LEEF-hardcoded. */
+  const baseUsd = usdPriceOf(base, snap) > 0 ? usdPriceOf(base, snap) : leefUsd;
 
   if (!input.running && !input.force) return hold("Bot is stopped");
   if (snap.source !== "live") return hold("Book is stale — waiting for live Alcor data");
   if (!(leefUsd > 0) || !(waxUsd > 0)) return hold("Waiting for a priced book");
+  if (!(baseUsd > 0)) return hold(`No USD mark for ${base} — pick another base token`);
   if (quote !== "WAX" && !(usdPriceOf(quote, snap) > 0)) {
     return hold(`No USD mark for ${quote} — pick another quote token`);
   }
@@ -599,6 +617,7 @@ export function evaluateBot(input: BotInput): Decision {
         const costPct = -plan.profitPct * 100;
         arbDecision = {
           kind: "arb",
+          arbKind: "volume",
           plan,
           reason:
             plan.profitPct >= 0
@@ -616,6 +635,7 @@ export function evaluateBot(input: BotInput): Decision {
       if (plan) {
         arbDecision = {
           kind: "arb",
+          arbKind: "spread",
           plan,
           reason: `Arb #${plan.buyPool.id}→#${plan.sellPool.id} · est +${(plan.profitPct * 100).toFixed(2)}% after fees · impact ${(plan.impactPct * 100).toFixed(1)}%`,
         };
@@ -698,19 +718,32 @@ export function evaluateBot(input: BotInput): Decision {
   /* ---------------- position management (all strategies) ---------- */
 
   if (position && position.amountLeef > 0) {
-    const pnlPct = (leefUsd / position.entryUsd - 1) * 100;
-    const sellRoute = bestSellRoute(snap, position.amountLeef, quote, base);
+    const pnlPct = (baseUsd / position.entryUsd - 1) * 100;
+    // Chain truth beats local tracking: never build a transfer for more base
+    // than the wallet actually holds — that tx reverts with overdrawn balance.
+    const walletBase = balanceForIdentifier(input.balances, snap.universe, base);
+    const sellableBase = Math.min(position.amountLeef, Math.max(0, walletBase));
+    const sellRoute = bestSellRoute(snap, sellableBase, quote, base);
 
     const sellAll = (reason: string): Decision | null => {
+      if (!(sellableBase > 0)) {
+        return hold(
+          `Position tracks ${position.amountLeef.toLocaleString()} ${base} but the wallet holds ${walletBase.toLocaleString()} — nothing sellable on-chain`,
+        );
+      }
       if (!sellRoute) return null;
       if (sellRoute.priceImpact * 100 > risk.maxImpactPct) {
         return hold(`Exit impact ${(sellRoute.priceImpact * 100).toFixed(1)}% above cap — waiting for depth`);
       }
+      const cappedNote =
+        sellableBase + 1e-9 < position.amountLeef
+          ? ` (capped at wallet balance ${walletBase.toLocaleString()} ${base})`
+          : "";
       return {
         kind: "sell",
-        amountLeef: position.amountLeef,
+        amountLeef: sellableBase,
         route: sellRoute,
-        reason,
+        reason: reason + cappedNote,
         confidence: signal.confidence,
       };
     };
@@ -733,7 +766,7 @@ export function evaluateBot(input: BotInput): Decision {
     // Trailing stop: armed once profit exceeded trailingPct, fires on giveback.
     if (goals.trailingPct > 0 && position.highUsd > 0) {
       const peakPct = (position.highUsd / position.entryUsd - 1) * 100;
-      const givebackPct = (leefUsd / position.highUsd - 1) * 100;
+      const givebackPct = (baseUsd / position.highUsd - 1) * 100;
       if (peakPct >= goals.trailingPct && givebackPct <= -goals.trailingPct) {
         const d = sellAll(
           `Trailing stop · peaked +${peakPct.toFixed(1)}%, gave back ${givebackPct.toFixed(1)}% — locking +${pnlPct.toFixed(2)}%`,
@@ -742,14 +775,14 @@ export function evaluateBot(input: BotInput): Decision {
       }
     }
 
-    // Strategy exits.
-    if (strategy === "signal" && signal.warmed && signal.bias === "sell") {
+    // Strategy exits. Auto inherits every exit rule.
+    if ((strategy === "signal" || strategy === "auto") && signal.warmed && signal.bias === "sell") {
       const d = sellAll(
         `Engine vote flipped sell (${Math.round(signal.confidence * 100)}% conf) · position ${pnlPct >= 0 ? "+" : ""}${pnlPct.toFixed(2)}%`,
       );
       if (d) return d;
     }
-    if (strategy === "meanrev") {
+    if (strategy === "meanrev" || strategy === "auto") {
       const { rsi, pctB } = reversionRead(input.series);
       if (rsi != null && pctB != null && (rsi >= 62 || pctB >= 0.9)) {
         const d = sellAll(
@@ -758,22 +791,41 @@ export function evaluateBot(input: BotInput): Decision {
         if (d) return d;
       }
     }
-    if (strategy === "grid" && input.gridAnchor != null) {
+    if ((strategy === "grid" || strategy === "auto") && input.gridAnchor != null) {
       const step = adaptiveGridStepPct(risk.gridStepPct, realizedVolPerSec(input.series));
       const stepUp = input.gridAnchor * (1 + step / 100);
-      if (leefUsd >= stepUp) {
+      if (baseUsd >= stepUp) {
         const d = sellAll(
           `Grid step +${step.toFixed(2)}% filled · ${pnlPct >= 0 ? "+" : ""}${pnlPct.toFixed(2)}% on the leg`,
         );
         if (d) return d;
       }
     }
+    if (strategy === "auto") {
+      // With a position open, the only position-independent action worth
+      // considering is atomic arbitrage — it doesn't touch the held bag.
+      if (maxWax + 1e-12 >= minWax) {
+        const gatePct =
+          ((1 + risk.minEdgePct / 100) / Math.max(0.9, 1 - risk.slippage / 100) - 1) * 100;
+        const arb = findBestArb(snap, maxWax, gatePct, false, minWax);
+        if (arb) {
+          return {
+            kind: "arb",
+            arbKind: "spread",
+            plan: arb,
+            reason: `Auto: arb #${arb.buyPool.id}→#${arb.sellPool.id} beats holding · est +${(arb.profitPct * 100).toFixed(2)}% · impact ${(arb.impactPct * 100).toFixed(1)}%`,
+          };
+        }
+      }
+    }
     if (strategy === "dca") {
       // Keep stacking until the position cap, then ride to the take-profit.
-      const dcaMax = Math.min(roomWax, input.balances.WAX ?? 0);
+      // maxWax already is min(spendable wallet, remaining position headroom)
+      // in quote units — never read a bare-symbol balance here.
+      const dcaMax = maxWax;
       if (dcaMax + 1e-12 >= minWax) {
         return tryBuyWith(
-          `DCA clip · averaging in at ${(leefUsd * 1e6).toFixed(4)} USD/1M`,
+          `DCA clip · averaging in at $${baseUsd.toFixed(8)}/${base}`,
           goals.takeProfitPct,
           signal.confidence,
           dcaMax,
@@ -843,10 +895,10 @@ export function evaluateBot(input: BotInput): Decision {
         return tryBuy(`Grid seed buy — anchoring at market · step ${step.toFixed(2)}%`, expected, signal.confidence);
       }
       const stepDown = anchor * (1 - step / 100);
-      if (leefUsd <= stepDown) {
+      if (baseUsd <= stepDown) {
         return tryBuy(`Grid step −${step.toFixed(2)}% filled at the bid`, expected, signal.confidence);
       }
-      const distDown = (leefUsd / stepDown - 1) * 100;
+      const distDown = (baseUsd / stepDown - 1) * 100;
       return hold(`Grid armed · next buy ${distDown.toFixed(1)}% below, next sell +${step.toFixed(2)}% above last fill`);
     }
     case "dca": {
@@ -856,6 +908,113 @@ export function evaluateBot(input: BotInput): Decision {
         return hold(`DCA waiting — 8-print momentum +${(mom * 100).toFixed(1)}% (not averaging into a spike)`);
       }
       return tryBuy("Scheduled accumulation clip", goals.takeProfitPct, signal.confidence);
+    }
+    case "auto": {
+      /* Autonomous selector: evaluate every opportunity on this book and take
+       * the single best one by expected NET USD after costs. Doing nothing is
+       * a valid — and reported — outcome. */
+      const considered: string[] = [];
+      const candidates: { netUsd: number; decision: Decision }[] = [];
+
+      // 1. Atomic spread arb: self-contained profit, no directional risk.
+      if (maxWax + 1e-12 >= minWax) {
+        const gatePct =
+          ((1 + risk.minEdgePct / 100) / Math.max(0.9, 1 - risk.slippage / 100) - 1) * 100;
+        const arb = findBestArb(snap, maxWax, gatePct, false, minWax);
+        if (arb) {
+          const netUsd = (arb.waxOut - arb.waxIn) * waxUsd;
+          candidates.push({
+            netUsd,
+            decision: {
+              kind: "arb",
+              arbKind: "spread",
+              plan: arb,
+              reason: `Auto: arb #${arb.buyPool.id}→#${arb.sellPool.id} · est +${(arb.profitPct * 100).toFixed(2)}% ≈ +$${netUsd.toFixed(3)} · impact ${(arb.impactPct * 100).toFixed(1)}%`,
+            },
+          });
+          considered.push(`arb +$${netUsd.toFixed(3)}`);
+        } else {
+          const probe = findBestArb(snap, maxWax, -100, false, minWax);
+          considered.push(
+            probe
+              ? `best arb ${(probe.profitPct * 100).toFixed(2)}% < ${risk.minEdgePct}% gate`
+              : "no two WAX books",
+          );
+        }
+      } else {
+        considered.push(
+          `no deployable ${quote} (effective max $${bounds.effectiveMaxUsd.toFixed(2)} < min $${risk.minTradeUsd.toFixed(2)})`,
+        );
+      }
+
+      // 2. Directional entries — each flows through the NetEdgeEngine, so a
+      // thesis that can't beat all costs never becomes a candidate.
+      const theses: { reason: string; expected: number; confidence: number }[] = [];
+      if (signal.warmed && signal.bias === "buy" && Math.round(signal.confidence * 100) >= risk.minConfidence) {
+        const mom = momentumPct(input.series);
+        theses.push({
+          reason: `Auto: engine vote BUY ${Math.round(signal.confidence * 100)}% conf`,
+          expected: signal.confidence * goals.takeProfitPct * (mom < 0 ? 0.6 : 1),
+          confidence: signal.confidence,
+        });
+      } else if (!signal.warmed) {
+        considered.push(`engines warming up ${input.series.length}/${BOT_WARMUP_POINTS}`);
+      }
+      {
+        const { rsi, pctB, distToMidPct } = reversionRead(input.series);
+        if (rsi != null && pctB != null && momentumPct(input.series, 12) >= -0.04 && rsi <= 30 && pctB <= 0.1) {
+          theses.push({
+            reason: `Auto: oversold RSI ${rsi.toFixed(0)} / %B ${pctB.toFixed(2)}`,
+            expected: Math.max(0, (distToMidPct ?? 0) * 0.7),
+            confidence: signal.confidence,
+          });
+        }
+      }
+      {
+        const step = adaptiveGridStepPct(risk.gridStepPct, realizedVolPerSec(input.series));
+        const anchor = input.gridAnchor;
+        if (anchor == null || baseUsd <= anchor * (1 - step / 100)) {
+          theses.push({
+            reason: `Auto: grid step −${step.toFixed(2)}% zone`,
+            expected: step * 0.8,
+            confidence: signal.confidence,
+          });
+        }
+      }
+      for (const t of theses) {
+        const d = tryBuyWith(t.reason, t.expected, t.confidence, maxWax);
+        if (d.kind === "buy") {
+          const netUsd = d.edge?.netProfitUsd ?? 0;
+          candidates.push({ netUsd, decision: d });
+          considered.push(`${t.reason.replace("Auto: ", "")} ≈ +$${netUsd.toFixed(3)}`);
+        }
+      }
+      if (theses.length > 0 && !candidates.some((c) => c.decision.kind === "buy")) {
+        considered.push("entries failed the net-edge gate");
+      }
+
+      // 3. Rank by expected net USD — a larger 2% trade can beat a tiny 20% one.
+      candidates.sort((a, b) => b.netUsd - a.netUsd);
+      const best = candidates[0];
+      if (best && best.netUsd > 0) return best.decision;
+
+      // 4. Controlled volume ONLY when nothing profitable exists and a budget
+      // is configured. The echo is bounded by the on-chain loss floor.
+      if (risk.maxEchoLossPct > 0 && maxWax + 1e-12 >= minWax) {
+        const echo = findBestArb(snap, maxWax, -risk.maxEchoLossPct, true, minWax);
+        if (echo) {
+          const costUsd = (echo.waxIn - echo.waxOut) * waxUsd;
+          return {
+            kind: "arb",
+            arbKind: "volume",
+            plan: echo,
+            reason: `Auto: no profitable action — volume echo #${echo.buyPool.id}${
+              echo.sellPool.id === echo.buyPool.id ? " round-trip" : `→#${echo.sellPool.id}`
+            } · est cost $${costUsd.toFixed(3)} within ${risk.maxEchoLossPct}% budget`,
+          };
+        }
+      }
+      return hold(`Auto scan: ${considered.join(" · ") || "nothing in range"} — waiting`);
     }
     case "spread":
     case "volume":

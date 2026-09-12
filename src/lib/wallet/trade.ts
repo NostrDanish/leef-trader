@@ -116,6 +116,7 @@ export async function executeSwap(opts: {
           amount: sl.amountIn,
           slippagePct: opts.slippage,
           receiver: w.account,
+          decimalsIn: tin.decimals,
         });
         expectedOut += parseAssetAmount(quote.output);
         for (const s of quote.swaps) {

@@ -66,6 +66,11 @@ describe("taco memo", () => {
   it("builds the on-chain observed Taco memo", () => {
     expect(tacoMemo(1.5, "WAX", "eosio.token", 8)).toBe("1.50000000 WAX@eosio.token");
   });
+  it("truncates toward zero — never demands more than the pool quoted", () => {
+    // toFixed(4) would emit 1.2346 (rounding UP above the quote → chain revert).
+    expect(tacoMemo(1.23455, "LEEF", "leefmaincorp", 4)).toBe("1.2345 LEEF@leefmaincorp");
+    expect(tacoMemo(0.999999999, "WAX", "eosio.token", 8)).toBe("0.99999999 WAX@eosio.token");
+  });
 });
 
 function leefPool(id: number, wax: number, leef: number): LeefPool {

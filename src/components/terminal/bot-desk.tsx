@@ -22,6 +22,7 @@ import {
   STRATEGIES,
   type BotStrategy,
 } from "@/lib/leef/bot-engine";
+import { positionMarkUsd } from "@/lib/leef/risk-usd";
 import { fmtNum, fmtUsd } from "@/lib/leef/format";
 import type { LeefSnapshot } from "@/lib/leef/types";
 import { hasSecret } from "@/lib/wallet/secret";
@@ -30,7 +31,7 @@ import { cn } from "@/lib/utils";
 import { useBot, type BotDecisionLog } from "@/store/bot";
 import { clampSyncSec, DEFAULT_SYNC_SEC, useTerminal } from "@/store/terminal";
 import { useWallet } from "@/store/wallet";
-import { markPortfolioUsd } from "@/lib/wallet/balances";
+import { balanceForIdentifier, markPortfolioUsd } from "@/lib/wallet/balances";
 import {
   FOCUS_PRESETS,
   listBaseTokens,
@@ -734,6 +735,7 @@ function GoalsCard() {
 function RiskCard({ strategy, snap }: { strategy: BotStrategy; snap: LeefSnapshot }) {
   const risk = useBot((s) => s.risk);
   const quote = useBot((s) => s.quote);
+  const position = useBot((s) => s.position);
   const setRisk = useBot((s) => s.setRisk);
   const notice = useBot((s) => s.riskMigrationNotice);
   const clearNotice = useBot((s) => s.clearRiskMigrationNotice);
@@ -748,6 +750,19 @@ function RiskCard({ strategy, snap }: { strategy: BotStrategy; snap: LeefSnapsho
         : snap.universe.find((u) => u.symbol === quoteSym)?.usdPrice ?? 0;
   const minTok = quoteUsd > 0 ? risk.minTradeUsd / quoteUsd : 0;
   const maxTok = quoteUsd > 0 ? risk.maxPositionUsd / quoteUsd : 0;
+  // Wallet check: the bot can never size above what the wallet can actually
+  // spend (spendable = balance − operational reserve) nor above the position
+  // cap headroom. Show the binding constraint so limits are never a surprise.
+  const balances = useWallet((s) => s.balances());
+  const walletQuote = balanceForIdentifier(balances, snap.universe, quoteSym);
+  const walletUsd = walletQuote * quoteUsd;
+  const reserveUsd = risk.operationalReserveUsd ?? 0;
+  const spendableUsd = Math.max(0, walletUsd - reserveUsd);
+  const base = useBot((s) => s.base);
+  const positionUsd = positionMarkUsd(position, snap, base || "LEEF");
+  const headroomUsd = Math.max(0, risk.maxPositionUsd - positionUsd);
+  const effectiveMaxUsd = Math.max(0, Math.min(risk.maxPositionUsd, spendableUsd, headroomUsd));
+  const belowMin = effectiveMaxUsd + 1e-9 < risk.minTradeUsd;
   return (
     <Card className="p-4 sm:p-5">
       <h3 className="mb-1 flex items-center gap-2 text-sm font-medium">
@@ -802,6 +817,22 @@ function RiskCard({ strategy, snap }: { strategy: BotStrategy; snap: LeefSnapsho
             ? `Current ${quoteSym}: $${quoteUsd.toFixed(quoteUsd < 0.1 ? 4 : 4)} · min ${minTok.toFixed(2)} ${quoteSym} · max ${maxTok.toFixed(2)} ${quoteSym}`
             : `${quoteSym} has no USD mark — engine will sit out`}
         </p>
+        {quoteUsd > 0 && (
+          <p
+            className={cn(
+              "rounded-md border px-2 py-1.5 text-xs",
+              belowMin
+                ? "border-warn/30 bg-warn/10 text-warn"
+                : "border-border bg-background text-muted-foreground",
+            )}
+          >
+            Wallet check: {walletQuote.toFixed(2)} {quoteSym} ≈ ${walletUsd.toFixed(2)} · spendable $
+            {spendableUsd.toFixed(2)} · effective max ${effectiveMaxUsd.toFixed(2)}
+            {belowMin
+              ? ` — below the $${risk.minTradeUsd.toFixed(2)} minimum, so no trades will fire`
+              : ""}
+          </p>
+        )}
         <Knob
           ready={slidersOn}
           label="Max price impact"
@@ -844,7 +875,7 @@ function RiskCard({ strategy, snap }: { strategy: BotStrategy; snap: LeefSnapsho
           format={(v) => `${v.toFixed(1)}%`}
           onChange={(slippage) => setRisk({ slippage })}
         />
-        {strategy === "signal" && (
+        {(strategy === "signal" || strategy === "auto") && (
           <Knob
             ready={slidersOn}
             label="Min engine confidence"
@@ -856,7 +887,7 @@ function RiskCard({ strategy, snap }: { strategy: BotStrategy; snap: LeefSnapsho
             onChange={(minConfidence) => setRisk({ minConfidence })}
           />
         )}
-        {strategy === "spread" && (
+        {(strategy === "spread" || strategy === "auto") && (
           <Knob
             ready={slidersOn}
             label="Min arb profit"
@@ -868,7 +899,7 @@ function RiskCard({ strategy, snap }: { strategy: BotStrategy; snap: LeefSnapsho
             onChange={(minEdgePct) => setRisk({ minEdgePct })}
           />
         )}
-        {strategy === "grid" && (
+        {(strategy === "grid" || strategy === "auto") && (
           <Knob
             ready={slidersOn}
             label="Grid step"
@@ -880,7 +911,7 @@ function RiskCard({ strategy, snap }: { strategy: BotStrategy; snap: LeefSnapsho
             onChange={(gridStepPct) => setRisk({ gridStepPct })}
           />
         )}
-        {strategy === "volume" && (
+        {(strategy === "volume" || strategy === "auto") && (
           <Knob
             ready={slidersOn}
             label="Max echo loss per round trip"

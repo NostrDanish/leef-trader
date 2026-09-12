@@ -73,6 +73,7 @@ async function buildTransfers(opts: {
       slippagePct: opts.slippagePct,
       receiver: opts.account,
       maxHops: Math.min(10, Math.max(2, opts.route.legs.length)),
+      decimalsIn: tokenIn.decimals,
     });
     const transfers = quote.swaps.map((s) => ({
       tokenContract: tokenIn.contract,
