@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { formatAmountParam, formatAsset } from "./tokens";
 import {
   ALCOR_SWAP_CONTRACT,
   arbFloorViolation,
@@ -329,5 +330,26 @@ describe("memoMinOutSum", () => {
       { input: "1.0000 LEEF", memo: swapMemo("2.50000000 WAX@eosio.token") },
     ];
     expect(memoMinOutSum(legs, ACCOUNT)).toBeCloseTo(7.5, 8);
+  });
+});
+
+describe("formatAsset / formatAmountParam", () => {
+  const wax = { symbol: "WAX", contract: "eosio.token", decimals: 8, alcorId: "wax-eosio.token" };
+  const leef = { symbol: "LEEF", contract: "leefmaincorp", decimals: 4, alcorId: "leef-leefmaincorp" };
+
+  it("never emits scientific notation", () => {
+    expect(formatAmountParam(1e-8, 8)).toBe("0.00000001");
+    expect(formatAsset(1e-8, wax)).toBe("0.00000001 WAX");
+    expect(String(1e-8)).toMatch(/e/i);
+  });
+
+  it("truncates toward zero at token precision", () => {
+    expect(formatAsset(10.123456789, wax)).toBe("10.12345678 WAX");
+    expect(formatAsset(241234.56789, leef)).toBe("241234.5678 LEEF");
+  });
+
+  it("rounds a sub-precision dust amount to zero so callers can reject it", () => {
+    expect(formatAmountParam(1e-12, 8)).toBe("0.00000000");
+    expect(formatAsset(0, wax)).toBe("0.00000000 WAX");
   });
 });

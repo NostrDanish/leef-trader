@@ -58,9 +58,30 @@ export function metaOf(
   };
 }
 
+/**
+ * Antelope asset string at exact token precision. Never scientific notation
+ * (`1e-8 WAX` is an invalid amount on-chain). Truncates toward zero so we
+ * never round *up* past the wallet balance.
+ */
 export function formatAsset(amount: number, token: TokenMeta): string {
-  const n = Math.max(0, amount);
-  return `${n.toFixed(token.decimals)} ${token.symbol}`;
+  const decimals = Math.max(0, Math.min(18, token.decimals | 0));
+  const scale = 10 ** decimals;
+  const units = Math.floor(Math.max(0, amount) * scale + 1e-9);
+  const whole = Math.floor(units / scale);
+  const frac = units % scale;
+  const body =
+    decimals === 0 ? String(whole) : `${whole}.${String(frac).padStart(decimals, "0")}`;
+  return `${body} ${token.symbol}`;
+}
+
+/** Decimal string Alcor's router expects — no exponent, exact precision. */
+export function formatAmountParam(amount: number, decimals: number): string {
+  const d = Math.max(0, Math.min(18, decimals | 0));
+  const scale = 10 ** d;
+  const units = Math.floor(Math.max(0, amount) * scale + 1e-9);
+  const whole = Math.floor(units / scale);
+  const frac = units % scale;
+  return d === 0 ? String(whole) : `${whole}.${String(frac).padStart(d, "0")}`;
 }
 
 export function parseAsset(raw: string): { amount: number; symbol: string } | null {

@@ -1,4 +1,22 @@
 import { fetchJson } from "@/lib/fetchJson";
+import { formatAmountParam } from "./tokens";
+
+const DECIMALS_BY_ID: Record<string, number> = {
+  "wax-eosio.token": 8,
+  "leef-leefmaincorp": 4,
+  "usdt-usdt.alcor": 4,
+  "waxusdc-eth.token": 6,
+  "waxusdt-eth.token": 6,
+  "parausd-parareserves": 6,
+};
+
+function decimalsForAlcorId(id: string): number {
+  const known = DECIMALS_BY_ID[id.toLowerCase()];
+  if (known != null) return known;
+  // Alcor ids are `symbol-contract`. Guess from common WAX precisions.
+  if (id.startsWith("wax-")) return 8;
+  return 4;
+}
 
 /**
  * Alcor's public swap router — the same endpoint alcor-ui uses. It runs the
@@ -60,11 +78,19 @@ export async function fetchAlcorRoute(opts: {
   maxHops?: number;
   timeoutMs?: number;
 }): Promise<AlcorRouteQuote> {
+  if (!(opts.amount > 0) || !Number.isFinite(opts.amount)) {
+    throw new Error("Invalid amount — nothing to quote");
+  }
+  const decimals = decimalsForAlcorId(opts.tokenInId);
+  const amount = formatAmountParam(opts.amount, decimals);
+  if (Number(amount) <= 0) {
+    throw new Error(`Invalid amount — ${opts.amount} rounds to 0 at ${decimals} decimals`);
+  }
   const params = new URLSearchParams({
     trade_type: "EXACT_INPUT",
     input: opts.tokenInId,
     output: opts.tokenOutId,
-    amount: String(opts.amount),
+    amount,
     slippage: String(Math.max(0.05, opts.slippagePct)),
     receiver: opts.receiver,
     maxHops: String(opts.maxHops ?? 10),

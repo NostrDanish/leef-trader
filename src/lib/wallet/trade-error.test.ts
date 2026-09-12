@@ -20,6 +20,13 @@ describe("classifyTradeError", () => {
     expect(classifyTradeError(new Error("Policy blocked foreign receiver")).code).toBe("POLICY_BLOCK");
     expect(classifyTradeError(new Error("net edge 0.01% < required")).code).toBe("NET_EDGE_TOO_LOW");
   });
+  it("extracts chain assert from an Alcor HTTP 500 instead of UNKNOWN", () => {
+    const raw =
+      'HTTP 500: {"code":500,"message":"Internal Service Error","error":{"code":3050003,"name":"eosio_assert_message_exception","what":"eosio_assert_message assertion failure","details":[{"message":"assertion failure with message: invalid amount"}]}}';
+    const c = classifyTradeError(new Error(raw));
+    expect(c.code).toBe("MIN_OUT_FAILED");
+    expect(c.message.toLowerCase()).toMatch(/invalid amount/);
+  });
 });
 
 describe("trade-cycle lock", () => {

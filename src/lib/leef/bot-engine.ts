@@ -142,7 +142,7 @@ export type BotRisk = {
   /**
    * Maximum age of the book a decision may act on, seconds. Default 45
    * assumed a 30s pull. At runtime the loop uses max(this, syncSec + 15)
-   * so a Live/5s book is never treated as stale.
+   * so a Live/10s book is never treated as stale.
    */
   maxQuoteAgeSec: number;
 };
@@ -325,7 +325,7 @@ export function reversionRead(series: PricePoint[]): {
 /**
  * Adaptive cooldown: arb/echo round trips are self-contained and can re-arm
  * faster; DCA is deliberately slow; a losing trade slows the bot down
-  * (simple anti-tilt, never a martingale). The 5s floor matches the Live
+  * (simple anti-tilt, never a martingale). The 10s floor matches the Live
   * book pull — no configuration may trade faster than that.
   */
 export function adaptiveCooldownSec(
@@ -337,7 +337,7 @@ export function adaptiveCooldownSec(
   if (strategy === "spread" || strategy === "volume") factor = 0.5;
   else if (strategy === "dca") factor = 2;
   if (lastPnlUsd < 0) factor *= 1.5;
-  return Math.max(5, Math.round(baseSec * factor));
+  return Math.max(10, Math.round(baseSec * factor));
 }
 
 function bestBuyRoute(

@@ -29,7 +29,7 @@ import {
 } from "./policy";
 import { hasSecret, signDigest } from "./secret";
 import { walletSession } from "./session";
-import { formatAsset, metaOf } from "./tokens";
+import { formatAsset, parseAsset, metaOf } from "./tokens";
 
 export { ALCOR_SWAP_CONTRACT };
 
@@ -69,13 +69,20 @@ async function buildTransfers(opts: {
       receiver: opts.account,
       maxHops: Math.min(10, Math.max(2, opts.route.legs.length)),
     });
+    const transfers = quote.swaps.map((s) => ({
+      tokenContract: tokenIn.contract,
+      to: ALCOR_SWAP_CONTRACT,
+      quantity: s.input,
+      memo: s.memo.replaceAll("<receiver>", opts.account),
+    }));
+    for (const t of transfers) {
+      const a = parseAsset(t.quantity);
+      if (!a || !(a.amount > 0)) {
+        throw new TradeError("MIN_OUT_FAILED", `Invalid amount "${t.quantity}"`);
+      }
+    }
     return {
-      transfers: quote.swaps.map((s) => ({
-        tokenContract: tokenIn.contract,
-        to: ALCOR_SWAP_CONTRACT,
-        quantity: s.input,
-        memo: s.memo.replaceAll("<receiver>", opts.account),
-      })),
+      transfers,
       expectedOut: parseAssetAmount(quote.output) || opts.route.amountOut,
     };
   }

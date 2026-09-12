@@ -111,8 +111,8 @@ export function StatusBar({
           />
           <span>
             Synced {synced} ·{" "}
-            <span className={cn("font-mono tabular-nums", syncSec <= 5 ? "text-leef" : "text-accent")}>
-              {syncSec <= 5 ? "live" : `${countdown}s`}
+            <span className={cn("font-mono tabular-nums", syncSec <= 10 ? "text-leef" : "text-accent")}>
+              {syncSec <= 10 ? "live" : `${countdown}s`}
             </span>
           </span>
         </div>

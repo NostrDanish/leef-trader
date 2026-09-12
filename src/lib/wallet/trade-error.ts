@@ -36,35 +36,53 @@ export class TradeError extends Error {
   }
 }
 
+/** Pull the human assert from an Antelope HTTP 500 body if present. */
+export function chainAssertMessage(raw: string): string | null {
+  const m =
+    raw.match(/"message":"([^"]{8,120})"/) ??
+    raw.match(/assertion failure[^\n]*?:\s*([^\n"]{8,120})/i);
+  if (!m) return null;
+  const text = m[1]!.replace(/\\"/g, '"').trim();
+  return text || null;
+}
+
 export function classifyTradeError(err: unknown): { code: TradeErrorCode; message: string } {
   if (err instanceof TradeError) return { code: err.code, message: err.message };
   const msg = err instanceof Error ? err.message : "Trade failed";
-  const m = msg.toLowerCase();
-  if (/\b429\b/.test(msg) || /rate limit/.test(m)) return { code: "API_RATE_LIMIT", message: msg };
-  if (/timeout|timed out|aborted/.test(m)) return { code: "QUOTE_TIMEOUT", message: msg };
-  if (/stale quote|quote is .* old/.test(m)) return { code: "QUOTE_STALE", message: msg };
-  if (/no usable route|no backed route|no executable/.test(m)) return { code: "ROUTE_DISAPPEARED", message: msg };
-  if (/min.?out|minimum output|overdrawn/.test(m)) return { code: "MIN_OUT_FAILED", message: msg };
-  if (/slippage/.test(m)) return { code: "SLIPPAGE_TOO_HIGH", message: msg };
+  const assert = chainAssertMessage(msg);
+  const shown = assert ? assert : msg;
+  const m = shown.toLowerCase();
+  if (/invalid amount|invalid quantity|quantity must/.test(m)) {
+    return { code: "MIN_OUT_FAILED", message: shown };
+  }
+  if (/eosio_assert|assertion failure|3050003/.test(msg.toLowerCase())) {
+    return { code: "TRANSACTION_REJECTED", message: shown };
+  }
+  if (/\b429\b/.test(msg) || /rate limit/.test(m)) return { code: "API_RATE_LIMIT", message: shown };
+  if (/timeout|timed out|aborted/.test(m)) return { code: "QUOTE_TIMEOUT", message: shown };
+  if (/stale quote|quote is .* old/.test(m)) return { code: "QUOTE_STALE", message: shown };
+  if (/no usable route|no backed route|no executable/.test(m)) return { code: "ROUTE_DISAPPEARED", message: shown };
+  if (/min.?out|minimum output|overdrawn/.test(m)) return { code: "MIN_OUT_FAILED", message: shown };
+  if (/slippage/.test(m)) return { code: "SLIPPAGE_TOO_HIGH", message: shown };
   if (/insufficient (cpu|net|ram)/.test(m) || /cpu .*used/.test(m)) {
-    if (/net/.test(m)) return { code: "INSUFFICIENT_NET", message: msg };
-    if (/ram/.test(m)) return { code: "INSUFFICIENT_RAM", message: msg };
-    return { code: "INSUFFICIENT_CPU", message: msg };
+    if (/net/.test(m)) return { code: "INSUFFICIENT_NET", message: shown };
+    if (/ram/.test(m)) return { code: "INSUFFICIENT_RAM", message: shown };
+    return { code: "INSUFFICIENT_CPU", message: shown };
   }
   if (/balance|overdrawn|no .* in this wallet|need \d/.test(m)) {
-    return { code: "INSUFFICIENT_BALANCE", message: msg };
+    return { code: "INSUFFICIENT_BALANCE", message: shown };
   }
-  if (/policy|not allowlisted|foreign receiver/.test(m)) return { code: "POLICY_BLOCK", message: msg };
-  if (/position cap|max position|remaining room/.test(m)) return { code: "POSITION_LIMIT", message: msg };
-  if (/net edge/.test(m)) return { code: "NET_EDGE_TOO_LOW", message: msg };
-  if (/model.only|fresh executable/.test(m)) return { code: "MODEL_ONLY", message: msg };
-  if (/unknown/.test(m) && /tx|transaction/.test(m)) return { code: "TRANSACTION_UNKNOWN", message: msg };
-  if (/reject/.test(m)) return { code: "TRANSACTION_REJECTED", message: msg };
-  if (/sign/.test(m)) return { code: "SIGNING_FAILURE", message: msg };
-  if (/rpc|chain info|broadcast/.test(m)) return { code: "RPC_FAILURE", message: msg };
-  if (/failed on-chain|transaction failed/.test(m)) return { code: "TRANSACTION_FAILED", message: msg };
-  if (/alcor|defibox|taco|venue/.test(m)) return { code: "VENUE_UNAVAILABLE", message: msg };
-  return { code: "UNKNOWN", message: msg };
+  if (/policy|not allowlisted|foreign receiver/.test(m)) return { code: "POLICY_BLOCK", message: shown };
+  if (/position cap|max position|remaining room/.test(m)) return { code: "POSITION_LIMIT", message: shown };
+  if (/net edge/.test(m)) return { code: "NET_EDGE_TOO_LOW", message: shown };
+  if (/model.only|fresh executable/.test(m)) return { code: "MODEL_ONLY", message: shown };
+  if (/unknown/.test(m) && /tx|transaction/.test(m)) return { code: "TRANSACTION_UNKNOWN", message: shown };
+  if (/reject/.test(m)) return { code: "TRANSACTION_REJECTED", message: shown };
+  if (/sign/.test(m)) return { code: "SIGNING_FAILURE", message: shown };
+  if (/rpc|chain info|broadcast/.test(m)) return { code: "RPC_FAILURE", message: shown };
+  if (/failed on-chain|transaction failed/.test(m)) return { code: "TRANSACTION_FAILED", message: shown };
+  if (/alcor|defibox|taco|venue/.test(m)) return { code: "VENUE_UNAVAILABLE", message: shown };
+  return { code: "UNKNOWN", message: shown };
 }
 
 export function toastTitleFor(code: TradeErrorCode): string {

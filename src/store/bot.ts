@@ -194,7 +194,7 @@ export const useBot = create<BotState>()(
         set({
           hourWindowStart: hourStart,
           tradesThisHour: trades,
-          cooldownUntil: now + Math.max(5, cooldownSec) * 1000,
+          cooldownUntil: now + Math.max(10, cooldownSec) * 1000,
           stats: { ...s.stats, trades: s.stats.trades + 1 },
         });
       },

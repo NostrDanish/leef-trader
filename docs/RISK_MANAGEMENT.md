@@ -12,7 +12,7 @@ the execution loop (`use-bot-loop.ts`). Both fail closed.
 | Book freshness | `risk.maxQuoteAgeSec` | 45s (one missed 30s pull tolerated) |
 | Session profit goal → stop | `goals.sessionGoalUsd` | 0 (off) |
 | Max drawdown → stop | `goals.maxDrawdownPct` | 0 (off) |
-| Cooldown | `risk.cooldownSec` (adaptive ×0.5–×1.5, floor 5s) | 60s |
+| Cooldown | `risk.cooldownSec` (adaptive ×0.5–×1.5, floor 10s) | 60s |
 | Hourly trade cap | `risk.maxTradesHour` | 10 |
 | Position cap | `risk.maxPositionUsd` | $1,000 marked value |
 | Entry impact cap | `risk.maxImpactPct` | 3% |

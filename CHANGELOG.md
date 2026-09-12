@@ -2,6 +2,16 @@
 
 All notable changes to LEEF Trader. Dates are commit-era, not release tags.
 
+## Unreleased — 10s floor + invalid-amount quotes
+
+- Live sync / cooldown / rebalancer check floor is **10 seconds** (was 5).
+- Alcor quote `amount` and on-chain assets are formatted at exact token
+  precision — no scientific notation (`1e-8 WAX` was an invalid amount).
+- Chain `eosio_assert` HTTP 500s surface as `invalid amount` /
+  `TRANSACTION_REJECTED`, not a raw UNKNOWN blob.
+
+---
+
 ## Unreleased — cooldown 5s–30m
 
 - Bot **Cooldown** slider: 5 seconds to 30 minutes (was 30s–10m). Adaptive

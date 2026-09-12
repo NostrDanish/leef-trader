@@ -53,4 +53,4 @@ is observability, not self-modification.
 
 `adaptiveCooldownSec`: spread/volume re-arm at 0.5× base (atomic round trips
 are self-contained), DCA at 2× (slow by design), any strategy at 1.5× after
-a losing trade. Hard floor: 5s — matches the Live book pull.
+a losing trade. Hard floor: 10s — matches the Live book pull.

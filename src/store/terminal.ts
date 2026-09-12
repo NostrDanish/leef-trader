@@ -3,13 +3,12 @@ import { persist } from "zustand/middleware";
 import type { IndicatorId } from "@/lib/leef/indicators";
 import { DEFAULT_TICK_PARAMS, type TickKnobs } from "@/lib/leef/tick-engine";
 
-/** Book-pull cadence. Live = 5s — fastest that stays polite to Alcor. */
-export const MIN_SYNC_SEC = 5;
+/** Book-pull cadence. Live = 10s — fastest that stays polite to Alcor. */
+export const MIN_SYNC_SEC = 10;
 export const MAX_SYNC_SEC = 60;
 export const DEFAULT_SYNC_SEC = 30;
 export const SYNC_PRESETS = [
-  { sec: 5, label: "Live" },
-  { sec: 10, label: "10s" },
+  { sec: 10, label: "Live" },
   { sec: 15, label: "15s" },
   { sec: 30, label: "30s" },
   { sec: 60, label: "60s" },

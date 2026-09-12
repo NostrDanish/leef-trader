@@ -816,7 +816,7 @@ function RiskCard({ strategy, snap }: { strategy: BotStrategy; snap: LeefSnapsho
           ready={slidersOn}
           label="Cooldown"
           value={risk.cooldownSec}
-          min={5}
+          min={10}
           max={1800}
           step={5}
           format={(v) =>

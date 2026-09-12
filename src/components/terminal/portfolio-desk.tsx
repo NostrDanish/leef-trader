@@ -209,7 +209,7 @@ export function PortfolioDesk({ snap }: { snap: LeefSnapshot }) {
               <SliderRow
                 label="Check every"
                 value={p.settings.intervalSec}
-                min={5}
+                min={10}
                 max={1800}
                 step={5}
                 format={(v) =>
