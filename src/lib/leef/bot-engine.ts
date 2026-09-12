@@ -121,6 +121,8 @@ export type BotRisk = {
   minTradeUsd: number;
   /** Maximum marked position value, USD. Remaining capacity sizes the next clip. */
   maxPositionUsd: number;
+  /** USD value kept unspent in the quote token for continued operation. */
+  operationalReserveUsd: number;
   maxImpactPct: number;
   cooldownSec: number;
   maxTradesHour: number;
@@ -159,6 +161,7 @@ export const DEFAULT_GOALS: BotGoals = {
 export const DEFAULT_RISK: BotRisk = {
   minTradeUsd: DEFAULT_MIN_TRADE_USD,
   maxPositionUsd: DEFAULT_MAX_POSITION_USD,
+  operationalReserveUsd: DEFAULT_OPERATIONAL_RESERVE_USD,
   maxImpactPct: 3,
   cooldownSec: 60,
   maxTradesHour: 10,
@@ -174,21 +177,16 @@ export const DEFAULT_RISK: BotRisk = {
 };
 
 export type Position = {
+  /** Amount of the base token held (legacy field name `amountLeef`). */
   amountLeef: number;
-  /** USD per LEEF at entry. */
   entryUsd: number;
-  /** USD value of the WAX spent at entry. */
   entryCostUsd: number;
-  /** WAX spent. */
+  /** Amount of the quote token spent to enter (legacy field name `entryWax`). */
   entryWax: number;
   since: number;
-  /** Highest USD-per-LEEF seen since entry (trailing stop). */
   highUsd: number;
-  /** Wallet mode the position was opened in — guards mode mismatches after reloads. */
   mode: "paper" | "live";
-  /** Net edge the entry engine predicted, percent — for predicted-vs-realized calibration. */
   predEdgePct?: number;
-  /** Strategy that opened the position (survives mid-position strategy switches). */
   strategy?: BotStrategy;
 };
 
@@ -353,7 +351,7 @@ function bestBuyRoute(
 
 function bestSellRoute(
   snap: LeefSnapshot,
-  amountLeef: number,
+  baseAmount: number,
   quote = "WAX",
   base = "LEEF",
 ): SwapRoute | null {
@@ -548,7 +546,7 @@ export function evaluateBot(input: BotInput): Decision {
   if (input.force === "buy") {
     if (maxWax + 1e-12 < minWax) {
       return hold(
-        `Remaining room $${bounds.remainingUsd.toFixed(2)} is under min trade $${risk.minTradeUsd.toFixed(2)} — sitting out`,
+        `Effective max $${bounds.effectiveMaxUsd.toFixed(2)} is under min trade $${risk.minTradeUsd.toFixed(2)} (wallet $${bounds.walletUsd.toFixed(2)}) — sitting out`,
       );
     }
     const sized = optimizeEntrySize({
@@ -563,7 +561,7 @@ export function evaluateBot(input: BotInput): Decision {
     });
     if (!sized) {
       return hold(
-        `Manual buy · no size in $${risk.minTradeUsd.toFixed(2)}–$${bounds.remainingUsd.toFixed(2)} clears costs — sitting out`,
+        `Manual buy · no size in $${risk.minTradeUsd.toFixed(2)}–$${bounds.effectiveMaxUsd.toFixed(2)} effective max clears costs — sitting out`,
       );
     }
     const route = sized.best.route;

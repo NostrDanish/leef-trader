@@ -8,6 +8,7 @@ import { coordinateCapitalMovement } from "./execution-coordinator";
 import { withTransientPreparationRetry } from "./retry-policy";
 import { TradeError } from "./trade-error";
 import { metaOf } from "./tokens";
+import { balanceForIdentifier } from "./balances";
 import { parseAssetAmount } from "./alcor-route";
 import { fetchAlcorRouteCached } from "@/lib/leef/quote-verify";
 import { useWallet } from "@/store/wallet";
@@ -37,10 +38,10 @@ export async function executeSwap(opts: {
     throw new Error("Pick two different tokens");
   }
   const w = useWallet.getState();
-  const have = w.balances()[opts.tokenIn.toUpperCase()] ?? 0;
+  const have = balanceForIdentifier(w.balances(), opts.snap.universe, opts.tokenIn);
   if (have < opts.amountIn) {
     throw new Error(
-      `Need ${opts.amountIn} ${opts.tokenIn.toUpperCase()}, wallet has ${have.toFixed(4)}`,
+      `Need ${opts.amountIn} ${opts.tokenIn.toUpperCase()}, spendable ${have.toFixed(4)}`,
     );
   }
   // Size-specific route from the engine cache, then refresh ONLY its critical

@@ -280,9 +280,9 @@ async function runBotOnceInner(
 
   // Last-second re-optimize: USD min is the floor, remaining USD capacity the ceiling.
   // Re-scan size + route on THIS book so we never fire the 30s-old candidate.
-  if (decision.kind === "buy") {
+    if (decision.kind === "buy") {
     if (bounds.maxIn + 1e-12 < bounds.minIn) {
-      const reason = `Remaining room $${bounds.remainingUsd.toFixed(2)} is under min trade $${b.risk.minTradeUsd.toFixed(2)} — sitting out`;
+      const reason = `Effective maximum $${bounds.effectiveMaxUsd.toFixed(2)} is under min trade $${b.risk.minTradeUsd.toFixed(2)} (wallet $${bounds.walletUsd.toFixed(2)}, reserve $${b.risk.operationalReserveUsd.toFixed(2)}) — sitting out`;
       b.pushDecision({ kind: "hold", mode, reason, priceUsd: snap.leefUsd });
       b.setLastReason(reason);
       return { kind: "hold", reason };
@@ -306,7 +306,7 @@ async function runBotOnceInner(
     timings.candidateCount = fresh?.tried.length ?? 0;
     timings.routeCount = fresh ? 1 : 0;
     if (!fresh) {
-      const reason = `Pre-trade size scan found nothing in ${bounds.minIn.toFixed(4)}–${bounds.maxIn.toFixed(4)} ${quoteTok} ($${b.risk.minTradeUsd.toFixed(2)}–$${bounds.remainingUsd.toFixed(2)})`;
+      const reason = `Pre-trade size scan found nothing in ${bounds.minIn.toFixed(4)}–${bounds.maxIn.toFixed(4)} ${quoteTok} ($${b.risk.minTradeUsd.toFixed(2)}–$${bounds.effectiveMaxUsd.toFixed(2)} effective max)`;
       b.pushDecision({ kind: "hold", mode, reason, priceUsd: snap.leefUsd });
       b.setLastReason(reason);
       return { kind: "hold", reason };
@@ -751,9 +751,10 @@ async function runBotOnceInner(
     }
   } catch (err) {
     const { code, message } = classifyTradeError(err);
-    if (code === "API_RATE_LIMIT") {
-      rateLimitedUntil = Date.now() + 3 * 60_000;
-      const reason = "Rate limited by the API — backing off for 3 minutes";
+    if (code === "API_RATE_LIMIT" || code === "QUOTE_FAILURE" || code === "RPC_FAILURE") {
+      const backoffSec = code === "API_RATE_LIMIT" ? 180 : 30;
+      rateLimitedUntil = Date.now() + backoffSec * 1_000;
+      const reason = `${code}: ${message} — backing off ${backoffSec}s`;
       b.pushDecision({ kind: "error", mode, reason, priceUsd: snap.leefUsd });
       b.setLastReason(reason);
       toast({ title: toastTitleFor(code), description: reason });

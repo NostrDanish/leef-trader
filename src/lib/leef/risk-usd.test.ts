@@ -55,7 +55,7 @@ describe("usdToTokenBounds", () => {
       snap: snap({ waxUsd: 0.04 }),
       quote: "WAX",
       base: "LEEF",
-      risk: { minTradeUsd: 10, maxPositionUsd: 100 },
+      risk: { minTradeUsd: 10, maxPositionUsd: 100, operationalReserveUsd: 0 },
       position: null,
       balances: { WAX: 10_000 },
     });
@@ -69,7 +69,7 @@ describe("usdToTokenBounds", () => {
       snap: snap(),
       quote: "USDC",
       base: "LEEF",
-      risk: { minTradeUsd: 10, maxPositionUsd: 100 },
+      risk: { minTradeUsd: 10, maxPositionUsd: 100, operationalReserveUsd: 0 },
       position: null,
       balances: { USDC: 500 },
     });
@@ -83,7 +83,7 @@ describe("usdToTokenBounds", () => {
       snap: snap({ waxUsd: 0.04 }),
       quote: "WAX",
       base: "LEEF",
-      risk: { minTradeUsd: 0.01, maxPositionUsd: 1_000 },
+      risk: { minTradeUsd: 0.01, maxPositionUsd: 1_000, operationalReserveUsd: 0 },
       position: null,
       balances: { WAX: 100 },
     });
@@ -100,7 +100,7 @@ describe("usdToTokenBounds", () => {
       snap: s,
       quote: "WAX",
       base: "LEEF",
-      risk: { minTradeUsd: 1, maxPositionUsd: 40 },
+      risk: { minTradeUsd: 1, maxPositionUsd: 40, operationalReserveUsd: 0 },
       position: pos,
       balances: { WAX: 100_000 },
     });
@@ -116,7 +116,7 @@ describe("usdToTokenBounds", () => {
       snap: s,
       quote: "WAX",
       base: "LEEF",
-      risk: { minTradeUsd: 1, maxPositionUsd: 40 },
+      risk: { minTradeUsd: 1, maxPositionUsd: 40, operationalReserveUsd: 0 },
       position: { amountLeef: 4_000_000, entryCostUsd: 40 },
       balances: { WAX: 100_000 },
     });
@@ -124,7 +124,7 @@ describe("usdToTokenBounds", () => {
       snap: s,
       quote: "WAX",
       base: "LEEF",
-      risk: { minTradeUsd: 1, maxPositionUsd: 40 },
+      risk: { minTradeUsd: 1, maxPositionUsd: 40, operationalReserveUsd: 0 },
       position: { amountLeef: 2_000_000, entryCostUsd: 20 },
       balances: { WAX: 100_000 },
     });
@@ -138,7 +138,7 @@ describe("usdToTokenBounds", () => {
       snap: snap(),
       quote: "WEIRD",
       base: "LEEF",
-      risk: { minTradeUsd: 1, maxPositionUsd: 10 },
+      risk: { minTradeUsd: 1, maxPositionUsd: 10, operationalReserveUsd: 0 },
       position: null,
       balances: { WEIRD: 50 },
     });
@@ -150,11 +150,56 @@ describe("usdToTokenBounds", () => {
       snap: snap({ waxUsd: 0 }),
       quote: "WAX",
       base: "LEEF",
-      risk: { minTradeUsd: 1, maxPositionUsd: 10 },
+      risk: { minTradeUsd: 1, maxPositionUsd: 10, operationalReserveUsd: 0 },
       position: null,
       balances: { WAX: 50 },
     });
     expect("error" in b).toBe(true);
+  });
+
+  it("wallet $5 / minimum $10 → effective max below min", () => {
+    const b = usdToTokenBounds({
+      snap: snap({ waxUsd: 0.04 }),
+      quote: "WAX",
+      base: "LEEF",
+      risk: { minTradeUsd: 10, maxPositionUsd: 100, operationalReserveUsd: 0 },
+      position: null,
+      balances: { WAX: 125 }, // 125 WAX * $0.04 = $5
+    });
+    if ("error" in b) throw new Error(b.error);
+    expect(b.walletUsd).toBeCloseTo(5, 6);
+    expect(b.effectiveMaxUsd).toBeCloseTo(5, 6);
+    expect(b.maxIn).toBeCloseTo(125, 6);
+    expect(b.maxIn + 1e-9).toBeLessThan(b.minIn);
+  });
+
+  it("wallet $5 / minimum $1 / maximum $100 → max effective size ≤ $5", () => {
+    const b = usdToTokenBounds({
+      snap: snap({ waxUsd: 0.04 }),
+      quote: "WAX",
+      base: "LEEF",
+      risk: { minTradeUsd: 1, maxPositionUsd: 100, operationalReserveUsd: 0 },
+      position: null,
+      balances: { WAX: 125 },
+    });
+    if ("error" in b) throw new Error(b.error);
+    expect(b.effectiveMaxUsd).toBeCloseTo(5, 6);
+    expect(b.maxIn).toBeCloseTo(125, 6);
+  });
+
+  it("operational reserve is excluded from spendable balance", () => {
+    const b = usdToTokenBounds({
+      snap: snap({ waxUsd: 0.04 }),
+      quote: "WAX",
+      base: "LEEF",
+      risk: { minTradeUsd: 1, maxPositionUsd: 100, operationalReserveUsd: 2 },
+      position: null,
+      balances: { WAX: 250 }, // $10 wallet, $2 reserve → $8 spendable
+    });
+    if ("error" in b) throw new Error(b.error);
+    expect(b.walletUsd).toBeCloseTo(10, 6);
+    expect(b.spendableUsd).toBeCloseTo(8, 6);
+    expect(b.effectiveMaxUsd).toBeCloseTo(8, 6);
   });
 });
 
@@ -164,7 +209,7 @@ describe("exceedsMaxPositionUsd", () => {
     const over = exceedsMaxPositionUsd({
       snap: s,
       base: "LEEF",
-      risk: { minTradeUsd: 0.01, maxPositionUsd: 10 },
+      risk: { minTradeUsd: 0.01, maxPositionUsd: 10, operationalReserveUsd: 0 },
       position: { amountLeef: 900_000, entryCostUsd: 9 },
       extraBaseAmount: 200_000,
     });
@@ -172,7 +217,7 @@ describe("exceedsMaxPositionUsd", () => {
     const ok = exceedsMaxPositionUsd({
       snap: s,
       base: "LEEF",
-      risk: { minTradeUsd: 0.01, maxPositionUsd: 10 },
+      risk: { minTradeUsd: 0.01, maxPositionUsd: 10, operationalReserveUsd: 0 },
       position: { amountLeef: 900_000, entryCostUsd: 9 },
       extraBaseAmount: 50_000,
     });
@@ -184,7 +229,7 @@ describe("exceedsMaxPositionUsd", () => {
     const first = exceedsMaxPositionUsd({
       snap: s,
       base: "LEEF",
-      risk: { minTradeUsd: 0.01, maxPositionUsd: 10 },
+      risk: { minTradeUsd: 0.01, maxPositionUsd: 10, operationalReserveUsd: 0 },
       position: null,
       extraBaseAmount: 500_000,
     });
@@ -192,7 +237,7 @@ describe("exceedsMaxPositionUsd", () => {
     const second = exceedsMaxPositionUsd({
       snap: s,
       base: "LEEF",
-      risk: { minTradeUsd: 0.01, maxPositionUsd: 10 },
+      risk: { minTradeUsd: 0.01, maxPositionUsd: 10, operationalReserveUsd: 0 },
       position: { amountLeef: 500_000, entryCostUsd: 5 },
       extraBaseAmount: 600_000,
     });
@@ -205,7 +250,12 @@ describe("migrateRiskToUsd", () => {
     const m = migrateRiskToUsd({ minTradeUsd: 2, maxPositionUsd: 80 });
     expect(m.minTradeUsd).toBe(2);
     expect(m.maxPositionUsd).toBe(80);
+    expect(m.operationalReserveUsd).toBe(0);
     expect(m.notice).toBeNull();
+  });
+  it("preserves operationalReserveUsd", () => {
+    const m = migrateRiskToUsd({ minTradeUsd: 2, maxPositionUsd: 80, operationalReserveUsd: 5 });
+    expect(m.operationalReserveUsd).toBe(5);
   });
 
   it("does NOT treat 60 WAX as $60", () => {

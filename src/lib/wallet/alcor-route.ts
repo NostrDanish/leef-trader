@@ -99,6 +99,18 @@ export async function fetchAlcorRoute(opts: {
   const raw = await fetchJson(`${ROUTER}?${params.toString()}`, {
     timeoutMs: opts.timeoutMs ?? 5_000,
     priority: "high",
+    context: {
+      operation: "Alcor router quote",
+      endpoint: ROUTER,
+      params: {
+        input: opts.tokenInId,
+        output: opts.tokenOutId,
+        amount,
+        slippage: String(Math.max(0.05, opts.slippagePct)),
+        receiver: opts.receiver,
+        maxHops: String(opts.maxHops ?? 10),
+      },
+    },
   });
   if (!isQuote(raw)) throw new Error("Alcor router returned no usable route");
   return raw;

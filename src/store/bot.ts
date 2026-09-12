@@ -302,6 +302,7 @@ export const useBot = create<BotState>()(
             ...(restRisk as Partial<BotRisk>),
             minTradeUsd: usd.minTradeUsd,
             maxPositionUsd: usd.maxPositionUsd,
+            operationalReserveUsd: usd.operationalReserveUsd,
           },
           position: p.position ?? null,
           gridAnchor: p.gridAnchor ?? null,

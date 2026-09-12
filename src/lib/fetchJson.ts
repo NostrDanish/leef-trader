@@ -15,9 +15,49 @@ export class FetchJsonError extends Error {
   constructor(
     message: string,
     readonly status?: number,
+    readonly context?: FetchContext,
   ) {
     super(message);
   }
+}
+
+/**
+ * Structured context for every external fetch. The UI/debug log needs to know
+ * WHO was called, WHAT was requested, and HOW it answered — not a bare
+ * "HTTP 500: Internal error" that forces the user to guess.
+ */
+export type FetchContext = {
+  /** Human-readable operation, e.g. "Alcor router quote". */
+  operation: string;
+  /** Endpoint URL (without query secrets). */
+  endpoint: string;
+  /** Parameters / body summary. */
+  params?: Record<string, unknown>;
+  /** HTTP status, if one was returned. */
+  status?: number;
+  /** Response body fragment. */
+  body?: string;
+};
+
+function contextMessage(ctx: FetchContext): string {
+  const params = ctx.params
+    ? Object.entries(ctx.params)
+        .map(([k, v]) => `${k}=${String(v).slice(0, 80)}`)
+        .join(" ")
+    : "";
+  return [
+    ctx.operation,
+    ctx.endpoint,
+    params,
+    ctx.status != null ? `status=${ctx.status}` : "",
+    ctx.body ? `body=${ctx.body.slice(0, 200)}` : "",
+  ]
+    .filter(Boolean)
+    .join(" | ");
+}
+
+export function fetchErrorMessage(ctx: FetchContext): string {
+  return contextMessage(ctx);
 }
 
 const proxyHosts = new Set<string>();
@@ -138,6 +178,7 @@ async function attempt(
   url: string,
   init: RequestInit,
   timeoutMs: number,
+  ctx?: FetchContext,
 ): Promise<{ value: unknown; networkMs: number; parseMs: number; status: number }> {
   const networkAt = performance.now();
   const res = await fetch(url, {
@@ -146,10 +187,21 @@ async function attempt(
   });
   const text = await res.text();
   const networkMs = performance.now() - networkAt;
+  const fullCtx: FetchContext = {
+    operation: ctx?.operation ?? "fetch",
+    endpoint: url.split("?")[0]!,
+    params: ctx?.params,
+    status: res.status,
+    body: text.slice(0, 400),
+  };
   if (!res.ok) {
     // Keep enough of the body to expose Antelope eosio_assert details[].message
     // (a 180-char slice cut the real contract assert off entirely).
-    throw new FetchJsonError(`HTTP ${res.status}: ${text.slice(0, 600)}`, res.status);
+    const bodyPreview = text.slice(0, 600);
+    const msg = ctx
+      ? `${contextMessage(fullCtx)} | HTTP ${res.status}: ${bodyPreview}`
+      : `HTTP ${res.status}: ${bodyPreview}`;
+    throw new FetchJsonError(msg, res.status, fullCtx);
   }
   if (!text) return { value: null, networkMs, parseMs: 0, status: res.status };
   const parseAt = performance.now();
@@ -162,7 +214,10 @@ async function attempt(
       status: res.status,
     };
   } catch {
-    throw new FetchJsonError(`Invalid JSON from ${new URL(url).hostname}`);
+    const msg = ctx
+      ? `${contextMessage(fullCtx)} | Invalid JSON from ${new URL(url).hostname}`
+      : `Invalid JSON from ${new URL(url).hostname}`;
+    throw new FetchJsonError(msg, res.status, fullCtx);
   }
 }
 
@@ -171,6 +226,7 @@ async function callHost(
   init: RequestInit,
   timeoutMs: number,
   priority: FetchPriority,
+  ctx?: FetchContext,
 ): Promise<unknown> {
   const totalAt = performance.now();
   const host = hostOf(url);
@@ -179,7 +235,7 @@ async function callHost(
   const release = await acquire(host, priority, init.signal ?? undefined);
   const queueWaitMs = performance.now() - queueAt;
   try {
-    const result = await attempt(url, init, timeoutMs);
+    const result = await attempt(url, init, timeoutMs, ctx);
     lastTiming = {
       url,
       priority,
@@ -198,7 +254,7 @@ async function callHost(
       hostCooldown.set(host, Date.now() + 10_000 + Math.random() * 5_000);
       if (retryable) {
         await cooldownWait(host);
-        const retry = await attempt(url, init, timeoutMs);
+        const retry = await attempt(url, init, timeoutMs, ctx);
         lastTiming = {
           url,
           priority,
@@ -232,9 +288,18 @@ export async function fetchJson(
      */
     priority?: FetchPriority;
     signal?: AbortSignal;
+    /** Human-readable context so failures name the operation, endpoint and inputs. */
+    context?: FetchContext;
   } = {},
 ): Promise<unknown> {
-  const { method = "GET", body, timeoutMs = 15_000, directOnly = false, priority = "medium" } = opts;
+  const {
+    method = "GET",
+    body,
+    timeoutMs = 15_000,
+    directOnly = false,
+    priority = "medium",
+    context,
+  } = opts;
   const init: RequestInit = {
     method,
     headers: {
@@ -249,16 +314,16 @@ export async function fetchJson(
   const proxied = `${CORS_PROXY}${encodeURIComponent(url)}`;
 
   if (!directOnly && host && proxyHosts.has(host)) {
-    return await callHost(proxied, init, timeoutMs, priority);
+    return await callHost(proxied, init, timeoutMs, priority, context);
   }
 
   try {
-    return await callHost(url, init, timeoutMs, priority);
+    return await callHost(url, init, timeoutMs, priority, context);
   } catch (err) {
     // Only network/CORS failures (TypeError) get the proxy — HTTP errors are
     // real responses and must not be duplicated.
     if (directOnly || err instanceof FetchJsonError) throw err;
     if (host) proxyHosts.add(host);
-    return await callHost(proxied, init, timeoutMs, priority);
+    return await callHost(proxied, init, timeoutMs, priority, context);
   }
 }

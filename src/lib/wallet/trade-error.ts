@@ -15,6 +15,7 @@ export type TradeErrorCode =
   | "INSUFFICIENT_NET"
   | "INSUFFICIENT_RAM"
   | "RPC_FAILURE"
+  | "QUOTE_FAILURE"
   | "API_RATE_LIMIT"
   | "SIGNING_FAILURE"
   | "TRANSACTION_REJECTED"
@@ -62,6 +63,14 @@ export function classifyTradeError(err: unknown): { code: TradeErrorCode; messag
   const assert = chainAssertMessage(msg);
   const shown = assert ? assert : msg;
   const m = shown.toLowerCase();
+
+  // Context-aware source detection (from FetchContext labels injected by fetchJson).
+  const isAlcorQuote = /alcor router|alcor quote|swaprouter/.test(m);
+  const isWaxRpc = /wax rpc|push_transaction|get_table_rows|get_info|chain info|broadcast to/.test(m);
+  const isHyperion = /hyperion|history\/get_transaction|get_tokens/.test(m);
+  const isVenue = /alcor|defibox|taco|venue/.test(m);
+  const isHttp5xx = /\bhttp 5\d\d\b/.test(m) || /\bstatus=5\d\d\b/.test(m);
+
   if (/invalid amount|invalid quantity|quantity must/.test(m)) {
     return { code: "MIN_OUT_FAILED", message: shown };
   }
@@ -71,7 +80,9 @@ export function classifyTradeError(err: unknown): { code: TradeErrorCode; messag
   if (/\b429\b/.test(msg) || /rate limit/.test(m)) return { code: "API_RATE_LIMIT", message: shown };
   if (/timeout|timed out|aborted/.test(m)) return { code: "QUOTE_TIMEOUT", message: shown };
   if (/stale quote|quote is .* old/.test(m)) return { code: "QUOTE_STALE", message: shown };
-  if (/no usable route|no backed route|no executable/.test(m)) return { code: "ROUTE_DISAPPEARED", message: shown };
+  if (/no usable route|no backed route|no executable|no trading route|route disappeared/.test(m)) {
+    return { code: "ROUTE_DISAPPEARED", message: shown };
+  }
   if (/min.?out|minimum output|overdrawn/.test(m)) return { code: "MIN_OUT_FAILED", message: shown };
   if (/slippage/.test(m)) return { code: "SLIPPAGE_TOO_HIGH", message: shown };
   if (/insufficient (cpu|net|ram)/.test(m) || /cpu .*used/.test(m)) {
@@ -79,7 +90,7 @@ export function classifyTradeError(err: unknown): { code: TradeErrorCode; messag
     if (/ram/.test(m)) return { code: "INSUFFICIENT_RAM", message: shown };
     return { code: "INSUFFICIENT_CPU", message: shown };
   }
-  if (/balance|overdrawn|no .* in this wallet|need \d/.test(m)) {
+  if (/balance|overdrawn|no .* in this wallet|need \d|insufficient.*balance/.test(m)) {
     return { code: "INSUFFICIENT_BALANCE", message: shown };
   }
   if (/policy|not allowlisted|foreign receiver/.test(m)) return { code: "POLICY_BLOCK", message: shown };
@@ -93,8 +104,16 @@ export function classifyTradeError(err: unknown): { code: TradeErrorCode; messag
   if (/unknown/.test(m) && /tx|transaction/.test(m)) return { code: "TRANSACTION_UNKNOWN", message: shown };
   if (/reject/.test(m)) return { code: "TRANSACTION_REJECTED", message: shown };
   if (/sign/.test(m)) return { code: "SIGNING_FAILURE", message: shown };
-  if (/rpc|chain info|broadcast/.test(m)) return { code: "RPC_FAILURE", message: shown };
   if (/failed on-chain|transaction failed/.test(m)) return { code: "TRANSACTION_FAILED", message: shown };
+
+  // A plain HTTP 500/502/503 with a host label points to the right subsystem.
+  if (isHttp5xx || /\b5\d\d\b/.test(msg)) {
+    if (isAlcorQuote) return { code: "QUOTE_FAILURE", message: shown };
+    if (isWaxRpc || isHyperion) return { code: "RPC_FAILURE", message: shown };
+    if (isVenue) return { code: "VENUE_UNAVAILABLE", message: shown };
+  }
+
+  if (/rpc|chain info|broadcast/.test(m)) return { code: "RPC_FAILURE", message: shown };
   if (/alcor|defibox|taco|venue/.test(m)) return { code: "VENUE_UNAVAILABLE", message: shown };
   return { code: "UNKNOWN", message: shown };
 }
@@ -133,6 +152,10 @@ export function toastTitleFor(code: TradeErrorCode): string {
       return "Tx failed";
     case "MODEL_ONLY":
       return "Venue not executable";
+    case "QUOTE_FAILURE":
+      return "Quote failed";
+    case "RPC_FAILURE":
+      return "RPC failure";
     default:
       return "Trade failed";
   }

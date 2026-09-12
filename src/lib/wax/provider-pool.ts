@@ -155,8 +155,31 @@ export type PoolFetcher = (
   signal?: AbortSignal,
 ) => Promise<unknown>;
 
-const defaultFetcher: PoolFetcher = (url, init, timeoutMs, priority, signal) =>
-  fetchJson(url, { ...init, timeoutMs, priority, signal });
+function operationFromPath(url: string): string {
+  if (url.includes("/push_transaction")) return "WAX push_transaction";
+  if (url.includes("/get_info")) return "WAX chain info";
+  if (url.includes("/get_table_rows")) return "WAX table rows";
+  if (url.includes("/get_account")) return "WAX account";
+  if (url.includes("/get_currency_balance")) return "WAX balance";
+  if (url.includes("/history/get_transaction")) return "WAX history tx";
+  if (url.includes("/state/get_tokens")) return "Hyperion tokens";
+  return "WAX RPC";
+}
+
+const defaultFetcher: PoolFetcher = (url, init, timeoutMs, priority, signal) => {
+  const endpoint = url.split("?")[0]!;
+  return fetchJson(url, {
+    ...init,
+    timeoutMs,
+    priority,
+    signal,
+    context: {
+      operation: operationFromPath(url),
+      endpoint,
+      params: init.method === "POST" && typeof init.body === "object" ? (init.body as Record<string, unknown>) : undefined,
+    },
+  });
+};
 
 type HealthRecord = {
   ep: WaxEndpoint;

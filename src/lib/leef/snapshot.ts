@@ -48,7 +48,11 @@ export function lastSnapshotTimings(): SnapshotTimings {
 
 async function leefUsdLive(): Promise<number | undefined> {
   try {
-    const raw = (await fetchJson(ALCOR_TOKEN, { timeoutMs: 4_000, priority: "high" })) as {
+    const raw = (await fetchJson(ALCOR_TOKEN, {
+      timeoutMs: 4_000,
+      priority: "high",
+      context: { operation: "Alcor LEEF token price", endpoint: ALCOR_TOKEN },
+    })) as {
       usd_price?: number;
       safe_usd_price?: number;
     };
@@ -91,7 +95,11 @@ function parseActivePools(raw: unknown): { leef: LeefPool[]; aux: AuxPool[] } {
 }
 
 async function fetchPoolById(id: number, priority: "high" | "medium" | "low"): Promise<unknown> {
-  return await fetchJson(`${ALCOR_POOLS}/${id}`, { timeoutMs: 8_000, priority });
+  return await fetchJson(`${ALCOR_POOLS}/${id}`, {
+    timeoutMs: 8_000,
+    priority,
+    context: { operation: "Alcor pool by id", endpoint: `${ALCOR_POOLS}/${id}`, params: { id } },
+  });
 }
 
 async function loadFull(): Promise<{
@@ -99,7 +107,11 @@ async function loadFull(): Promise<{
   aux: AuxPool[];
   universe: UniverseToken[];
 }> {
-  const raw = await fetchJson(ALCOR_POOLS, { timeoutMs: 25_000, priority: "medium" });
+  const raw = await fetchJson(ALCOR_POOLS, {
+    timeoutMs: 25_000,
+    priority: "medium",
+    context: { operation: "Alcor full pool list", endpoint: ALCOR_POOLS },
+  });
   const parsed = parseActivePools(raw);
   if (parsed.leef.length === 0) {
     throw new Error("No LEEF pools in the Alcor response");
@@ -182,7 +194,13 @@ async function loadTrades(pools: LeefPool[]): Promise<LiveTrade[]> {
     .sort((a, b) => b.volume24Usd - a.volume24Usd)
     .slice(0, 4);
   const results = await Promise.allSettled(
-    top.map((p) => fetchJson(`${ALCOR_POOLS}/${p.id}/swaps`, { timeoutMs: 8_000, priority: "low" })),
+    top.map((p) =>
+      fetchJson(`${ALCOR_POOLS}/${p.id}/swaps`, {
+        timeoutMs: 8_000,
+        priority: "low",
+        context: { operation: "Alcor pool swaps", endpoint: `${ALCOR_POOLS}/${p.id}/swaps`, params: { poolId: p.id } },
+      }),
+    ),
   );
   const trades: LiveTrade[] = [];
   results.forEach((r, i) => {

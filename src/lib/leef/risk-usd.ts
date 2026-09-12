@@ -16,23 +16,21 @@ import type { LeefSnapshot } from "./types";
 
 export const DEFAULT_MIN_TRADE_USD = 0.01;
 export const DEFAULT_MAX_POSITION_USD = 1_000;
+/** Reserve held back in the quote token so the wallet keeps operating capital. */
+export const DEFAULT_OPERATIONAL_RESERVE_USD = 0;
 
 export type UsdRisk = {
   minTradeUsd: number;
   maxPositionUsd: number;
+  /** USD value the governor keeps unspent for operational safety. */
+  operationalReserveUsd: number;
 };
 
 export type MarkedPosition = {
+  /** Amount of the base token held (legacy field name was `amountLeef`). */
   amountLeef: number;
   entryCostUsd: number;
 };
-
-/** Token units for a USD notional. Null when the mark is missing/invalid. */
-export function tokenAmountForUsd(usd: number, tokenUsd: number): number | null {
-  if (!Number.isFinite(usd) || !Number.isFinite(tokenUsd)) return null;
-  if (!(usd >= 0) || !(tokenUsd > 0)) return null;
-  return usd / tokenUsd;
-}
 
 /** Current market value of an open position in USD. */
 export function positionMarkUsd(
@@ -54,11 +52,21 @@ export type UsdBounds = {
   positionUsd: number;
   remainingUsd: number;
   walletQuote: number;
+  /** USD value of the wallet's quote-token balance (authoritative mark). */
+  walletUsd: number;
+  /** Spendable USD after operational reserve is held back. */
+  spendableUsd: number;
+  /** Effective USD ceiling = min(configured max, spendable, position headroom). */
+  effectiveMaxUsd: number;
 };
 
 /**
     * Convert USD risk limits into quote-token amounts for THIS book.
-    * `maxIn` is remaining USD capacity ∧ wallet balance, in quote tokens.
+    *
+    * Wallet-safe sizing:
+    *   effectiveMaximumUsd = min(configuredMaxUsd, spendableBalanceUsd, positionHeadroomUsd)
+    *   spendableBalanceUsd = walletUsd − operationalReserveUsd
+    * A trade is only allowed if effectiveMaximumUsd >= minTradeUsd.
     */
 export function usdToTokenBounds(opts: {
   snap: LeefSnapshot;
@@ -78,9 +86,17 @@ export function usdToTokenBounds(opts: {
   }
   const positionUsd = positionMarkUsd(opts.position, opts.snap, opts.base);
   const remainingUsd = Math.max(0, opts.risk.maxPositionUsd - positionUsd);
-  const remainingTokens = remainingUsd / quoteUsd;
   const walletQuote = balanceForIdentifier(opts.balances, opts.snap.universe, quote);
-  const maxIn = Math.min(Math.max(0, walletQuote), Math.max(0, remainingTokens));
+  const walletUsd = walletQuote * quoteUsd;
+  const reserveUsd = Math.max(0, opts.risk.operationalReserveUsd ?? 0);
+  const spendableUsd = Math.max(0, walletUsd - reserveUsd);
+  const effectiveMaxUsd = Math.min(
+    Math.max(0, opts.risk.maxPositionUsd),
+    spendableUsd,
+    remainingUsd,
+  );
+  // Convert the USD ceiling back to quote-token units.
+  const maxIn = effectiveMaxUsd / quoteUsd;
   return {
     quoteUsd,
     minIn,
@@ -88,6 +104,9 @@ export function usdToTokenBounds(opts: {
     positionUsd,
     remainingUsd,
     walletQuote,
+    walletUsd,
+    spendableUsd,
+    effectiveMaxUsd,
   };
 }
 
@@ -109,6 +128,7 @@ export function exceedsMaxPositionUsd(opts: {
 export type LegacyRiskBlob = {
   minTradeUsd?: unknown;
   maxPositionUsd?: unknown;
+  operationalReserveUsd?: unknown;
   clipWax?: unknown;
   maxPositionWax?: unknown;
 };
@@ -122,22 +142,29 @@ export type LegacyRiskBlob = {
 export function migrateRiskToUsd(raw: LegacyRiskBlob | undefined): {
   minTradeUsd: number;
   maxPositionUsd: number;
+  operationalReserveUsd: number;
   notice: string | null;
 } {
   const r = raw ?? {};
   const minUsd = typeof r.minTradeUsd === "number" && Number.isFinite(r.minTradeUsd) ? r.minTradeUsd : null;
   const maxUsd =
     typeof r.maxPositionUsd === "number" && Number.isFinite(r.maxPositionUsd) ? r.maxPositionUsd : null;
+  const reserveUsd =
+    typeof r.operationalReserveUsd === "number" && Number.isFinite(r.operationalReserveUsd) && r.operationalReserveUsd >= 0
+      ? r.operationalReserveUsd
+      : DEFAULT_OPERATIONAL_RESERVE_USD;
   if (minUsd != null && maxUsd != null && minUsd >= 0 && maxUsd > 0) {
     return {
       minTradeUsd: minUsd,
       maxPositionUsd: Math.max(maxUsd, minUsd),
+      operationalReserveUsd: reserveUsd,
       notice: null,
     };
   }
   return {
     minTradeUsd: DEFAULT_MIN_TRADE_USD,
     maxPositionUsd: DEFAULT_MAX_POSITION_USD,
+    operationalReserveUsd: reserveUsd,
     notice:
       "Risk settings now use USD value (min trade $0.01 / max position $1,000). Previous WAX clip/max were quote-token units and were not converted into dollars.",
   };

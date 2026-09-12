@@ -40,6 +40,7 @@ export async function getTransactionStatus(
           body,
           timeoutMs: 700,
           priority: "high",
+          context: { operation: "WAX history tx status", endpoint: `${e.url}/v1/history/get_transaction`, params: { id: txid } },
         }),
       ),
   );

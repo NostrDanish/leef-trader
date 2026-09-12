@@ -111,7 +111,11 @@ async function hyperionOnce(txid: string): Promise<ReconcileResult | null> {
     try {
       const raw = await fetchJson(
         `${e.url}/v2/history/get_transaction?id=${encodeURIComponent(txid)}`,
-        { timeoutMs: 5_000, priority: "high" },
+        {
+          timeoutMs: 5_000,
+          priority: "high",
+          context: { operation: "Hyperion tx lookup", endpoint: `${e.url}/v2/history/get_transaction`, params: { id: txid } },
+        },
       );
       const parsed = parseHyperionTransfers(raw);
       if (!parsed) continue;

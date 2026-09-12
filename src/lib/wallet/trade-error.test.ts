@@ -34,6 +34,25 @@ describe("classifyTradeError", () => {
     expect(c.message).toMatch(/overdrawn balance/);
     expect(c.message).not.toMatch(/Internal Service Error/i);
   });
+  it("classifies a plain Alcor HTTP 500 as QUOTE_FAILURE when context names the router", () => {
+    const raw =
+      "Alcor router quote | https://wax.alcor.exchange/api/v2/swapRouter/getRoute | input=wax-eosio.token output=leef-leefmaincorp amount=10.00000000 | status=500 | body=Internal error | HTTP 500: Internal error";
+    const c = classifyTradeError(new Error(raw));
+    expect(c.code).toBe("QUOTE_FAILURE");
+    expect(c.message).toMatch(/status=500/);
+    expect(c.message).toMatch(/Alcor router/);
+  });
+  it("classifies a WAX RPC HTTP 500 as RPC_FAILURE when context names the endpoint", () => {
+    const raw =
+      "WAX push_transaction | https://wax.greymass.com/v1/chain/push_transaction | status=500 | body=Internal Service Error | HTTP 500: Internal Service Error";
+    const c = classifyTradeError(new Error(raw));
+    expect(c.code).toBe("RPC_FAILURE");
+  });
+  it("preserves an unclassifiable HTTP 500 as UNKNOWN", () => {
+    const c = classifyTradeError(new Error("HTTP 500: Internal error"));
+    expect(c.code).toBe("UNKNOWN");
+    expect(c.message).toMatch(/internal error/i);
+  });
 });
 
 describe("trade-cycle lock", () => {

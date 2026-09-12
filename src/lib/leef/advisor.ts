@@ -32,7 +32,7 @@ export type AdvisorSuggestion = {
   quote: string;
   risk: Pick<
     BotRisk,
-    "minTradeUsd" | "maxPositionUsd" | "cooldownSec" | "maxTradesHour" | "maxImpactPct"
+    "minTradeUsd" | "maxPositionUsd" | "operationalReserveUsd" | "cooldownSec" | "maxTradesHour" | "maxImpactPct"
   >;
   why: AdvisorLine[];
   warnings: string[];
@@ -232,6 +232,7 @@ export function suggestBotSettings(input: AdvisorInput): AdvisorSuggestion {
     risk: {
       minTradeUsd: minTrade,
       maxPositionUsd: maxPos,
+      operationalReserveUsd: Math.max(0, Math.min(bal * quoteUsd * 0.1, 1)),
       cooldownSec: cooldown,
       maxTradesHour: hourly,
       maxImpactPct: impact,
