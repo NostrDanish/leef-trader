@@ -782,14 +782,13 @@ function RiskCard({ strategy, snap }: { strategy: BotStrategy; snap: LeefSnapsho
         </p>
       )}
       <div className="space-y-3">
-        <Knob
-          ready={slidersOn}
+        <NumField
           label="Minimum trade value"
+          suffix="USD"
           value={risk.minTradeUsd}
-          min={0.01}
+          min={0}
           max={100}
-          step={0.01}
-          format={(v) => `$${v.toFixed(2)}`}
+          step={1e-8}
           onChange={(minTradeUsd) =>
             setRisk({
               minTradeUsd,
@@ -797,14 +796,13 @@ function RiskCard({ strategy, snap }: { strategy: BotStrategy; snap: LeefSnapsho
             })
           }
         />
-        <Knob
-          ready={slidersOn}
+        <NumField
           label="Maximum position value"
+          suffix="USD"
           value={risk.maxPositionUsd}
-          min={0.01}
-          max={1000}
-          step={1}
-          format={(v) => `$${v.toFixed(0)}`}
+          min={0}
+          max={10_000}
+          step={0.01}
           onChange={(maxPositionUsd) =>
             setRisk({
               maxPositionUsd,
@@ -813,8 +811,12 @@ function RiskCard({ strategy, snap }: { strategy: BotStrategy; snap: LeefSnapsho
           }
         />
         <p className="text-xs text-muted-foreground">
+          WAX is a micropayment chain — min can be $0 (one token quantum).
+          Max covers $1–$100 clips. Staked CPU/NET/RAM = no transfer fee.
+        </p>
+        <p className="text-xs text-muted-foreground">
           {quoteUsd > 0
-            ? `Current ${quoteSym}: $${quoteUsd.toFixed(quoteUsd < 0.1 ? 4 : 4)} · min ${minTok.toFixed(2)} ${quoteSym} · max ${maxTok.toFixed(2)} ${quoteSym}`
+            ? `Current ${quoteSym}: $${quoteUsd < 0.01 ? quoteUsd.toExponential(3) : quoteUsd.toFixed(6)} · min ${minTok > 0 && minTok < 0.01 ? minTok.toExponential(3) : minTok.toFixed(4)} ${quoteSym} · max ${maxTok.toFixed(4)} ${quoteSym}`
             : `${quoteSym} has no USD mark — engine will sit out`}
         </p>
         {quoteUsd > 0 && (
@@ -826,10 +828,10 @@ function RiskCard({ strategy, snap }: { strategy: BotStrategy; snap: LeefSnapsho
                 : "border-border bg-background text-muted-foreground",
             )}
           >
-            Wallet check: {walletQuote.toFixed(2)} {quoteSym} ≈ ${walletUsd.toFixed(2)} · spendable $
-            {spendableUsd.toFixed(2)} · effective max ${effectiveMaxUsd.toFixed(2)}
+            Wallet check: {walletQuote.toFixed(4)} {quoteSym} ≈ ${walletUsd.toFixed(4)} · spendable $
+            {spendableUsd.toFixed(4)} · effective max ${effectiveMaxUsd.toFixed(4)}
             {belowMin
-              ? ` — below the $${risk.minTradeUsd.toFixed(2)} minimum, so no trades will fire`
+              ? ` — below the $${risk.minTradeUsd < 0.01 ? risk.minTradeUsd.toExponential(2) : risk.minTradeUsd.toFixed(4)} minimum, so no trades will fire`
               : ""}
           </p>
         )}
@@ -892,10 +894,10 @@ function RiskCard({ strategy, snap }: { strategy: BotStrategy; snap: LeefSnapsho
             ready={slidersOn}
             label="Min arb profit"
             value={risk.minEdgePct}
-            min={0.3}
+            min={0}
             max={10}
-            step={0.1}
-            format={(v) => `${v.toFixed(1)}%`}
+            step={0.05}
+            format={(v) => `${v.toFixed(2)}%`}
             onChange={(minEdgePct) => setRisk({ minEdgePct })}
           />
         )}

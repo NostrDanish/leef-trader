@@ -289,8 +289,8 @@ describe("migrateRiskToUsd", () => {
 
   it("does NOT treat 60 WAX as $60", () => {
     const m = migrateRiskToUsd({ clipWax: 10, maxPositionWax: 60 });
-    expect(m.minTradeUsd).toBe(0.01);
-    expect(m.maxPositionUsd).toBe(1_000);
+    expect(m.minTradeUsd).toBe(0);
+    expect(m.maxPositionUsd).toBe(100);
     expect(m.notice).toMatch(/not converted/);
   });
 });

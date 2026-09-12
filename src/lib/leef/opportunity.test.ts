@@ -122,7 +122,7 @@ describe("selectBestOpportunity", () => {
     expect(why).toBe("INSUFFICIENT_EDGE");
   });
 
-  it("rejects volume that is too expensive or too unlikely to fill", () => {
+  it("rejects volume that is too expensive relative to the LP-fee budget", () => {
     const pricey = opp({
       fingerprint: "vol",
       intent: "volume",
@@ -131,6 +131,33 @@ describe("selectBestOpportunity", () => {
       expectedValueUsd: -1,
     });
     expect(rejectOpportunity(pricey, DEFAULT_OPPORTUNITY_GATE)).toBe("VOLUME_TOO_EXPENSIVE");
+  });
+
+  it("allows a zero-loss-average volume echo (cost inside LP budget)", () => {
+    const echo = opp({
+      fingerprint: "echo",
+      intent: "volume",
+      expectedNetProfitUsd: -0.006,
+      notionalUsd: 1,
+      hops: 2,
+      impactPct: 0.4,
+      liquidityUsd: 5_000,
+    });
+    expect(rejectOpportunity(echo, DEFAULT_OPPORTUNITY_GATE)).toBeNull();
+  });
+
+  it("allows a dust-sized profit ($1e-10) instead of demanding a cent", () => {
+    const dust = opp({
+      fingerprint: "dust",
+      intent: "profit",
+      expectedNetProfitUsd: 1e-10,
+      expectedNetEdgePct: 0.01,
+      expectedValueUsd: 8e-11,
+      hops: 1,
+      impactPct: 0.3,
+      liquidityUsd: 20_000,
+    });
+    expect(rejectOpportunity(dust, DEFAULT_OPPORTUNITY_GATE)).toBeNull();
   });
 
   it("returns null when every candidate is dead or rejected — doing nothing is valid", () => {

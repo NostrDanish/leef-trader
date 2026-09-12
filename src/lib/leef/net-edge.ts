@@ -92,7 +92,8 @@ export function evaluateEntry(opts: {
   const netProfitUsd = grossProfitUsd - totalCostUsd;
   const netEdgePct =
     opts.expectedGrossPct - costs.totalPct - (costs.fixedUsd / notionalUsd) * 100;
-  const pass = netEdgePct >= opts.minNetEdgePct && netProfitUsd > 0;
+  // WAX micro: a $1e-10 net is still a win. Don't demand a cent.
+  const pass = netEdgePct + 1e-12 >= opts.minNetEdgePct && netProfitUsd >= -1e-15;
 
   const reason = pass
     ? `net edge ${netEdgePct.toFixed(2)}% ≥ ${opts.minNetEdgePct}% after ` +

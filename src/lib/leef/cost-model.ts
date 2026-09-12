@@ -44,13 +44,16 @@ export type CostConfig = {
 };
 
 /**
- * Defaults are deliberately conservative for LEEF/WAX micro-trading:
- * $0.002/tx ≈ 0.1 WAX of rented CPU at recent prices, 3% revert probability
- * (min-out guards make reverts the common failure), 0.05% drift allowance,
- * 4s quote→confirm latency, and a full 1σ of adverse drift charged.
+ * WAX micropayments: a staked account pays no transfer fee (CPU/NET/RAM
+ * regenerate). Charging $0.002/tx made a $0.0000001 clip look like −2000%
+ * and silenced volume. Renters can still pass txCostUsd > 0.
+ *
+ * Remaining costs are real: LP fee + impact (inside the quote), a thin
+ * slippage buffer, and opportunity decay. Reverts still cost CPU time but
+ * not dollars when staked.
  */
 export const DEFAULT_COSTS: CostConfig = {
-  txCostUsd: 0.002,
+  txCostUsd: 0,
   failureProb: 0.03,
   slippageBufferPct: 0.05,
   latencySec: 4,

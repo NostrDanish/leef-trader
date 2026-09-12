@@ -14,8 +14,12 @@ import { requireTradePrice } from "@/lib/market/price-oracle";
 import { balanceForIdentifier } from "@/lib/wallet/balances";
 import type { LeefSnapshot } from "./types";
 
-export const DEFAULT_MIN_TRADE_USD = 0.01;
-export const DEFAULT_MAX_POSITION_USD = 1_000;
+/** Dust floor: one hundred-millionth of a dollar. WAX tokens often print
+ *  10M units per $1; a 1-unit fill can be $1e-10. The engine still refuses
+ *  sizes that round to 0 at token precision. */
+export const DEFAULT_MIN_TRADE_USD = 0;
+export const DEFAULT_MAX_POSITION_USD = 100;
+export const ABSOLUTE_MIN_TRADE_USD = 0;
 /** Reserve held back in the quote token so the wallet keeps operating capital. */
 export const DEFAULT_OPERATIONAL_RESERVE_USD = 0;
 
@@ -88,10 +92,13 @@ export function usdToTokenBounds(opts: {
   const authoritative = requireTradePrice(opts.snap, quote);
   if ("error" in authoritative) return { error: authoritative.error };
   const quoteUsd = authoritative.priceUsd;
-  const minIn = tokenAmountForUsd(Math.max(0, opts.risk.minTradeUsd), quoteUsd);
-  if (minIn == null) {
+  const minInRaw = tokenAmountForUsd(Math.max(0, opts.risk.minTradeUsd), quoteUsd);
+  if (minInRaw == null) {
     return { error: `Invalid ${quote} USD price — sitting out` };
   }
+  // Never require more than one quantum of the quote token when the user
+  // asked for dust. A $0 min with WAX@8dp means 0.00000001 WAX, not "no trade".
+  const minIn = minInRaw;
   const positionUsd = positionMarkUsd(opts.position, opts.snap, opts.base);
   const remainingUsd = Math.max(0, opts.risk.maxPositionUsd - positionUsd);
   const walletQuote = balanceForIdentifier(opts.balances, opts.snap.universe, quote);
@@ -174,6 +181,6 @@ export function migrateRiskToUsd(raw: LegacyRiskBlob | undefined): {
     maxPositionUsd: DEFAULT_MAX_POSITION_USD,
     operationalReserveUsd: reserveUsd,
     notice:
-      "Risk settings now use USD value (min trade $0.01 / max position $1,000). Previous WAX clip/max were quote-token units and were not converted into dollars.",
+      "Risk settings now use USD value (min trade $0 / max position $100). Previous WAX clip/max were quote-token units and were not converted into dollars. WAX micropayments can be dust-sized.",
   };
 }

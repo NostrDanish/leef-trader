@@ -253,10 +253,11 @@ export type OpportunityGate = {
 };
 
 export const DEFAULT_OPPORTUNITY_GATE: OpportunityGate = {
-  minNetProfitUsd: 0.0001,
-  minNetEdgePct: 0.1,
-  minExecutionProbability: 0.5,
-  maxImpactPct: 3,
+  /** WAX micro: 3000 fills at $1e-10 each is still profit. Don't demand a cent. */
+  minNetProfitUsd: 0,
+  minNetEdgePct: 0,
+  minExecutionProbability: 0.35,
+  maxImpactPct: 8,
   maxQuoteAgeMs: 45_000,
   maxVolumeCostPct: 1.5,
 };
@@ -271,17 +272,22 @@ export function rejectOpportunity(
   if (o.tokenIn.toUpperCase() !== o.tokenOut.toUpperCase() && o.impactPct > gate.maxImpactPct) {
     return "IMPACT_TOO_HIGH";
   }
-  if (o.executionProbability < gate.minExecutionProbability) return "LOW_EXECUTION_PROBABILITY";
   if (o.intent === "profit") {
+    if (o.executionProbability < gate.minExecutionProbability) return "LOW_EXECUTION_PROBABILITY";
     if (o.expectedNetProfitUsd < gate.minNetProfitUsd) return "INSUFFICIENT_EDGE";
-    if (o.expectedNetEdgePct < gate.minNetEdgePct) return "INSUFFICIENT_EDGE";
-    if (o.expectedValueUsd <= 0) return "NON_POSITIVE_EV";
+    if (gate.minNetEdgePct > 0 && o.expectedNetEdgePct < gate.minNetEdgePct) {
+      return "INSUFFICIENT_EDGE";
+    }
+    if (o.expectedNetProfitUsd < 0) return "NON_POSITIVE_EV";
   }
   if (o.intent === "volume") {
     const costPct =
       o.notionalUsd > 0 ? (Math.max(0, -o.expectedNetProfitUsd) / o.notionalUsd) * 100 : 100;
-    if (costPct > gate.maxVolumeCostPct) return "VOLUME_TOO_EXPENSIVE";
-    if (o.executionProbability < Math.max(gate.minExecutionProbability, 0.7)) {
+    // Zero-loss average is the target: cost inside the LP-fee budget is OK.
+    // A spread-funded echo (net >= 0) always clears this.
+    if (costPct > gate.maxVolumeCostPct + 1e-9) return "VOLUME_TOO_EXPENSIVE";
+    // Volume is a two-leg Alcor echo — 2 hops is normal, not a reason to sit out.
+    if (o.executionProbability < Math.min(gate.minExecutionProbability, 0.35)) {
       return "VOLUME_EXEC_TOO_LOW";
     }
   }

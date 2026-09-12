@@ -27,9 +27,10 @@ percent. Exits are never edge-gated (risk actions must always fire).
   misquote routes and can't absorb even micro clips.
 - `maxEchoLossPct = 1.5%` default — two 0.3% fee tiers plus impact typically
   cost 0.6–1.5%; below that the echo would always revert.
-- `minNetEdgePct = 0.1%` default — the micro-edge floor: WAX transaction
-  costs are near zero, so a 0.1% *net* clearance is economically meaningful
-  while still refusing trades whose costs eat the thesis.
+- `minNetEdgePct = 0` default — WAX micropayments. A $1e-10 net on a
+  dust clip is a win; the engine still refuses negative-EV directional
+  entries. Volume is gated by `maxEchoLossPct` (LP-fee budget), not by
+  a dollar profit floor.
 - `maxQuoteAgeSec = 45s` — the book refreshes every 30s; 45s tolerates
   exactly one missed pull, then fails closed.
 

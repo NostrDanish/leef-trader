@@ -2,6 +2,25 @@
 
 All notable changes to LEEF Trader. Dates are commit-era, not release tags.
 
+## Unreleased — WAX micropayments: dust clips + volume maker lives again
+
+WAX with staked CPU/NET/RAM has no transfer fee. The previous "smart"
+gates charged $0.002/tx, demanded $0.0001 profit and 70% execution
+probability on 2-hop Alcor echos, and the min-trade slider could not go
+below $0.01. That silenced volume maker and blocked 3000×$1e-10 fills.
+
+- Cost model `txCostUsd = 0` (staked). Renters can still override.
+- Min trade default $0 (one token quantum); max position default $100.
+  UI is a number field so you can type $0, $0.00000001, $1, $50, $100.
+- Volume stays `intent: "volume"` even when slightly green, so it is not
+  promoted into the profit gate. Allowed when round-trip cost ≤ echo
+  budget (zero-loss average after LP fees). On-chain min-out still reverts
+  anything worse.
+- Profit gate no longer demands a cent or 0.1% — a $1e-10 net is a win.
+- Execution-probability floor 0.35 (2-hop Alcor is normal, not a sit-out).
+
+---
+
 ## Unreleased — common Opportunity engine; Auto is the orchestrator
 
 - Strategies no longer execute (or Auto-rank) on raw net-USD or headline

@@ -237,11 +237,11 @@ describe("bot edge gate (evaluateBot)", () => {
       expect(d.amountWax).toBeGreaterThan(0);
       expect(d.amountWax).toBeLessThanOrEqual(50);
       expect(d.edge).toBeDefined();
-      expect(d.reason).toMatch(/net edge/);
+      expect(d.reason).toMatch(/EV \$|net /);
     }
   });
 
-  it("rejects a $0.01 clip when fixed costs eat the thesis", () => {
+  it("staked WAX has no transfer fee — a micro clip can still pass", () => {
     const snap = mkSnap([mkPool(50_000, 500_000_000)]);
     const v = evaluateEntry({
       snap,
@@ -249,12 +249,29 @@ describe("bot edge gate (evaluateBot)", () => {
       tokenOut: "LEEF",
       amountIn: 0.01 / WAX_USD,
       expectedGrossPct: 5,
-      minNetEdgePct: 0.1,
+      minNetEdgePct: 0,
       volPerSec: 0,
     });
     expect(v).not.toBeNull();
-    expect(v!.pass).toBe(false);
-    expect(v!.reason).toMatch(/net edge/);
+    expect(v!.costs.fixedUsd).toBe(0);
+    expect(v!.pass).toBe(true);
+  });
+
+  it("volume maker: same-pool echo inside the LP-fee budget is a trade, not a hold", () => {
+    const snap = mkSnap([mkPool(50_000, 500_000_000)]);
+    const d = evaluateBot(
+      botInput({
+        snap,
+        strategy: "volume",
+        balances: { WAX: 50 },
+        risk: { ...DEFAULT_RISK, maxEchoLossPct: 1.5, minTradeUsd: 0 },
+      }),
+    );
+    expect(d.kind).toBe("arb");
+    if (d.kind === "arb") {
+      expect(d.arbKind).toBe("volume");
+      expect(d.plan.waxIn).toBeGreaterThan(0);
+    }
   });
 
   it("does nothing on a shallow book — the step cannot pay its costs", () => {

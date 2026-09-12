@@ -184,16 +184,17 @@ export const DEFAULT_RISK: BotRisk = {
   maxPositionUsd: DEFAULT_MAX_POSITION_USD,
   operationalReserveUsd: DEFAULT_OPERATIONAL_RESERVE_USD,
   maxImpactPct: 3,
-  cooldownSec: 60,
-  maxTradesHour: 10,
+  cooldownSec: 15,
+  maxTradesHour: 120,
   slippage: 0.6,
   minConfidence: 55,
-  minEdgePct: 1.2,
+  minEdgePct: 0.3,
   gridStepPct: 2.5,
-  // Real WAX→LEEF→WAX round trips cost ~0.5–1.5% (two fee tiers + impact),
-  // so the default budget has to clear that or every echo would revert.
+  // Two 0.3% LP tiers + impact typically cost 0.6–1.5%. Inside this budget
+  // a volume echo is "zero-loss average" after fees — the on-chain min-out
+  // still reverts anything worse. Not wash trading: cost is bounded.
   maxEchoLossPct: 1.5,
-  minNetEdgePct: 0.1,
+  minNetEdgePct: 0,
   maxQuoteAgeSec: 45,
 };
 
@@ -509,9 +510,9 @@ function hold(reason: string): Decision {
 
 function gateFromRisk(risk: BotRisk): OpportunityGate {
   return {
-    minNetProfitUsd: 0.0001,
-    minNetEdgePct: risk.minNetEdgePct,
-    minExecutionProbability: 0.5,
+    minNetProfitUsd: 0,
+    minNetEdgePct: Math.max(0, risk.minNetEdgePct),
+    minExecutionProbability: 0.35,
     maxImpactPct: risk.maxImpactPct,
     maxQuoteAgeMs: Math.max(1, risk.maxQuoteAgeSec) * 1000,
     maxVolumeCostPct: risk.maxEchoLossPct,
@@ -738,7 +739,9 @@ export function evaluateBot(input: BotInput): Decision {
       if (plan) {
         const scored = scoreArbOpportunity({
           source: "volume",
-          intent: plan.profitPct >= 0 ? "profit" : "volume",
+          // Stay volume even if the echo is slightly green — promoting it to
+          // "profit" used to demand 0.1% edge and killed zero-loss volume.
+          intent: "volume",
           plan,
           waxUsd,
           quoteAgeMs,
@@ -1216,7 +1219,7 @@ export function evaluateBot(input: BotInput): Decision {
         if (echo) {
           const opp = scoreArbOpportunity({
             source: "volume",
-            intent: echo.profitPct >= 0 ? "profit" : "volume",
+            intent: "volume",
             plan: echo,
             waxUsd,
             quoteAgeMs,
