@@ -27,6 +27,13 @@ describe("classifyTradeError", () => {
     expect(c.code).toBe("MIN_OUT_FAILED");
     expect(c.message.toLowerCase()).toMatch(/invalid amount/);
   });
+  it("extracts the deepest details message, not the generic outer one", () => {
+    const raw =
+      '{"code":500,"message":"Internal Service Error","error":{"code":3050003,"details":[{"message":"assertion failure with message: overdrawn balance"}]}}';
+    const c = classifyTradeError(new Error(raw));
+    expect(c.message).toMatch(/overdrawn balance/);
+    expect(c.message).not.toMatch(/Internal Service Error/i);
+  });
 });
 
 describe("trade-cycle lock", () => {

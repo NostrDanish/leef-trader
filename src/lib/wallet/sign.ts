@@ -2,9 +2,9 @@ import type { ArbPlan } from "@/lib/leef/bot-engine";
 import type { LeefSnapshot, SwapRoute } from "@/lib/leef/types";
 import { LEEF_CONTRACT, WAX_CONTRACT } from "@/lib/leef/types";
 import { swapContractOf, venueOfPoolId } from "@/lib/leef/venues";
-import { fetchAlcorRouteCached, verifyExecutableRoute } from "@/lib/leef/quote-verify";
+import { verifyExecutableRoute } from "@/lib/leef/quote-verify";
 import { TradeError } from "./trade-error";
-import { parseAssetAmount } from "./alcor-route";
+import { fetchAlcorRoute, parseAssetAmount } from "./alcor-route";
 import {
   packAddLiquid,
   packCollect,
@@ -61,7 +61,9 @@ async function buildTransfers(opts: {
   const tokenOut = metaOf(opts.route.tokenOut, opts.snap);
 
   if (allAlcor(opts.route)) {
-    const quote = await fetchAlcorRouteCached({
+    // Fresh (uncached) quote at sign time — a cached memo can carry a min-out
+    // the market no longer clears, which the chain reverts.
+    const quote = await fetchAlcorRoute({
       tokenInId: tokenIn.alcorId,
       tokenOutId: tokenOut.alcorId,
       amount: opts.amountIn,
@@ -81,10 +83,15 @@ async function buildTransfers(opts: {
         throw new TradeError("MIN_OUT_FAILED", `Invalid amount "${t.quantity}"`);
       }
     }
-    return {
-      transfers,
-      expectedOut: parseAssetAmount(quote.output) || opts.route.amountOut,
-    };
+    const expectedOut = parseAssetAmount(quote.output) || opts.route.amountOut;
+    const outScale = 10 ** tokenOut.decimals;
+    if (Math.floor(expectedOut * outScale) <= 0) {
+      throw new TradeError(
+        "MIN_OUT_FAILED",
+        `Output rounds to 0 ${tokenOut.symbol} — trade too small to execute`,
+      );
+    }
+    return { transfers, expectedOut };
   }
 
   const verified = await verifyExecutableRoute({

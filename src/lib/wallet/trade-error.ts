@@ -36,14 +36,22 @@ export class TradeError extends Error {
   }
 }
 
-/** Pull the human assert from an Antelope HTTP 500 body if present. */
+/** Pull the real contract assert from an Antelope HTTP 500 body. */
 export function chainAssertMessage(raw: string): string | null {
-  const m =
-    raw.match(/"message":"([^"]{8,120})"/) ??
-    raw.match(/assertion failure[^\n]*?:\s*([^\n"]{8,120})/i);
-  if (!m) return null;
-  const text = m[1]!.replace(/\\"/g, '"').trim();
-  return text || null;
+  // Deepest first: error.details[].message holds the contract's assert text.
+  const detail = raw.match(/"details"\s*:\s*\[\s*\{[^{}]*?"message"\s*:\s*"([^"]{2,300})"/);
+  const any = raw.match(/"message"\s*:\s*"([^"]{2,300})"/g);
+  let picked = detail?.[1] ?? null;
+  if (!picked && any && any.length > 0) {
+    picked = any[any.length - 1]!.replace(/^"message"\s*:\s*"/, "").replace(/"$/, "");
+  }
+  if (!picked) return null;
+  const text = picked
+    .replace(/\\"/g, '"')
+    .replace(/^assertion failure with message:?\s*/i, "")
+    .trim();
+  if (!text || /internal service error/i.test(text)) return null;
+  return text;
 }
 
 export function classifyTradeError(err: unknown): { code: TradeErrorCode; message: string } {

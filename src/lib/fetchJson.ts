@@ -104,7 +104,9 @@ async function attempt(url: string, init: RequestInit, timeoutMs: number): Promi
   });
   const text = await res.text();
   if (!res.ok) {
-    throw new FetchJsonError(`HTTP ${res.status}: ${text.slice(0, 180)}`, res.status);
+    // Keep enough of the body to expose Antelope eosio_assert details[].message
+    // (a 180-char slice cut the real contract assert off entirely).
+    throw new FetchJsonError(`HTTP ${res.status}: ${text.slice(0, 600)}`, res.status);
   }
   if (!text) return null;
   try {

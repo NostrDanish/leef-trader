@@ -69,12 +69,16 @@ async function quoteArbPlan(
   });
   const leefOut = parseAssetAmount(buy.output);
   if (!(leefOut > 0)) throw new Error("Alcor returned no LEEF for the echo");
+  // Sell the buy's GUARANTEED min-received, not the quoted output — otherwise
+  // a fill at the slippage floor leaves the wallet short and the atomic
+  // transaction reverts.
+  const leefGuaranteed = parseAssetAmount(buy.minReceived) || leefOut;
 
   const fetchSell = (slip: number) =>
     fetchAlcorRouteCached({
       tokenInId: "leef-leefmaincorp",
       tokenOutId: "wax-eosio.token",
-      amount: leefOut,
+      amount: leefGuaranteed,
       slippagePct: slip,
       receiver: account,
     });
