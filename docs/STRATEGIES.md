@@ -1,8 +1,12 @@
 # Strategies
 
 All six strategies live in `src/lib/leef/bot-engine.ts` (`evaluateBot`).
-Entries are sized/gated by the [NetEdgeEngine](./NET_EDGE.md); exits are
-never edge-gated (risk actions must always fire).
+Entries are sized by the [NetEdgeEngine](./NET_EDGE.md) and then scored by
+the common Opportunity engine (`src/lib/leef/opportunity.ts`). Strategies
+propose intent; they never skip the shared gate. Auto is the orchestrator
+that ranks already-scored opportunities by expected value
+(`net × execProb × freshness × inventory × calibration`) — not by headline
+percent. Exits are never edge-gated (risk actions must always fire).
 
 ## Strategy matrix
 
@@ -44,10 +48,10 @@ known, bounded price.
 
 Every closed trade records, per strategy: predicted net edge at entry,
 realized edge at exit, P&L, win/loss, and execution latency
-(`stats.byStrategy`). A strategy that consistently overestimates its edge is
-visible in the data (`predEdgePctSum/trades` vs `realEdgePctSum/trades`).
-Feeding that ratio back into confidence automatically is PLANNED — today it
-is observability, not self-modification.
+(`stats.byStrategy`). After 3+ fills, `calibrationHaircut = clamp(realized/predicted, 0.3, 1.15)`
+haircuts that strategy's expected value so a thesis that promised +0.8% and
+delivered +0.1% no longer wins the Auto ranking. This is adaptive
+calibration, not an LLM in the loop.
 
 ## Adaptive cooldown
 

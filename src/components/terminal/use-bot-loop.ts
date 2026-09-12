@@ -7,6 +7,7 @@ import {
 } from "@/lib/leef/bot-engine";
 import { realizedVolPerSec, usdPriceOf } from "@/lib/leef/cost-model";
 import { optimizeEntrySize } from "@/lib/leef/net-edge";
+import { markDeadOpportunity, opportunityFingerprint } from "@/lib/leef/opportunity";
 import { fmtNum } from "@/lib/leef/format";
 import { fetchAlcorRouteCached } from "@/lib/leef/quote-verify";
 import { exceedsMaxPositionUsd, usdToTokenBounds } from "@/lib/leef/risk-usd";
@@ -209,6 +210,7 @@ async function runBotOnceInner(
     tradesThisHour: b.tradesThisHour,
     sessionRealizedUsd: b.stats.realizedUsd,
     sessionStartEquityUsd: b.stats.startEquityUsd,
+    calibration: b.stats.byStrategy,
     quote: b.quote,
     base: b.base,
     force: opts?.force ?? null,
@@ -782,6 +784,20 @@ async function runBotOnceInner(
     b.pushDecision({ kind: "error", mode, reason, priceUsd: snap.leefUsd });
     b.setLastReason(reason);
     toast({ title: toastTitleFor(code), description: message, variant: "destructive" });
+    // Don't hammer the same dead clip next cycle — look for something else.
+    const fp =
+      (decision.kind === "buy" || decision.kind === "arb") && decision.opportunity
+        ? decision.opportunity.fingerprint
+        : opportunityFingerprint({
+            kind: decision.kind,
+            tokenIn: b.quote || "WAX",
+            tokenOut: b.base || "LEEF",
+          });
+    const coolMs =
+      code === "QUOTE_FAILURE" || code === "RPC_FAILURE" || code === "API_RATE_LIMIT"
+        ? 30_000
+        : 12_000;
+    markDeadOpportunity(fp, coolMs);
     return decision;
   } finally {
     const fetchTiming = lastFetchTiming();

@@ -17,6 +17,18 @@ import {
   usdToTokenBounds,
 } from "./risk-usd";
 import type { LeefPool, LeefSnapshot, SwapRoute } from "./types";
+import {
+  buildScoredOpportunity,
+  calibrationHaircut,
+  inventoryFactor,
+  opportunityFingerprint,
+  rejectOpportunity,
+  routeHops,
+  selectBestOpportunity,
+  type CalibrationMemory,
+  type OpportunityGate,
+  type ScoredOpportunity,
+} from "./opportunity";
 
 /* ------------------------------------------------------------------ */
 /* Strategy catalog                                                    */
@@ -34,9 +46,9 @@ export const STRATEGIES: {
   {
     id: "auto",
     name: "Auto",
-    tagline: "Evaluates everything, picks the best net USD",
+    tagline: "Orchestrator — strategies compete on expected value",
     detail:
-      "The autonomous selector: every cycle it evaluates atomic arbitrage, signal entries, mean reversion, grid steps and position exits, ranks them by expected NET USD after all costs, and takes the single best action. When nothing profitable exists and a volume budget is set, it runs a bounded-cost echo. Otherwise it does nothing — and says why.",
+      "Auto does not invent a private economist. Every strategy (arb, signal, mean-reversion, grid, volume) produces the same scored opportunity: expected net USD × execution probability × freshness × inventory tilt × calibration. Auto ranks those and takes ONE action — or none. Volume is last and never runs just to print tape.",
     bestFor: "Default — one mode that adapts",
   },
   {
@@ -238,6 +250,7 @@ export type Decision =
       expectedGrossPct?: number;
       /** Net-edge verdict that approved the entry (journal/calibration). */
       edge?: { netEdgePct: number; netProfitUsd: number; score: number };
+      opportunity?: ScoredOpportunity;
     }
   | { kind: "sell"; amountLeef: number; route: SwapRoute; reason: string; confidence: number }
   | {
@@ -246,6 +259,7 @@ export type Decision =
       reason: string;
       /** spread = profit floor enforced; volume = loss budget enforced. */
       arbKind?: "spread" | "volume";
+      opportunity?: ScoredOpportunity;
     }
   | { kind: "hold"; reason: string }
   | { kind: "stop"; reason: string };
@@ -271,6 +285,8 @@ export type BotInput = {
   quote?: string;
   /** Force a manual trade, bypassing strategy entry/exit logic. */
   force?: "buy" | "sell" | null;
+  /** Predicted-vs-realized memory per strategy — haircuts over-optimistic theses. */
+  calibration?: Record<string, CalibrationMemory>;
 };
 
 /* ------------------------------------------------------------------ */
@@ -491,6 +507,108 @@ function hold(reason: string): Decision {
   return { kind: "hold", reason };
 }
 
+function gateFromRisk(risk: BotRisk): OpportunityGate {
+  return {
+    minNetProfitUsd: 0.0001,
+    minNetEdgePct: risk.minNetEdgePct,
+    minExecutionProbability: 0.5,
+    maxImpactPct: risk.maxImpactPct,
+    maxQuoteAgeMs: Math.max(1, risk.maxQuoteAgeSec) * 1000,
+    maxVolumeCostPct: risk.maxEchoLossPct,
+  };
+}
+
+function scoreBuyOpportunity(opts: {
+  source: string;
+  tokenIn: string;
+  tokenOut: string;
+  amountIn: number;
+  notionalUsd: number;
+  netProfitUsd: number;
+  netEdgePct: number;
+  route: SwapRoute;
+  quoteAgeMs: number;
+  maxQuoteAgeMs: number;
+  snap: LeefSnapshot;
+  balances: Record<string, number>;
+  calibration?: CalibrationMemory;
+  strategyConfidence: number;
+}): ScoredOpportunity {
+  return buildScoredOpportunity({
+    fingerprint: opportunityFingerprint({
+      kind: opts.source,
+      tokenIn: opts.tokenIn,
+      tokenOut: opts.tokenOut,
+      routeId: opts.route.id,
+    }),
+    intent: "profit",
+    source: opts.source,
+    tokenIn: opts.tokenIn,
+    tokenOut: opts.tokenOut,
+    amountIn: opts.amountIn,
+    notionalUsd: opts.notionalUsd,
+    expectedNetProfitUsd: opts.netProfitUsd,
+    expectedNetEdgePct: opts.netEdgePct,
+    hops: routeHops(opts.route),
+    liquidityUsd: opts.route.tvlUsd,
+    impactPct: opts.route.priceImpact * 100,
+    split: opts.route.kind === "split",
+    quoteAgeMs: opts.quoteAgeMs,
+    maxQuoteAgeMs: opts.maxQuoteAgeMs,
+    inventoryFactor: inventoryFactor({
+      snap: opts.snap,
+      balances: opts.balances,
+      tokenOut: opts.tokenOut,
+    }),
+    calibrationHaircut: calibrationHaircut(opts.calibration),
+    strategyConfidence: opts.strategyConfidence,
+  });
+}
+
+function scoreArbOpportunity(opts: {
+  source: string;
+  intent: "profit" | "volume";
+  plan: ArbPlan;
+  waxUsd: number;
+  quoteAgeMs: number;
+  maxQuoteAgeMs: number;
+  snap: LeefSnapshot;
+  balances: Record<string, number>;
+  calibration?: CalibrationMemory;
+}): ScoredOpportunity {
+  const netUsd = (opts.plan.waxOut - opts.plan.waxIn) * opts.waxUsd;
+  // Atomic two-leg in ONE transaction — hop count is the worse leg, not the sum.
+  const hops = Math.max(
+    opts.plan.buyLegs?.reduce((m, l) => Math.max(m, l.route.length), 1) ?? 1,
+    opts.plan.sellLegs?.reduce((m, l) => Math.max(m, l.route.length), 1) ?? 1,
+  );
+  const tvl = Math.min(opts.plan.buyPool.tvlUsd, opts.plan.sellPool.tvlUsd);
+  return buildScoredOpportunity({
+    fingerprint: opportunityFingerprint({
+      kind: opts.source,
+      tokenIn: "WAX",
+      tokenOut: "WAX",
+      routeId: `${opts.plan.buyPool.id}>${opts.plan.sellPool.id}`,
+    }),
+    intent: opts.intent,
+    source: opts.source,
+    tokenIn: "WAX",
+    tokenOut: "WAX",
+    amountIn: opts.plan.waxIn,
+    notionalUsd: opts.plan.waxIn * opts.waxUsd,
+    expectedNetProfitUsd: netUsd,
+    expectedNetEdgePct: opts.plan.profitPct * 100,
+    hops,
+    liquidityUsd: tvl,
+    impactPct: opts.plan.impactPct * 100,
+    quoteAgeMs: opts.quoteAgeMs,
+    maxQuoteAgeMs: opts.maxQuoteAgeMs,
+    inventoryFactor: 1, // round-trip: inventory-neutral
+    calibrationHaircut: calibrationHaircut(opts.calibration),
+    strategyConfidence: 0.85,
+  });
+}
+
 export function evaluateBot(input: BotInput): Decision {
   const { snap, risk, goals, position, strategy } = input;
   const now = input.now;
@@ -602,6 +720,11 @@ export function evaluateBot(input: BotInput): Decision {
 
   /* ----------- position-independent scans (spread arb / volume) ---- */
 
+  const quoteAgeMs = quoteAgeSec * 1000;
+  const maxQuoteAgeMs = risk.maxQuoteAgeSec * 1000;
+  const oppGate = gateFromRisk(risk);
+  const calOf = (id: string) => input.calibration?.[id];
+
   if (strategy === "spread" || strategy === "volume") {
     const waxAvail = maxWax;
     const isVolume = strategy === "volume";
@@ -611,44 +734,76 @@ export function evaluateBot(input: BotInput): Decision {
     if (waxAvail + 1e-12 < minWax) {
       scanReason = `Not enough ${quote} for the $${risk.minTradeUsd.toFixed(2)} min trade`;
     } else if (isVolume) {
-      // Echo: round-trip allowed, gated by the loss budget (negative profit gate).
       const plan = findBestArb(snap, waxAvail, -risk.maxEchoLossPct, true, minWax);
       if (plan) {
-        const costPct = -plan.profitPct * 100;
-        arbDecision = {
-          kind: "arb",
-          arbKind: "volume",
+        const scored = scoreArbOpportunity({
+          source: "volume",
+          intent: plan.profitPct >= 0 ? "profit" : "volume",
           plan,
-          reason:
-            plan.profitPct >= 0
-              ? `Spread-funded echo #${plan.buyPool.id}→#${plan.sellPool.id} · est +${(plan.profitPct * 100).toFixed(2)}% — volume that pays`
-              : `Volume echo #${plan.buyPool.id}${plan.sellPool.id === plan.buyPool.id ? " round-trip" : `→#${plan.sellPool.id}`} · est cost ${costPct.toFixed(2)}% ≤ budget ${risk.maxEchoLossPct}%`,
-        };
+          waxUsd,
+          quoteAgeMs,
+          maxQuoteAgeMs,
+          snap,
+          balances: input.balances,
+          calibration: calOf("volume"),
+        });
+        const why = rejectOpportunity(scored, oppGate);
+        if (why) {
+          scanReason = `Volume rejected by common gate: ${why} · EV $${scored.expectedValueUsd.toFixed(4)}`;
+        } else {
+          const costPct = -plan.profitPct * 100;
+          arbDecision = {
+            kind: "arb",
+            arbKind: "volume",
+            plan,
+            opportunity: scored,
+            reason:
+              plan.profitPct >= 0
+                ? `Spread-funded echo #${plan.buyPool.id}→#${plan.sellPool.id} · EV $${scored.expectedValueUsd.toFixed(4)} · exec ${(scored.executionProbability * 100).toFixed(0)}%`
+                : `Volume echo #${plan.buyPool.id}${plan.sellPool.id === plan.buyPool.id ? " round-trip" : `→#${plan.sellPool.id}`} · cost ${costPct.toFixed(2)}% · EV $${scored.expectedValueUsd.toFixed(4)}`,
+          };
+        }
+      } else {
+        scanReason = `Round trip costs more than the ${risk.maxEchoLossPct}% budget right now`;
       }
-      scanReason = `Round trip costs more than the ${risk.maxEchoLossPct}% budget right now`;
     } else {
-      // Leg 1's min-out buffer shrinks leg 2's input, so the on-chain profit
-      // floor needs the raw spread to clear it with slippage headroom.
       const gatePct =
         ((1 + risk.minEdgePct / 100) / Math.max(0.9, 1 - risk.slippage / 100) - 1) * 100;
       const plan = findBestArb(snap, waxAvail, gatePct, false, minWax);
       if (plan) {
-        arbDecision = {
-          kind: "arb",
-          arbKind: "spread",
+        const scored = scoreArbOpportunity({
+          source: "spread",
+          intent: "profit",
           plan,
-          reason: `Arb #${plan.buyPool.id}→#${plan.sellPool.id} · est +${(plan.profitPct * 100).toFixed(2)}% after fees · impact ${(plan.impactPct * 100).toFixed(1)}%`,
-        };
+          waxUsd,
+          quoteAgeMs,
+          maxQuoteAgeMs,
+          snap,
+          balances: input.balances,
+          calibration: calOf("spread"),
+        });
+        const why = rejectOpportunity(scored, oppGate);
+        if (why) {
+          scanReason = `Arb rejected by common gate: ${why} · EV $${scored.expectedValueUsd.toFixed(4)} · ${scored.explain[1]}`;
+        } else {
+          arbDecision = {
+            kind: "arb",
+            arbKind: "spread",
+            plan,
+            opportunity: scored,
+            reason: `Arb #${plan.buyPool.id}→#${plan.sellPool.id} · EV $${scored.expectedValueUsd.toFixed(4)} · net ${(plan.profitPct * 100).toFixed(2)}% · exec ${(scored.executionProbability * 100).toFixed(0)}%`,
+          };
+        }
+      } else {
+        const probe = findBestArb(snap, waxAvail, -100, false, minWax);
+        scanReason = `No atomic arb ≥ ${risk.minEdgePct}% after fees+impact (${
+          probe ? `best spread ${(probe.profitPct * 100).toFixed(2)}%` : "no two WAX books"
+        })`;
       }
-      const probe = findBestArb(snap, waxAvail, -100, false, minWax);
-      scanReason = `No atomic arb ≥ ${risk.minEdgePct}% after fees+impact (${
-        probe ? `best spread ${(probe.profitPct * 100).toFixed(2)}%` : "no two WAX books"
-      })`;
     }
 
     if (arbDecision) return arbDecision;
-    // No arb/echo this cycle — still guard any open position below.
-    if (!position || position.amountLeef <= 0) return hold(scanReason);
+    if (!position || position.amountLeef <= 0) return hold(scanReason!);
   }
 
   /* ------------------- entry sizing (NetEdgeEngine) ---------------- */
@@ -697,19 +852,42 @@ export function evaluateBot(input: BotInput): Decision {
       confidence,
       minNetEdgePct: risk.minNetEdgePct,
       maxImpactPct: risk.maxImpactPct,
-      quoteAgeMs: quoteAgeSec * 1000,
-      maxQuoteAgeMs: risk.maxQuoteAgeSec * 1000,
+      quoteAgeMs,
+      maxQuoteAgeMs,
     });
+    const scored = scoreBuyOpportunity({
+      source: strategy,
+      tokenIn: quote,
+      tokenOut: base,
+      amountIn: v.amountIn,
+      notionalUsd: v.notionalUsd,
+      netProfitUsd: v.netProfitUsd,
+      netEdgePct: v.netEdgePct,
+      route: v.route,
+      quoteAgeMs,
+      maxQuoteAgeMs,
+      snap,
+      balances: input.balances,
+      calibration: calOf(strategy === "auto" ? "signal" : strategy),
+      strategyConfidence: confidence,
+    });
+    const why = rejectOpportunity(scored, oppGate);
+    if (why) {
+      return hold(
+        `${reason} rejected by common gate: ${why} · EV $${scored.expectedValueUsd.toFixed(4)} · ${scored.explain[1]}`,
+      );
+    }
     return {
       kind: "buy",
       amountWax: v.amountIn,
       route: v.route,
       reason:
-        `${reason} · net edge ${v.netEdgePct.toFixed(2)}% ≈ $${v.netProfitUsd.toFixed(3)} ` +
-        `on ${v.amountIn.toFixed(2)} ${quote} · score ${score.score}/100`,
+        `${reason} · EV $${scored.expectedValueUsd.toFixed(4)} · net ${v.netEdgePct.toFixed(2)}% ≈ $${v.netProfitUsd.toFixed(3)} ` +
+        `on ${v.amountIn.toFixed(2)} ${quote} · exec ${(scored.executionProbability * 100).toFixed(0)}%`,
       confidence,
       expectedGrossPct,
       edge: { netEdgePct: v.netEdgePct, netProfitUsd: v.netProfitUsd, score: score.score },
+      opportunity: scored,
     };
   };
   const tryBuy = (reason: string, expectedGrossPct: number, confidence: number): Decision =>
@@ -809,12 +987,27 @@ export function evaluateBot(input: BotInput): Decision {
           ((1 + risk.minEdgePct / 100) / Math.max(0.9, 1 - risk.slippage / 100) - 1) * 100;
         const arb = findBestArb(snap, maxWax, gatePct, false, minWax);
         if (arb) {
-          return {
-            kind: "arb",
-            arbKind: "spread",
+          const opp = scoreArbOpportunity({
+            source: "spread",
+            intent: "profit",
             plan: arb,
-            reason: `Auto: arb #${arb.buyPool.id}→#${arb.sellPool.id} beats holding · est +${(arb.profitPct * 100).toFixed(2)}% · impact ${(arb.impactPct * 100).toFixed(1)}%`,
-          };
+            waxUsd,
+            quoteAgeMs,
+            maxQuoteAgeMs,
+            snap,
+            balances: input.balances,
+            calibration: calOf("spread"),
+          });
+          const why = rejectOpportunity(opp, oppGate);
+          if (!why && opp.expectedValueUsd > 0) {
+            return {
+              kind: "arb",
+              arbKind: "spread",
+              plan: arb,
+              opportunity: opp,
+              reason: `Auto: arb #${arb.buyPool.id}→#${arb.sellPool.id} beats holding · EV $${opp.expectedValueUsd.toFixed(4)} · exec ${(opp.executionProbability * 100).toFixed(0)}%`,
+            };
+          }
         }
       }
     }
@@ -910,29 +1103,57 @@ export function evaluateBot(input: BotInput): Decision {
       return tryBuy("Scheduled accumulation clip", goals.takeProfitPct, signal.confidence);
     }
     case "auto": {
-      /* Autonomous selector: evaluate every opportunity on this book and take
-       * the single best one by expected NET USD after costs. Doing nothing is
-       * a valid — and reported — outcome. */
+      /* Auto is the orchestrator, not a private economist. Each strategy
+       * produces a ScoredOpportunity through the SAME gate; Auto ranks by
+       * expected value (net × exec × fresh × inventory × calibration). */
       const considered: string[] = [];
-      const candidates: { netUsd: number; decision: Decision }[] = [];
+      const scored: ScoredOpportunity[] = [];
+      const byFp = new Map<string, Decision>();
 
-      // 1. Atomic spread arb: self-contained profit, no directional risk.
+      const pushScored = (d: Decision) => {
+        if (d.kind === "buy" && d.opportunity) {
+          scored.push(d.opportunity);
+          byFp.set(d.opportunity.fingerprint, d);
+          considered.push(`${d.opportunity.source} EV $${d.opportunity.expectedValueUsd.toFixed(4)}`);
+        } else if (d.kind === "arb" && d.opportunity) {
+          scored.push(d.opportunity);
+          byFp.set(d.opportunity.fingerprint, d);
+          considered.push(`${d.opportunity.source} EV $${d.opportunity.expectedValueUsd.toFixed(4)}`);
+        } else if (d.kind === "hold") {
+          considered.push(d.reason.slice(0, 80));
+        }
+      };
+
       if (maxWax + 1e-12 >= minWax) {
         const gatePct =
           ((1 + risk.minEdgePct / 100) / Math.max(0.9, 1 - risk.slippage / 100) - 1) * 100;
         const arb = findBestArb(snap, maxWax, gatePct, false, minWax);
         if (arb) {
-          const netUsd = (arb.waxOut - arb.waxIn) * waxUsd;
-          candidates.push({
-            netUsd,
-            decision: {
+          const opp = scoreArbOpportunity({
+            source: "spread",
+            intent: "profit",
+            plan: arb,
+            waxUsd,
+            quoteAgeMs,
+            maxQuoteAgeMs,
+            snap,
+            balances: input.balances,
+            calibration: calOf("spread"),
+          });
+          const why = rejectOpportunity(opp, oppGate);
+          if (why) {
+            considered.push(`arb ${why}`);
+          } else {
+            scored.push(opp);
+            byFp.set(opp.fingerprint, {
               kind: "arb",
               arbKind: "spread",
               plan: arb,
-              reason: `Auto: arb #${arb.buyPool.id}→#${arb.sellPool.id} · est +${(arb.profitPct * 100).toFixed(2)}% ≈ +$${netUsd.toFixed(3)} · impact ${(arb.impactPct * 100).toFixed(1)}%`,
-            },
-          });
-          considered.push(`arb +$${netUsd.toFixed(3)}`);
+              opportunity: opp,
+              reason: `Auto: arb #${arb.buyPool.id}→#${arb.sellPool.id} · EV $${opp.expectedValueUsd.toFixed(4)} · exec ${(opp.executionProbability * 100).toFixed(0)}%`,
+            });
+            considered.push(`arb EV $${opp.expectedValueUsd.toFixed(4)}`);
+          }
         } else {
           const probe = findBestArb(snap, maxWax, -100, false, minWax);
           considered.push(
@@ -947,8 +1168,6 @@ export function evaluateBot(input: BotInput): Decision {
         );
       }
 
-      // 2. Directional entries — each flows through the NetEdgeEngine, so a
-      // thesis that can't beat all costs never becomes a candidate.
       const theses: { reason: string; expected: number; confidence: number }[] = [];
       if (signal.warmed && signal.bias === "buy" && Math.round(signal.confidence * 100) >= risk.minConfidence) {
         const mom = momentumPct(input.series);
@@ -981,37 +1200,46 @@ export function evaluateBot(input: BotInput): Decision {
           });
         }
       }
-      for (const t of theses) {
-        const d = tryBuyWith(t.reason, t.expected, t.confidence, maxWax);
-        if (d.kind === "buy") {
-          const netUsd = d.edge?.netProfitUsd ?? 0;
-          candidates.push({ netUsd, decision: d });
-          considered.push(`${t.reason.replace("Auto: ", "")} ≈ +$${netUsd.toFixed(3)}`);
-        }
-      }
-      if (theses.length > 0 && !candidates.some((c) => c.decision.kind === "buy")) {
-        considered.push("entries failed the net-edge gate");
-      }
+      for (const t of theses) pushScored(tryBuyWith(t.reason, t.expected, t.confidence, maxWax));
 
-      // 3. Rank by expected net USD — a larger 2% trade can beat a tiny 20% one.
-      candidates.sort((a, b) => b.netUsd - a.netUsd);
-      const best = candidates[0];
-      if (best && best.netUsd > 0) return best.decision;
+      const { winner, rejected } = selectBestOpportunity(scored, oppGate, now);
+      if (winner && winner.intent === "profit" && winner.expectedValueUsd > 0) {
+        const d = byFp.get(winner.fingerprint);
+        if (d) return d;
+      }
+      for (const r of rejected) considered.push(`${r.reason}`);
 
-      // 4. Controlled volume ONLY when nothing profitable exists and a budget
-      // is configured. The echo is bounded by the on-chain loss floor.
+      // Controlled volume ONLY when nothing profitable exists. Same common
+      // gate — never "there is a trade, therefore trade."
       if (risk.maxEchoLossPct > 0 && maxWax + 1e-12 >= minWax) {
         const echo = findBestArb(snap, maxWax, -risk.maxEchoLossPct, true, minWax);
         if (echo) {
-          const costUsd = (echo.waxIn - echo.waxOut) * waxUsd;
-          return {
-            kind: "arb",
-            arbKind: "volume",
+          const opp = scoreArbOpportunity({
+            source: "volume",
+            intent: echo.profitPct >= 0 ? "profit" : "volume",
             plan: echo,
-            reason: `Auto: no profitable action — volume echo #${echo.buyPool.id}${
-              echo.sellPool.id === echo.buyPool.id ? " round-trip" : `→#${echo.sellPool.id}`
-            } · est cost $${costUsd.toFixed(3)} within ${risk.maxEchoLossPct}% budget`,
-          };
+            waxUsd,
+            quoteAgeMs,
+            maxQuoteAgeMs,
+            snap,
+            balances: input.balances,
+            calibration: calOf("volume"),
+          });
+          const why = rejectOpportunity(opp, oppGate);
+          if (why) {
+            considered.push(`volume ${why}`);
+          } else {
+            const costUsd = Math.max(0, echo.waxIn - echo.waxOut) * waxUsd;
+            return {
+              kind: "arb",
+              arbKind: "volume",
+              plan: echo,
+              opportunity: opp,
+              reason: `Auto: no profitable action — volume echo #${echo.buyPool.id}${
+                echo.sellPool.id === echo.buyPool.id ? " round-trip" : `→#${echo.sellPool.id}`
+              } · cost $${costUsd.toFixed(3)} · exec ${(opp.executionProbability * 100).toFixed(0)}%`,
+            };
+          }
         }
       }
       return hold(`Auto scan: ${considered.join(" · ") || "nothing in range"} — waiting`);

@@ -2,6 +2,24 @@
 
 All notable changes to LEEF Trader. Dates are commit-era, not release tags.
 
+## Unreleased — common Opportunity engine; Auto is the orchestrator
+
+- Strategies no longer execute (or Auto-rank) on raw net-USD or headline
+  percent. Every proposal — signal, mean-reversion, grid, DCA, spread arb,
+  volume echo — is scored by `src/lib/leef/opportunity.ts`:
+  `expectedNetProfitUsd × executionProbability × freshness × inventoryTilt × calibrationHaircut`.
+- Auto only ranks already-scored candidates and picks ONE (or none). A
+  +0.9% 1-hop deep clip beats a +1.8% 3-hop thin clip when EV is higher.
+- Inventory tilt rewards underweight LEEF and penalizes overweight buys;
+  it never turns a losing trade into a winner.
+- Volume must clear the same gate (cost/notional and execution probability);
+  Auto only falls back to volume when nothing profitable exists.
+- Failed clips get a fingerprint cooldown so the next cycle looks elsewhere.
+- Predicted-vs-realized calibration now haircuts over-optimistic strategies
+  after 3+ fills (still not an LLM).
+
+---
+
 ## Unreleased — recover Alcor quotes (HTTP 500) + unbootable HEAD
 
 Forensic report: `docs/FORENSIC_REPORT.md`.
