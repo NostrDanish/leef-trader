@@ -22,6 +22,7 @@ import { signAndPushAddLiquidity, signAndPushRemoveLiquidity } from "@/lib/walle
 import { hasSecret } from "@/lib/wallet/secret";
 import { hasWalletSession } from "@/lib/wallet/session";
 import { useWallet } from "@/store/wallet";
+import { balanceForIdentifier } from "@/lib/wallet/balances";
 import { feeApyPct, tradeSpark } from "@/lib/leef/analytics";
 import { fmtNum, fmtPct, fmtUsd } from "@/lib/leef/format";
 import type { LeefPool, LeefSnapshot } from "@/lib/leef/types";
@@ -427,8 +428,18 @@ function LpCard({ pool, snap }: { pool: LeefPool; snap: LeefSnapshot }) {
   const pairPerLeef = pool.leef.quantity > 0 ? pool.pair.quantity / pool.leef.quantity : 0;
   const leefAmount = Number(amountLeef) || 0;
   const pairAmount = leefAmount * pairPerLeef;
-  const enoughLeef = (balances.LEEF ?? 0) >= leefAmount;
-  const enoughPair = (balances[pool.pair.symbol] ?? 0) >= pairAmount;
+  const leefBalance = balanceForIdentifier(
+    balances,
+    snap.universe,
+    `LEEF@${pool.leef.contract}`,
+  );
+  const pairBalance = balanceForIdentifier(
+    balances,
+    snap.universe,
+    `${pool.pair.symbol}@${pool.pair.contract}`,
+  );
+  const enoughLeef = leefBalance >= leefAmount;
+  const enoughPair = pairBalance >= pairAmount;
 
   const spacing = pool.tickSpacing || 60;
   const tickLower = Math.ceil(-887200 / spacing) * spacing;
@@ -543,14 +554,14 @@ function LpCard({ pool, snap }: { pool: LeefPool; snap: LeefSnapshot }) {
               <Button
                 variant="ghost"
                 size="xs"
-                onClick={() => setAmountLeef(String(Math.floor(balances.LEEF ?? 0)))}
+                onClick={() => setAmountLeef(String(Math.floor(leefBalance)))}
               >
                 Max
               </Button>
             </div>
             <div className="mt-2 font-mono text-xs tabular-nums text-muted-foreground">
               ≈ {fmtNum(pairAmount, { digits: 4 })} {pool.pair.symbol} paired
-              {leefAmount > 0 && (balances[pool.pair.symbol] ?? 0) < pairAmount
+              {leefAmount > 0 && pairBalance < pairAmount
                 ? ` — short ${pool.pair.symbol}`
                 : ""}
             </div>

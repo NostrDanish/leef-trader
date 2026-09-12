@@ -5,26 +5,12 @@ import { Card } from "@/components/ui/card";
 import { bestExecutionRoute } from "@/lib/leef/route-optimizer";
 import { fmtNum, fmtUsd } from "@/lib/leef/format";
 import type { LeefSnapshot } from "@/lib/leef/types";
-import { findToken } from "@/lib/leef/universe";
-import { tokenCatalog } from "@/lib/wallet/tokens";
+import { tokenPrice } from "@/lib/market/price-oracle";
+import { balanceForIdentifier, walletBalanceRows } from "@/lib/wallet/balances";
 import { useBot } from "@/store/bot";
 import { useTerminal } from "@/store/terminal";
 import { useWallet } from "@/store/wallet";
-import { PairMarks } from "./token-mark";
-
-function markUsd(symbol: string, qty: number, snap: LeefSnapshot): number {
-  // Priced universe first — it covers every liquid token on Alcor.
-  const u = findToken(snap.universe, symbol);
-  if (u && u.usdPrice > 0) return qty * u.usdPrice;
-  if (symbol === "WAX") return qty * snap.waxUsd;
-  if (symbol === "LEEF") return qty * snap.leefUsd;
-  if (symbol === "USDT" || symbol === "WAXUSDC" || symbol === "WAXUSDT") return qty;
-  const pool = snap.pools.find((p) => p.pair.symbol.toUpperCase() === symbol);
-  if (pool?.usdPerLeef && pool.pairPerLeef > 0) {
-    return qty * (pool.usdPerLeef / pool.pairPerLeef);
-  }
-  return 0;
-}
+import { TokenMark } from "./token-mark";
 
 export function WalletDesk({ snap }: { snap: LeefSnapshot }) {
   const mode = useWallet((s) => s.mode);
@@ -41,21 +27,19 @@ export function WalletDesk({ snap }: { snap: LeefSnapshot }) {
   const paperBalances = useWallet((s) => s.paperBalances);
   const liveBalances = useWallet((s) => s.liveBalances);
   const balances = mode === "live" ? liveBalances : paperBalances;
-  const catalog = tokenCatalog(snap);
-  const catalogSyms = new Set(catalog.map((t) => t.symbol));
-  const rows = [
-    ...catalog.map((t) => ({ symbol: t.symbol, qty: balances[t.symbol] ?? 0 })),
-    // Anything else the wallet holds (Hyperion full scan / paper dust).
-    ...Object.keys(balances)
-      .filter((s) => !catalogSyms.has(s))
-      .map((s) => ({ symbol: s, qty: balances[s] ?? 0 })),
-  ]
-    .map((t) => ({ ...t, usd: markUsd(t.symbol, t.qty, snap) }))
-    .filter((t) => t.qty > 0 || t.symbol === "WAX" || t.symbol === "LEEF")
-    .sort((a, b) => b.usd - a.usd || b.qty - a.qty);
+  const rows = walletBalanceRows(balances, snap.universe, [
+    "WAX@eosio.token",
+    "LEEF@leefmaincorp",
+  ])
+    .map((row) => {
+      const price = row.token ? tokenPrice(snap, row.id) : null;
+      return { ...row, usd: price ? row.amount * price.priceUsd : 0 };
+    })
+    .filter((row) => row.amount > 0 || row.symbol === "WAX" || row.symbol === "LEEF")
+    .sort((a, b) => b.usd - a.usd || b.amount - a.amount);
 
-  const wax = balances.WAX ?? 0;
-  const leef = balances.LEEF ?? 0;
+  const wax = balanceForIdentifier(balances, snap.universe, "WAX@eosio.token");
+  const leef = balanceForIdentifier(balances, snap.universe, "LEEF@leefmaincorp");
   const buySize = Math.min(10, wax) || 10;
   const sellSize = Math.min(1_000_000, leef) || 1_000_000;
   const buy = bestExecutionRoute(snap.pools, snap.aux, buySize, "WAX", "LEEF");
@@ -198,15 +182,22 @@ export function WalletDesk({ snap }: { snap: LeefSnapshot }) {
             </thead>
             <tbody>
               {rows.map((r) => (
-                <tr key={r.symbol} className="border-b border-border/70">
+                <tr key={r.id} className="border-b border-border/70">
                   <td className="py-2.5 pr-3">
                     <span className="flex items-center gap-2">
-                      <PairMarks pair={r.symbol} />
-                      <span className="font-mono">{r.symbol}</span>
+                      <TokenMark symbol={r.symbol} size="sm" />
+                      <span>
+                        <span className="block font-mono">{r.symbol}</span>
+                        {r.contract && (
+                          <span className="block font-mono text-[10px] text-subtle">
+                            {r.contract}
+                          </span>
+                        )}
+                      </span>
                     </span>
                   </td>
                   <td className="py-2.5 pr-3 font-mono tabular-nums">
-                    {fmtNum(r.qty, { compact: true, digits: 4 })}
+                    {fmtNum(r.amount, { compact: true, digits: 4 })}
                   </td>
                   <td className="py-2.5 font-mono tabular-nums text-muted-foreground">
                     {r.usd > 0 ? fmtUsd(r.usd, 4) : "—"}

@@ -2,6 +2,21 @@
 
 All notable changes to LEEF Trader. Dates are commit-era, not release tags.
 
+## Unreleased — canonical holdings display
+
+- Fixed Wallet holdings rendering both compatibility aliases (`LEEF`) and
+  canonical balances (`LEEF@leefmaincorp`) as separate rows. Each real
+  SYMBOL@CONTRACT asset now appears exactly once; its contract is secondary
+  identity text rather than another holding.
+- Fixed canonical balance lookup case normalization (`WAXUSDC@eth.token` no
+  longer misses a lowercase stored key), which also protects sizing and LP
+  availability checks from false zero balances.
+- Wallet holdings now use a single token mark instead of the two-token pool
+  pair icon that incorrectly prefixed every asset with LEEF. LP balance checks
+  now use the exact token contract rather than a bare symbol.
+
+---
+
 ## Unreleased — restore trade flow + static market UI
 
 - Fixed a recent prediction/execution regression: verified stable anchors with

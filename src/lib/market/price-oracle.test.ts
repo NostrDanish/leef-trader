@@ -3,7 +3,11 @@ import type { LeefSnapshot } from "@/lib/leef/types";
 import type { UniverseToken } from "@/lib/leef/universe";
 import { tokenPrice, requireTradePrice, resolveOracleToken } from "./price-oracle";
 import { governTrade, portfolioState } from "./portfolio-governor";
-import { canonicalBalanceBook } from "@/lib/wallet/balances";
+import {
+  balanceForIdentifier,
+  canonicalBalanceBook,
+  walletBalanceRows,
+} from "@/lib/wallet/balances";
 
 function token(
   symbol: string,
@@ -139,6 +143,38 @@ describe("canonical balance book", () => {
     expect(b["USDT@b.token"]).toBe(7);
     expect(b.USDT).toBeUndefined();
     expect(b.WAX).toBe(10); // unique convenience alias is safe
+  });
+
+  it("renders canonical + compatibility alias as ONE holding", () => {
+    const balances = canonicalBalanceBook([
+      { symbol: "LEEF", contract: "leefmaincorp", amount: 387_770_000 },
+      { symbol: "PARAUSD", contract: "parareserves", amount: 54.955 },
+      { symbol: "WAX", contract: "eosio.token", amount: 3_692.3823 },
+    ]);
+    const rows = walletBalanceRows(balances, BASE);
+    expect(rows.filter((r) => r.symbol === "LEEF")).toHaveLength(1);
+    expect(rows.filter((r) => r.symbol === "PARAUSD")).toHaveLength(1);
+    expect(rows.filter((r) => r.symbol === "WAX")).toHaveLength(1);
+    expect(rows.find((r) => r.symbol === "LEEF")?.id).toBe("LEEF@leefmaincorp");
+  });
+
+  it("canonical identifier lookups preserve lowercase contract keys", () => {
+    const balances = canonicalBalanceBook([
+      { symbol: "WAXUSDC", contract: "eth.token", amount: 1.1335 },
+    ]);
+    expect(balanceForIdentifier(balances, BASE, "WAXUSDC@eth.token")).toBe(1.1335);
+    expect(balanceForIdentifier(balances, BASE, "waxusdc@ETH.TOKEN")).toBe(1.1335);
+  });
+
+  it("same-symbol contracts render separately without a duplicate alias", () => {
+    const universe = [token("USDT", "a.token", 1), token("USDT", "b.token", 0.2)];
+    const balances = canonicalBalanceBook([
+      { symbol: "USDT", contract: "a.token", amount: 5 },
+      { symbol: "USDT", contract: "b.token", amount: 7 },
+    ]);
+    const rows = walletBalanceRows(balances, universe);
+    expect(rows).toHaveLength(2);
+    expect(rows.map((r) => r.id).sort()).toEqual(["USDT@a.token", "USDT@b.token"]);
   });
 });
 

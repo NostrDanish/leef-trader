@@ -211,7 +211,9 @@ Bare symbols are no longer economic identity. `findToken`, `metaOf`, balance
 sync, holdings and risk sizing resolve `SYMBOL@CONTRACT`; a bare symbol works
 only when exactly one contract is unambiguous. Hyperion balance rows are kept
 as canonical keys, and compatibility aliases are emitted only for unique
-symbols.
+symbols. Those aliases are indexes, not assets: `walletBalanceRows()` suppresses
+them whenever the canonical key exists, so one balance can never be rendered
+or valued twice. Canonical lookup normalizes contract case consistently.
 
 ## Background state vs execution state
 
