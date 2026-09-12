@@ -6,6 +6,7 @@ import { governTrade, portfolioState } from "./portfolio-governor";
 import {
   balanceForIdentifier,
   canonicalBalanceBook,
+  markPortfolioUsd,
   walletBalanceRows,
 } from "@/lib/wallet/balances";
 
@@ -175,6 +176,18 @@ describe("canonical balance book", () => {
     const rows = walletBalanceRows(balances, universe);
     expect(rows).toHaveLength(2);
     expect(rows.map((r) => r.id).sort()).toEqual(["USDT@a.token", "USDT@b.token"]);
+  });
+
+  it("marks the full generic portfolio once through the same oracle", () => {
+    const balances = canonicalBalanceBook([
+      { symbol: "WAX", contract: "eosio.token", amount: 100 },
+      { symbol: "LEEF", contract: "leefmaincorp", amount: 500 },
+      { symbol: "WAXUSDC", contract: "eth.token", amount: 10 },
+    ]);
+    const mark = markPortfolioUsd(snap(BASE), balances);
+    expect(mark.assets).toHaveLength(3);
+    expect(mark.totalUsd).toBeCloseTo(4 + 5 + 10.06, 6);
+    expect(mark.unpriced).toEqual([]);
   });
 });
 

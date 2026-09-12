@@ -325,7 +325,10 @@ class MarketEngine {
             this.commit({ cycle: { ...this.state.cycle, balanceMs: Date.now() - tB } });
           });
           const tBot = Date.now();
-          botOnSnapshot(snap);
+          // One scheduler lane: profit/strategy evaluates first. Maintenance
+          // only gets a turn after that decision settles and the shared
+          // capital lock is known idle.
+          await botOnSnapshot(snap);
           rebalancerOnSnapshot(snap);
           cycle.botMs = Date.now() - tBot;
           this.commit({
@@ -428,8 +431,9 @@ class MarketEngine {
         // Strategies reevaluate on chain-truth changes too (staleness gated).
         const ageMs = Date.now() - (Date.parse(snap.fetchedAt) || Date.now());
         if (ageMs <= this.cadenceMs() + 15_000) {
-          botOnSnapshot(patchedSnap);
-          rebalancerOnSnapshot(patchedSnap);
+          // Same single lane for chain-spot updates: settle profit selection
+          // before maintenance is allowed to inspect/spend inventory.
+          void botOnSnapshot(patchedSnap).then(() => rebalancerOnSnapshot(patchedSnap));
         }
       } else {
         this.commit({

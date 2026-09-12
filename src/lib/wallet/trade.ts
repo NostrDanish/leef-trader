@@ -2,8 +2,11 @@ import { bestExecutionRoute, splitSlices } from "@/lib/leef/route-optimizer";
 import { refreshExecutionState } from "@/lib/market/execution-state";
 import { governTrade } from "@/lib/market/portfolio-governor";
 import type { LeefSnapshot } from "@/lib/leef/types";
-import { assetDelta, waitForTransaction } from "./reconcile";
+import { assetDelta } from "./reconcile";
 import { signAndPushBatch, signAndPushSwap, type BatchLeg } from "./sign";
+import { coordinateCapitalMovement } from "./execution-coordinator";
+import { withTransientPreparationRetry } from "./retry-policy";
+import { TradeError } from "./trade-error";
 import { metaOf } from "./tokens";
 import { parseAssetAmount } from "./alcor-route";
 import { fetchAlcorRouteCached } from "@/lib/leef/quote-verify";
@@ -52,16 +55,31 @@ export async function executeSwap(opts: {
   );
   if (!route) throw new Error("No backed route for this pair and size");
   if (opts.snap.source === "live") {
-    const exec = await refreshExecutionState(opts.snap, route);
-    book = exec.snap;
-    route = bestExecutionRoute(
-      book.pools,
-      book.aux,
-      opts.amountIn,
-      opts.tokenIn,
-      opts.tokenOut,
-    );
-    if (!route) throw new Error("Route disappeared after critical-pool refresh");
+    const prepared = await withTransientPreparationRetry({
+      prepare: async (_attempt, action) => {
+        const exec = await refreshExecutionState(
+          opts.snap,
+          route,
+          action === "none" ? 8_000 : 0,
+        );
+        const rerouted = bestExecutionRoute(
+          exec.snap.pools,
+          exec.snap.aux,
+          opts.amountIn,
+          opts.tokenIn,
+          opts.tokenOut,
+        );
+        if (!rerouted) {
+          throw new TradeError(
+            "ROUTE_DISAPPEARED",
+            "Route disappeared after critical-pool refresh",
+          );
+        }
+        return { book: exec.snap, route: rerouted };
+      },
+    });
+    book = prepared.book;
+    route = prepared.route;
   }
   const governed = governTrade(book, w.balances(), {
     tokenIn: opts.tokenIn,
@@ -107,13 +125,17 @@ export async function executeSwap(opts: {
           });
         }
       }
-      const { txid } = await signAndPushBatch({
-        account: w.account,
-        permission: w.permission,
-        legs,
-        snap: book,
+      const coordinated = await coordinateCapitalMovement({
+        owner: "manual",
+        submit: () =>
+          signAndPushBatch({
+            account: w.account,
+            permission: w.permission,
+            legs,
+            snap: book,
+          }),
       });
-      const rec = await waitForTransaction(txid, { budgetMs: 1_200, attempts: 3, delayMs: 200 });
+      const { txid, reconciliation: rec } = coordinated;
       if (rec.status === "failed") throw new Error(rec.error);
       let amountOut = expectedOut;
       if (rec.status === "confirmed") {
@@ -129,18 +151,22 @@ export async function executeSwap(opts: {
         confirmed: rec.status === "confirmed",
       };
     }
-    const exec = await signAndPushSwap({
-      account: w.account,
-      permission: w.permission,
-      route,
-      amountIn: opts.amountIn,
-      slippagePct: opts.slippage,
-      snap: book,
+    const coordinated = await coordinateCapitalMovement({
+      owner: "manual",
+      submit: () =>
+        signAndPushSwap({
+          account: w.account,
+          permission: w.permission,
+          route,
+          amountIn: opts.amountIn,
+          slippagePct: opts.slippage,
+          snap: book,
+        }),
     });
-    // Reconcile against the chain: the actual transfer is the truth, the
-    // router quote is only an estimate. On "unknown" we return the estimate
-    // and never retry blindly — the next wallet sync corrects balances.
-    const rec = await waitForTransaction(exec.txid, { budgetMs: 1_200, attempts: 3, delayMs: 200 });
+    const exec = coordinated.value;
+    // Reconcile against the chain: actual transfers are truth. UNKNOWN stays
+    // globally locked and is never retried blindly.
+    const rec = coordinated.reconciliation;
     if (rec.status === "failed") throw new Error(rec.error);
     let amountOut = exec.expectedOut;
     if (rec.status === "confirmed") {

@@ -1,5 +1,7 @@
 /** Canonical wallet-balance helpers. Economic identity = SYMBOL@CONTRACT. */
+import type { LeefSnapshot } from "@/lib/leef/types";
 import type { UniverseToken } from "@/lib/leef/universe";
+import { tokenPrice } from "@/lib/market/price-oracle";
 import { canonicalTokenId } from "@/lib/market/stables";
 
 export type BalanceBook = Record<string, number>;
@@ -165,4 +167,33 @@ export function walletBalanceRows(
   }
 
   return [...rows.values()];
+}
+
+export type PortfolioMark = {
+  totalUsd: number;
+  pricedUsd: number;
+  unpriced: string[];
+  assets: { id: string; amount: number; priceUsd: number; usd: number }[];
+};
+
+/** One oracle and one canonical balance book = one true portfolio mark. */
+export function markPortfolioUsd(snap: LeefSnapshot, balances: BalanceBook): PortfolioMark {
+  const assets: PortfolioMark["assets"] = [];
+  const unpriced: string[] = [];
+  for (const row of walletBalanceRows(balances, snap.universe)) {
+    if (!(row.amount > 0)) continue;
+    const price = tokenPrice(snap, row.id);
+    if (!price || !(price.priceUsd > 0)) {
+      unpriced.push(row.id);
+      continue;
+    }
+    assets.push({
+      id: row.id,
+      amount: row.amount,
+      priceUsd: price.priceUsd,
+      usd: row.amount * price.priceUsd,
+    });
+  }
+  const pricedUsd = assets.reduce((sum, asset) => sum + asset.usd, 0);
+  return { totalUsd: pricedUsd, pricedUsd, unpriced, assets };
 }

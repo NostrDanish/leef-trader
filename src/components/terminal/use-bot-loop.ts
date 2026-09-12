@@ -811,7 +811,7 @@ function seedSeriesFromTape(snap: LeefSnapshot) {
 let lastSeenSnap = "";
 let prevRunning = false;
 
-export function botOnSnapshot(snap: LeefSnapshot): void {
+export async function botOnSnapshot(snap: LeefSnapshot): Promise<void> {
   const b = useBot.getState();
   const justStarted = b.running && !prevRunning;
   prevRunning = b.running;
@@ -840,5 +840,5 @@ export function botOnSnapshot(snap: LeefSnapshot): void {
     }
     return;
   }
-  void runBotOnce(snap);
+  await runBotOnce(snap);
 }

@@ -136,7 +136,7 @@ async function buildTransfers(opts: {
     transfers.push({
       tokenContract: tin.contract,
       to: swapContractOf(venue),
-      quantity: formatAsset(leg.amountIn, tin),
+      quantity: formatAsset(v.amountIn, tin),
       memo,
     });
   }

@@ -1,6 +1,7 @@
 import { backedPools, isLeefToken, isWaxToken, quoteConstantProduct } from "./amm";
 import { bestExecutionRoute } from "./route-optimizer";
 import { realizedVolPerSec, usdPriceOf } from "./cost-model";
+import { markPortfolioUsd } from "@/lib/wallet/balances";
 import {
   decorate,
   scoreSignal,
@@ -508,8 +509,7 @@ export function evaluateBot(input: BotInput): Decision {
       reason: `Session goal reached (+$${input.sessionRealizedUsd.toFixed(2)} realized) — bot stopped`,
     };
   }
-  const equityUsd =
-    (input.balances.WAX ?? 0) * waxUsd + (input.balances.LEEF ?? 0) * leefUsd;
+  const equityUsd = markPortfolioUsd(snap, input.balances).totalUsd;
   if (
     goals.maxDrawdownPct > 0 &&
     input.sessionStartEquityUsd > 0 &&

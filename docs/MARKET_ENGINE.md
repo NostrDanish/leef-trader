@@ -274,6 +274,48 @@ existing per-host scheduler still limits Alcor load.
   market state (Alcor API + on-chain spot), route cache stats, signer
   session, automation phase, suspension history, and the endpoint editor.
 
+## Reliability-first execution coordinator
+
+`src/lib/wallet/execution-coordinator.ts` gives bot, manual swaps, rebalancer
+and LP management one shared capital lock and transaction lifecycle. Only one
+capital-moving action can sign/broadcast/reconcile at a time. A broadcast is
+not a fill: rebalancer totals/logs update only after confirmation; UNKNOWN
+keeps all affected capital locked and background reconciliation is read-only.
+After confirmation, balances refresh from chain truth before another planning
+cycle.
+
+Mixed sequential routes chain amounts conservatively. Leg N spends leg N-1's
+freshly verified **min-out**—the amount guaranteed by the on-chain guard—not
+its stale modeled input or optimistic quoted output. Split routes remain
+independent input slices. This prevents valid first-leg slippage from making a
+later atomic action overdraw and revert.
+
+`retry-policy.ts` classifies NO_OPPORTUNITY / STALE_DATA /
+INSUFFICIENT_EDGE / INSUFFICIENT_BALANCE / RISK_REJECT /
+TEMPORARY_RPC_FAILURE / EXECUTION_FAILURE / TRANSACTION_UNKNOWN. Only
+pre-sign preparation can retry: stale quotes requote once, moved liquidity
+reroutes once, transient RPC/API work refreshes once. Policy/risk/min-out,
+transaction rejection and UNKNOWN never retry; transactions themselves are
+never re-submitted.
+
+## Opportunity scheduler primitives
+
+`src/lib/market/opportunity-queue.ts` accepts candidates from profit,
+maintenance and volume producers, applies quote-age and volume loss/notional
+budgets, ranks by intent then expected **net USD** plus confidence/liquidity
+and inventory improvement, and selects exactly one action. Profit ranks first;
+maintenance can restore capability; volume is considered only inside its loss
+and notional budgets. A high percentage on a tiny clip does not outrank a
+larger net-USD opportunity.
+
+## Generic accounting
+
+`markPortfolioUsd()` values every canonical holding exactly once through the
+same TokenPriceOracle. Bot starting equity and drawdown therefore include WAX,
+LEEF, stablecoins and all other priced inventory. P&L can no longer appear
+positive merely because value drifted into a token the old WAX+LEEF subtotal
+ignored.
+
 ## Honest venue execution limits
 
 Alcor is the only integrated venue currently exposing a fresh exact CLMM

@@ -19,6 +19,7 @@ import { Input } from "@/components/ui/input";
 import { quoteConstantProduct } from "@/lib/leef/amm";
 import { fetchPositions, type AmmPosition } from "@/lib/leef/positions";
 import { signAndPushAddLiquidity, signAndPushRemoveLiquidity } from "@/lib/wallet/sign";
+import { coordinateCapitalMovement } from "@/lib/wallet/execution-coordinator";
 import { hasSecret } from "@/lib/wallet/secret";
 import { hasWalletSession } from "@/lib/wallet/session";
 import { useWallet } from "@/store/wallet";
@@ -459,18 +460,23 @@ function LpCard({ pool, snap }: { pool: LeefPool; snap: LeefSnapshot }) {
     try {
       const aForA = pool.leefIsA ? leefAmount : pairAmount;
       const bForB = pool.leefIsA ? pairAmount : leefAmount;
-      const { txid } = await signAndPushAddLiquidity({
-        account,
-        permission,
-        poolId: pool.id,
-        tokenA,
-        tokenB,
-        amountA: aForA,
-        amountB: bForB,
-        tickLower,
-        tickUpper,
-        slippagePct: 1,
+      const coordinated = await coordinateCapitalMovement({
+        owner: "liquidity",
+        submit: () =>
+          signAndPushAddLiquidity({
+            account,
+            permission,
+            poolId: pool.id,
+            tokenA,
+            tokenB,
+            amountA: aForA,
+            amountB: bForB,
+            tickLower,
+            tickUpper,
+            slippagePct: 1,
+          }),
       });
+      const { txid } = coordinated;
       flash(`Liquidity added · tx ${txid.slice(0, 10)}…`);
       setAmountLeef("");
       window.setTimeout(() => void positionsQ.refetch(), 5000);
@@ -485,23 +491,28 @@ function LpCard({ pool, snap }: { pool: LeefPool; snap: LeefSnapshot }) {
     setBusy(true);
     try {
       const liqOut = (pos.liquidity * BigInt(pct)) / 100n;
-      const { txid } = await signAndPushRemoveLiquidity({
-        account,
-        permission,
-        poolId: pool.id,
-        tickLower: pos.tickLower,
-        tickUpper: pos.tickUpper,
-        liquidity: liqOut,
-        collectAll: pct === 100,
-        tokenA: { symbol: tokenA.symbol, decimals: tokenA.decimals },
-        tokenB: { symbol: tokenB.symbol, decimals: tokenB.decimals },
-        tokenAMax: pool.leefIsA
-          ? `${pool.leef.quantity.toFixed(leefMeta.decimals)} LEEF`
-          : `${pool.pair.quantity.toFixed(pairMeta.decimals)} ${pairMeta.symbol}`,
-        tokenBMax: pool.leefIsA
-          ? `${pool.pair.quantity.toFixed(pairMeta.decimals)} ${pairMeta.symbol}`
-          : `${pool.leef.quantity.toFixed(leefMeta.decimals)} LEEF`,
+      const coordinated = await coordinateCapitalMovement({
+        owner: "liquidity",
+        submit: () =>
+          signAndPushRemoveLiquidity({
+            account,
+            permission,
+            poolId: pool.id,
+            tickLower: pos.tickLower,
+            tickUpper: pos.tickUpper,
+            liquidity: liqOut,
+            collectAll: pct === 100,
+            tokenA: { symbol: tokenA.symbol, decimals: tokenA.decimals },
+            tokenB: { symbol: tokenB.symbol, decimals: tokenB.decimals },
+            tokenAMax: pool.leefIsA
+              ? `${pool.leef.quantity.toFixed(leefMeta.decimals)} LEEF`
+              : `${pool.pair.quantity.toFixed(pairMeta.decimals)} ${pairMeta.symbol}`,
+            tokenBMax: pool.leefIsA
+              ? `${pool.pair.quantity.toFixed(pairMeta.decimals)} ${pairMeta.symbol}`
+              : `${pool.leef.quantity.toFixed(leefMeta.decimals)} LEEF`,
+          }),
       });
+      const { txid } = coordinated;
       flash(`Removed ${pct}% of the position · tx ${txid.slice(0, 10)}…`);
       window.setTimeout(() => void positionsQ.refetch(), 5000);
     } catch (e) {

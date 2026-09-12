@@ -37,7 +37,7 @@ describe("classifyTradeError", () => {
 });
 
 describe("trade-cycle lock", () => {
-  it("blocks a second live sign and never retries UNKNOWN", () => {
+  it("blocks every subsystem behind the same live-capital lock", () => {
     markConfirmed();
     expect(liveCapitalBlocked()).toBe(false);
     expect(beginSigning()).toBe(true);

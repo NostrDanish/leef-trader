@@ -30,6 +30,7 @@ import { cn } from "@/lib/utils";
 import { useBot, type BotDecisionLog } from "@/store/bot";
 import { clampSyncSec, DEFAULT_SYNC_SEC, useTerminal } from "@/store/terminal";
 import { useWallet } from "@/store/wallet";
+import { markPortfolioUsd } from "@/lib/wallet/balances";
 import {
   FOCUS_PRESETS,
   listBaseTokens,
@@ -71,8 +72,7 @@ export function BotDesk({ snap }: { snap: LeefSnapshot }) {
   const coolLeft = Math.max(0, Math.ceil((b.cooldownUntil - Date.now()) / 1000));
   const warmup = Math.min(b.series.length, BOT_WARMUP_POINTS);
 
-  const equityUsd =
-    (balances.WAX ?? 0) * snap.waxUsd + (balances.LEEF ?? 0) * snap.leefUsd;
+  const equityUsd = markPortfolioUsd(snap, balances).totalUsd;
   const winRate = b.stats.trades > 0 ? b.stats.wins / b.stats.trades : 0;
 
   const syncSec = useTerminal((s) => clampSyncSec(s.syncSec ?? DEFAULT_SYNC_SEC));

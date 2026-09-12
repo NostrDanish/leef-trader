@@ -9,6 +9,11 @@ import type { LeefSnapshot } from "@/lib/leef/types";
 import { parseAssetAmount } from "@/lib/wallet/alcor-route";
 import { waxResourceBlock } from "@/lib/wallet/chain";
 import { signAndPushBatch, type BatchLeg } from "@/lib/wallet/sign";
+import {
+  capitalAvailable,
+  coordinateCapitalMovement,
+} from "@/lib/wallet/execution-coordinator";
+import { syncWalletBalances } from "./use-wallet-sync";
 import { useBot } from "@/store/bot";
 import { usePortfolio } from "@/store/portfolio";
 import { useWallet } from "@/store/wallet";
@@ -165,6 +170,9 @@ export async function runRebalancer(snap: LeefSnapshot, opts?: { force?: boolean
     }
 
     // Live: one atomic transaction with every leg's transfers inside.
+    // Each rebalance plan leg spends inventory the wallet held before this
+    // transaction. If one token appears in multiple planned legs, amounts were
+    // already reserved by planRebalance. Router splits remain independent.
     const batchLegs: BatchLeg[] = ready.flatMap((leg) =>
       leg.quote!.swaps.map((s) => ({
         contract: leg.from.contract,
@@ -173,30 +181,56 @@ export async function runRebalancer(snap: LeefSnapshot, opts?: { force?: boolean
       })),
     );
     try {
-      const { txid } = await signAndPushBatch({
-        account: w.account,
-        permission: w.permission,
-        legs: batchLegs,
-        snap,
+      const coordinated = await coordinateCapitalMovement({
+        owner: "rebalancer",
+        submit: () =>
+          signAndPushBatch({
+            account: w.account,
+            permission: w.permission,
+            legs: batchLegs,
+            snap,
+          }),
+        onSettled: async (result) => {
+          if (result.status === "confirmed") await syncWalletBalances(snap);
+        },
       });
+      const { txid, reconciliation } = coordinated;
       const totalUsd = ready.reduce((s, l) => s + l.estUsd, 0);
       p.markRun();
-      p.addTotals(
-        ready.filter((l) => l.kind === "dust").reduce((s, l) => s + l.estUsd, 0),
-        totalUsd,
-      );
+      if (reconciliation.status === "failed") {
+        throw new Error(reconciliation.error);
+      }
+      if (reconciliation.status === "confirmed") {
+        p.addTotals(
+          ready.filter((l) => l.kind === "dust").reduce((s, l) => s + l.estUsd, 0),
+          totalUsd,
+        );
+      }
       p.pushLog({
         mode,
-        status: "filled",
-        summary: `Live sweep · ${ready.length} leg${ready.length === 1 ? "" : "s"} · ${fmtUsd(totalUsd, 2)}`,
+        status: reconciliation.status === "confirmed" ? "filled" : "planned",
+        summary:
+          reconciliation.status === "confirmed"
+            ? `Live sweep confirmed · ${ready.length} leg${ready.length === 1 ? "" : "s"} · ${fmtUsd(totalUsd, 2)}`
+            : `Sweep broadcast · confirmation UNKNOWN — capital locked`,
         legs: ready.map(legSummary),
         totalUsd,
         txid,
       });
-      p.setLastPlanNote(`Swept ${ready.length} legs on-chain`);
+      p.setLastPlanNote(
+        reconciliation.status === "confirmed"
+          ? `Swept ${ready.length} legs · confirmed on-chain`
+          : `Transaction ${txid.slice(0, 10)}… pending — not retrying`,
+      );
       toast({
-        title: `Sweep broadcast ${txid.slice(0, 8)}…`,
-        description: `${ready.length} legs in one atomic WAX transaction`,
+        title:
+          reconciliation.status === "confirmed"
+            ? `Sweep confirmed ${txid.slice(0, 8)}…`
+            : `Sweep pending ${txid.slice(0, 8)}…`,
+        description:
+          reconciliation.status === "confirmed"
+            ? `${ready.length} legs reconciled on WAX`
+            : "Capital is locked until chain reconciliation completes",
       });
     } catch (err) {
       const msg = err instanceof Error ? err.message : "Broadcast failed";
@@ -240,6 +274,10 @@ export function rebalancerOnSnapshot(snap: LeefSnapshot): void {
 
   const p = usePortfolio.getState();
   if (!p.running) return;
+  if (!capitalAvailable()) {
+    p.setLastPlanNote("Waiting — another trade owns the capital lane");
+    return;
+  }
   const due = Date.now() - p.lastRunAt >= p.settings.intervalSec * 1000;
   if (!due && !justStarted) return;
   if (!isNewSnap && !justStarted) return;

@@ -2,6 +2,31 @@
 
 All notable changes to LEEF Trader. Dates are commit-era, not release tags.
 
+## Unreleased — reliability-first execution coordinator
+
+- Fixed mixed multi-hop verification: every sequential leg now spends the
+  previous leg's freshly guaranteed min-out (not a stale modeled input or
+  optimistic output). Split slices remain independent. Defibox/Taco token
+  identity is verified by symbol + contract before quote construction.
+- Added one global capital-movement coordinator used by manual swaps,
+  rebalancer and LP actions (the bot already uses the same underlying lock).
+  Strategies can no longer race and spend the same inventory.
+- Rebalancer no longer records a broadcast as a fill: it waits for chain
+  confirmation, keeps UNKNOWN capital locked, reconciles transfers, refreshes
+  balances and only then updates moved/swept totals.
+- Added explicit execution failure policy: stale quote → requote; liquidity
+  movement → reroute; transient RPC/API → refresh preparation once; policy,
+  risk, min-out, rejection and UNKNOWN → never retry. Transactions themselves
+  are never retried.
+- Added ranked opportunity-queue primitives: profit actions outrank maintenance
+  and controlled volume, candidates rank by net USD rather than headline edge,
+  stale candidates and volume-loss/notional budget breaches are rejected, and
+  only one action may be selected.
+- Generic portfolio equity/drawdown now marks every canonical holding exactly
+  once through the same authoritative USD oracle rather than only WAX + LEEF.
+
+---
+
 ## Unreleased — canonical holdings display
 
 - Fixed Wallet holdings rendering both compatibility aliases (`LEEF`) and
