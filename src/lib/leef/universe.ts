@@ -1,4 +1,6 @@
 import { isWaxToken } from "./amm";
+import type { AuxPool, LeefPool } from "./types";
+import { LEEF_CONTRACT, LEEF_SYMBOL, WAX_CONTRACT, WAX_SYMBOL } from "./types";
 
 /**
  * The tradable token universe on Alcor/WAX, built from the full pool list.
@@ -185,4 +187,102 @@ export function findToken(
 
 export function usdOf(universe: UniverseToken[], idOrSymbol: string): number {
   return findToken(universe, idOrSymbol)?.usdPrice ?? 0;
+}
+
+function putToken(map: Map<string, UniverseToken>, t: UniverseToken): void {
+  if (!t.symbol || !t.contract || !(t.usdPrice > 0)) return;
+  const key = `${t.symbol}@${t.contract}`;
+  const prev = map.get(key);
+  if (prev && prev.tvlUsd >= t.tvlUsd) return;
+  map.set(key, t);
+}
+
+/**
+ * Keep WAX, LEEF, and every book we already have priced — even when the
+ * 11 MB full-list universe hasn't landed yet. The rebalancer cannot value
+ * holdings against an empty universe.
+ */
+export function mergeUniverseFromBook(
+  existing: UniverseToken[],
+  pools: LeefPool[],
+  aux: AuxPool[],
+  waxUsd: number,
+  leefUsd: number,
+): UniverseToken[] {
+  const map = new Map<string, UniverseToken>();
+  for (const t of existing) putToken(map, t);
+  if (waxUsd > 0) {
+    putToken(map, {
+      symbol: WAX_SYMBOL,
+      contract: WAX_CONTRACT,
+      decimals: 8,
+      alcorId: "wax-eosio.token",
+      poolId: 0,
+      waxPerToken: 1,
+      usdPrice: waxUsd,
+      tvlUsd: 0,
+      stable: false,
+    });
+  }
+  if (leefUsd > 0) {
+    putToken(map, {
+      symbol: LEEF_SYMBOL,
+      contract: LEEF_CONTRACT,
+      decimals: 4,
+      alcorId: "leef-leefmaincorp",
+      poolId: pools[0]?.id ?? 0,
+      waxPerToken: waxUsd > 0 ? leefUsd / waxUsd : 0,
+      usdPrice: leefUsd,
+      tvlUsd: pools[0]?.tvlUsd ?? 0,
+      stable: false,
+    });
+  }
+  for (const p of pools) {
+    if (!(p.pair.quantity > 0) || !(p.leef.quantity > 0)) continue;
+    const pairUsd =
+      p.usdPerLeef && p.pairPerLeef > 0 ? p.usdPerLeef / p.pairPerLeef : 0;
+    if (!(pairUsd > 0)) continue;
+    putToken(map, {
+      symbol: p.pair.symbol.toUpperCase(),
+      contract: p.pair.contract,
+      decimals: p.pair.decimals,
+      alcorId: `${p.pair.symbol.toLowerCase()}-${p.pair.contract}`,
+      poolId: p.id,
+      waxPerToken: waxUsd > 0 ? pairUsd / waxUsd : 0,
+      usdPrice: pairUsd,
+      tvlUsd: p.tvlUsd,
+      stable: STABLES.has(p.pair.symbol.toUpperCase()),
+    });
+  }
+  for (const p of aux) {
+    const aWax = isWaxToken(p.tokenA);
+    const bWax = isWaxToken(p.tokenB);
+    if (aWax && p.tokenA.quantity > 0 && p.tokenB.quantity > 0 && waxUsd > 0) {
+      putToken(map, {
+        symbol: p.tokenB.symbol.toUpperCase(),
+        contract: p.tokenB.contract,
+        decimals: p.tokenB.decimals,
+        alcorId: `${p.tokenB.symbol.toLowerCase()}-${p.tokenB.contract}`,
+        poolId: p.id,
+        waxPerToken: p.tokenA.quantity / p.tokenB.quantity,
+        usdPrice: (p.tokenA.quantity / p.tokenB.quantity) * waxUsd,
+        tvlUsd: p.tvlUsd,
+        stable: STABLES.has(p.tokenB.symbol.toUpperCase()),
+      });
+    }
+    if (bWax && p.tokenB.quantity > 0 && p.tokenA.quantity > 0 && waxUsd > 0) {
+      putToken(map, {
+        symbol: p.tokenA.symbol.toUpperCase(),
+        contract: p.tokenA.contract,
+        decimals: p.tokenA.decimals,
+        alcorId: `${p.tokenA.symbol.toLowerCase()}-${p.tokenA.contract}`,
+        poolId: p.id,
+        waxPerToken: p.tokenB.quantity / p.tokenA.quantity,
+        usdPrice: (p.tokenB.quantity / p.tokenA.quantity) * waxUsd,
+        tvlUsd: p.tvlUsd,
+        stable: STABLES.has(p.tokenA.symbol.toUpperCase()),
+      });
+    }
+  }
+  return [...map.values()].sort((a, b) => b.tvlUsd - a.tvlUsd);
 }

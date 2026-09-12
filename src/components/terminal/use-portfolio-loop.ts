@@ -7,6 +7,8 @@ import {
 } from "@/lib/leef/rebalance";
 import { fmtUsd } from "@/lib/leef/format";
 import type { LeefSnapshot } from "@/lib/leef/types";
+import { parseAssetAmount } from "@/lib/wallet/alcor-route";
+import { waxResourceBlock } from "@/lib/wallet/chain";
 import { signAndPushBatch, type BatchLeg } from "@/lib/wallet/sign";
 import { useBot } from "@/store/bot";
 import { usePortfolio } from "@/store/portfolio";
@@ -110,25 +112,56 @@ export async function runRebalancer(snap: LeefSnapshot, opts?: { force?: boolean
       }route [${l.quote!.route.join(",")}])`;
 
     if (mode === "paper") {
+      const filled: PlannedLeg[] = [];
       for (const leg of ready) {
-        const out = Number(leg.quote!.output) || 0;
+        const out = parseAssetAmount(leg.quote!.output);
+        if (!(out > 0)) {
+          p.pushLog({
+            mode,
+            status: "skipped",
+            summary: `${leg.from.symbol} → ${leg.to.symbol} skipped`,
+            legs: [leg.reason, `Unparseable quote output "${leg.quote!.output}"`],
+            totalUsd: leg.estUsd,
+          });
+          continue;
+        }
         w.applyPaperFill(leg.from.symbol, leg.amountIn, leg.to.symbol, out);
+        filled.push(leg);
       }
-      const totalUsd = ready.reduce((s, l) => s + l.estUsd, 0);
+      if (filled.length === 0) {
+        p.markRun();
+        p.setLastPlanNote("Paper quotes had no parseable output");
+        return;
+      }
+      const totalUsd = filled.reduce((s, l) => s + l.estUsd, 0);
       p.markRun();
       p.addTotals(
-        ready.filter((l) => l.kind === "dust").reduce((s, l) => s + l.estUsd, 0),
+        filled.filter((l) => l.kind === "dust").reduce((s, l) => s + l.estUsd, 0),
         totalUsd,
       );
       p.pushLog({
         mode,
         status: "filled",
-        summary: `Paper sweep · ${ready.length} leg${ready.length === 1 ? "" : "s"} · ${fmtUsd(totalUsd, 2)}`,
-        legs: ready.map(legSummary),
+        summary: `Paper sweep · ${filled.length} leg${filled.length === 1 ? "" : "s"} · ${fmtUsd(totalUsd, 2)}`,
+        legs: filled.map(legSummary),
         totalUsd,
       });
-      p.setLastPlanNote(`Swept ${ready.length} leg${ready.length === 1 ? "" : "s"} (paper)`);
-      toast({ title: `Paper sweep · ${ready.length} legs`, description: legSummary(ready[0]!) });
+      p.setLastPlanNote(`Swept ${filled.length} leg${filled.length === 1 ? "" : "s"} (paper)`);
+      toast({ title: `Paper sweep · ${filled.length} legs`, description: legSummary(filled[0]!) });
+      return;
+    }
+
+    const resBlock = waxResourceBlock(w.cpuPct, w.netPct, w.ramPct);
+    if (resBlock) {
+      p.markRun();
+      p.setLastPlanNote(resBlock);
+      p.pushLog({
+        mode,
+        status: "skipped",
+        summary: resBlock,
+        legs: ready.map(legSummary),
+        totalUsd: ready.reduce((s, l) => s + l.estUsd, 0),
+      });
       return;
     }
 

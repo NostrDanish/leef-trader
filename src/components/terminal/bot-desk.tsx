@@ -825,7 +825,7 @@ function RiskCard({ strategy, snap }: { strategy: BotStrategy; snap: LeefSnapsho
           label="Trades / hour"
           value={risk.maxTradesHour}
           min={1}
-          max={30}
+          max={120}
           step={1}
           format={(v) => String(v)}
           onChange={(maxTradesHour) => setRisk({ maxTradesHour })}

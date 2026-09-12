@@ -16,24 +16,39 @@ const BASE: TokenMeta[] = [
   { symbol: "PARAUSD", contract: "parareserves", decimals: 6, alcorId: "parausd-parareserves" },
 ];
 
-export function tokenCatalog(snap?: Pick<LeefSnapshot, "pools">): TokenMeta[] {
+export function tokenCatalog(
+  snap?: Pick<LeefSnapshot, "pools" | "aux" | "universe">,
+): TokenMeta[] {
   const map = new Map<string, TokenMeta>();
   for (const t of BASE) map.set(t.symbol, t);
-  for (const p of snap?.pools ?? []) {
-    const symbol = p.pair.symbol.toUpperCase();
-    if (map.has(symbol)) continue;
-    const contract = p.pair.contract || "eosio.token";
-    map.set(symbol, {
-      symbol,
+  const put = (symbol: string, contract: string, decimals: number) => {
+    const s = symbol.toUpperCase();
+    if (!s || !contract || map.has(s)) return;
+    map.set(s, {
+      symbol: s,
       contract,
-      decimals: p.pair.decimals || 4,
-      alcorId: `${symbol.toLowerCase()}-${contract}`,
+      decimals: decimals || 4,
+      alcorId: `${s.toLowerCase()}-${contract}`,
     });
+  };
+  for (const p of snap?.pools ?? []) {
+    put(p.pair.symbol, p.pair.contract, p.pair.decimals);
+    put(p.leef.symbol, p.leef.contract, p.leef.decimals);
+  }
+  for (const p of snap?.aux ?? []) {
+    put(p.tokenA.symbol, p.tokenA.contract, p.tokenA.decimals);
+    put(p.tokenB.symbol, p.tokenB.contract, p.tokenB.decimals);
+  }
+  for (const u of snap?.universe ?? []) {
+    put(u.symbol, u.contract, u.decimals);
   }
   return [...map.values()];
 }
 
-export function metaOf(symbol: string, snap?: Pick<LeefSnapshot, "pools">): TokenMeta {
+export function metaOf(
+  symbol: string,
+  snap?: Pick<LeefSnapshot, "pools" | "aux" | "universe">,
+): TokenMeta {
   const s = symbol.toUpperCase();
   return tokenCatalog(snap).find((t) => t.symbol === s) ?? {
     symbol: s,

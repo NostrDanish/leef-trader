@@ -2,7 +2,7 @@ import { isWaxToken } from "./amm";
 import { fallbackSnapshot } from "./fallback";
 import { attachUsdPrices, parseAllPools, parseSwaps } from "./parse";
 import type { AuxPool, LeefPool, LeefSnapshot, LiveTrade } from "./types";
-import { buildUniverse, repriceUniverse, type UniverseToken } from "./universe";
+import { buildUniverse, mergeUniverseFromBook, repriceUniverse, type UniverseToken } from "./universe";
 import { fetchExternalVenues } from "./venue-adapters";
 import type { VenuePool } from "./venues";
 import { fetchJson } from "@/lib/fetchJson";
@@ -214,7 +214,14 @@ function mergeSnap(book: {
 }): LeefSnapshot {
   const px = attachUsdPrices(book.leef, book.aux, undefined, book.leefUsdHint);
   book.leef.sort((a, b) => b.volume24Usd - a.volume24Usd || b.tvlUsd - a.tvlUsd);
-  const universe = repriceUniverse(lastUniverse, book.aux, px.waxUsd);
+  const universe = mergeUniverseFromBook(
+    repriceUniverse(lastUniverse, book.aux, px.waxUsd),
+    book.leef,
+    book.aux,
+    px.waxUsd,
+    px.leefUsd,
+  );
+  lastUniverse = universe;
   return {
     source: "live",
     fetchedAt: new Date().toISOString(),

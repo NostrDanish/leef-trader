@@ -1,6 +1,7 @@
 import type { LeefSnapshot } from "./types";
 import { findToken, type UniverseToken } from "./universe";
-import { fetchAlcorRoute, type AlcorRouteQuote } from "@/lib/wallet/alcor-route";
+import { fetchAlcorRouteCached } from "@/lib/leef/quote-verify";
+import type { AlcorRouteQuote } from "@/lib/wallet/alcor-route";
 
 /**
  * Priority-ladder rebalancer.
@@ -147,14 +148,15 @@ export function planRebalance(input: {
     if (h.usd < minDustUsd) continue;
     const target = ladderTarget(h.token, new Set());
     if (!target) continue;
-    const amountIn = Math.min(h.amount, spendable(h.token));
-    if (!(amountIn > 0)) continue;
+    const capAmount = maxLegUsd / Math.max(h.token.usdPrice, 1e-12);
+    const amountIn = Math.min(h.amount, spendable(h.token), capAmount);
+    if (!(amountIn > 0) || amountIn * h.token.usdPrice < minDustUsd) continue;
     commitSpend(h.token, amountIn);
     legs.push({
       from: h.token,
       to: target,
       amountIn,
-      estUsd: Math.min(h.usd, maxLegUsd),
+      estUsd: amountIn * h.token.usdPrice,
       kind: "dust",
       reason: `Dust sweep · ${h.token.symbol} isn't on the ladder → ${target.symbol} (priority 1)`,
     });
@@ -217,13 +219,13 @@ export async function quoteLegs(
   const out: PlannedLeg[] = [];
   for (const leg of legs) {
     try {
-      const quote = await fetchAlcorRoute({
+      const quote = await fetchAlcorRouteCached({
         tokenInId: leg.from.alcorId,
         tokenOutId: leg.to.alcorId,
         amount: leg.amountIn,
         slippagePct: slippage,
         receiver: account,
-        maxHops: 2,
+        maxHops: 10,
       });
       const impact = parseFloat(quote.priceImpact);
       if (Number.isFinite(impact) && impact > maxImpactPct) {

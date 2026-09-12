@@ -2,6 +2,19 @@
 
 All notable changes to LEEF Trader. Dates are commit-era, not release tags.
 
+## Unreleased — rebalancer fills + hourly cap
+
+- Paper sweeps parse Alcor asset strings (`"12.34 LEEF"`) instead of
+  `Number(...)` which always became 0 and wiped the paper bag.
+- Dust legs are sized to the USD leg cap, not the entire holding.
+- Quotes use the 0–10 hop router (was 2 hops) and the cached Alcor path.
+- Token universe is seeded from the live book so holdings price before the
+  11 MB full list lands. Policy catalog includes aux + universe tokens.
+- Live sweeps refuse to sign on exhausted CPU/NET/RAM.
+- Trades / hour slider max raised from 30 to 120.
+
+---
+
 ## Unreleased — hot-path speed + USD value risk
 
 - Snapshot hot path is market state only (tracked pools + prices). Tape,
