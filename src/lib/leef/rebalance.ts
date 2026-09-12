@@ -41,7 +41,7 @@ export type RebalancePlan = {
 };
 
 export type RebalanceSettings = {
-  /** Seconds between automatic rebalancer checks (desk slider: 60–1800). */
+  /** Seconds between automatic rebalancer checks (desk slider: 5–1800). */
   intervalSec: number;
   /** Dust below this USD value is left alone. */
   minDustUsd: number;

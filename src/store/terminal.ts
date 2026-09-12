@@ -1,6 +1,24 @@
 import { create } from "zustand";
+import { persist } from "zustand/middleware";
 import type { IndicatorId } from "@/lib/leef/indicators";
 import { DEFAULT_TICK_PARAMS, type TickKnobs } from "@/lib/leef/tick-engine";
+
+/** Book-pull cadence. Live = 5s — fastest that stays polite to Alcor. */
+export const MIN_SYNC_SEC = 5;
+export const MAX_SYNC_SEC = 60;
+export const DEFAULT_SYNC_SEC = 30;
+export const SYNC_PRESETS = [
+  { sec: 5, label: "Live" },
+  { sec: 10, label: "10s" },
+  { sec: 15, label: "15s" },
+  { sec: 30, label: "30s" },
+  { sec: 60, label: "60s" },
+] as const;
+
+export function clampSyncSec(n: number): number {
+  if (!Number.isFinite(n)) return DEFAULT_SYNC_SEC;
+  return Math.min(MAX_SYNC_SEC, Math.max(MIN_SYNC_SEC, Math.round(n)));
+}
 
 export type TabId =
   | "overview"
@@ -37,6 +55,8 @@ type TerminalState = {
   tickPoolId: number | null;
   tick: TickKnobs;
   tickPaused: boolean;
+  /** Seconds between Alcor book pulls. 5 = Live. */
+  syncSec: number;
   setTab: (tab: TabId) => void;
   selectPool: (id: number) => void;
   setSwap: (
@@ -51,9 +71,12 @@ type TerminalState = {
   toggleEngine: (id: IndicatorId) => void;
   resetTick: () => void;
   setTickPaused: (v: boolean) => void;
+  setSyncSec: (sec: number) => void;
 };
 
-export const useTerminal = create<TerminalState>()((set, get) => ({
+export const useTerminal = create<TerminalState>()(
+  persist(
+    (set, get) => ({
   tab: "tick",
   selectedPoolId: 217,
   tokenIn: "WAX",
@@ -66,6 +89,7 @@ export const useTerminal = create<TerminalState>()((set, get) => ({
   tickPoolId: 217,
   tick: { ...DEFAULT_TICK_PARAMS, engines: { ...DEFAULT_TICK_PARAMS.engines } },
   tickPaused: false,
+  syncSec: DEFAULT_SYNC_SEC,
   setTab: (tab) => set({ tab }),
   selectPool: (id) => set({ selectedPoolId: id, tab: "pool" }),
   setSwap: (p) => set(p),
@@ -107,4 +131,12 @@ export const useTerminal = create<TerminalState>()((set, get) => ({
       tickPaused: false,
     }),
   setTickPaused: (v) => set({ tickPaused: v }),
-}));
+  setSyncSec: (sec) => set({ syncSec: clampSyncSec(sec) }),
+    }),
+    {
+      name: "leef-terminal-sync",
+      version: 1,
+      partialize: (s) => ({ syncSec: s.syncSec }),
+    },
+  ),
+);

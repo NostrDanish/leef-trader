@@ -209,10 +209,12 @@ export function PortfolioDesk({ snap }: { snap: LeefSnapshot }) {
               <SliderRow
                 label="Check every"
                 value={p.settings.intervalSec}
-                min={60}
+                min={5}
                 max={1800}
-                step={60}
-                format={(v) => `${Math.round(v / 60)}m`}
+                step={5}
+                format={(v) =>
+                  v < 60 ? `${v}s` : `${Math.round(v / 60)}m`
+                }
                 onChange={(intervalSec) => p.setSettings({ intervalSec })}
               />
               <SliderRow

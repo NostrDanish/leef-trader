@@ -34,6 +34,7 @@ import {
 } from "@/lib/wallet/trade-cycle";
 import { classifyTradeError, toastTitleFor } from "@/lib/wallet/trade-error";
 import { useBot } from "@/store/bot";
+import { clampSyncSec, DEFAULT_SYNC_SEC, useTerminal } from "@/store/terminal";
 import { useWallet } from "@/store/wallet";
 import { toast } from "@/hooks/useToast";
 
@@ -173,6 +174,11 @@ async function runBotOnceInner(
   const w = useWallet.getState();
   const balances = w.balances();
   const equityUsd = equityUsdOf(balances, snap);
+  const syncSec = clampSyncSec(useTerminal.getState().syncSec ?? DEFAULT_SYNC_SEC);
+  const risk = {
+    ...b.risk,
+    maxQuoteAgeSec: Math.max(b.risk.maxQuoteAgeSec, syncSec + 15),
+  };
 
   let decision = evaluateBot({
     now: Date.now(),
@@ -181,7 +187,7 @@ async function runBotOnceInner(
     running: b.running,
     strategy: b.strategy,
     goals: b.goals,
-    risk: b.risk,
+    risk,
     position: b.position,
     gridAnchor: b.gridAnchor,
     balances,

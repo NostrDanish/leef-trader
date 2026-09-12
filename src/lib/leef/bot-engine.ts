@@ -140,9 +140,9 @@ export type BotRisk = {
    */
   minNetEdgePct: number;
   /**
-   * Maximum age of the book a decision may act on, seconds. The snapshot
-   * pulls every 30s, so 45s means "at most one missed refresh". Older than
-   * that → hold and wait for fresh data (fail closed).
+   * Maximum age of the book a decision may act on, seconds. Default 45
+   * assumed a 30s pull. At runtime the loop uses max(this, syncSec + 15)
+   * so a Live/5s book is never treated as stale.
    */
   maxQuoteAgeSec: number;
 };
@@ -492,8 +492,8 @@ export function evaluateBot(input: BotInput): Decision {
     return hold(`No USD mark for ${quote} — pick another quote token`);
   }
 
-  // Quote freshness: never act on an obsolete book. The snapshot cadence is
-  // 30s; the default 45s budget tolerates exactly one missed pull.
+  // Quote freshness: never act on an obsolete book. Callers raise
+  // maxQuoteAgeSec with the current sync cadence (syncSec + one miss).
   const quoteAgeSec = (now - Date.parse(snap.fetchedAt)) / 1000;
   if (!Number.isFinite(quoteAgeSec) || quoteAgeSec > risk.maxQuoteAgeSec) {
     return hold(

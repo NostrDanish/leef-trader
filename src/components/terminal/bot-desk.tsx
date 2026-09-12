@@ -28,6 +28,7 @@ import { hasSecret } from "@/lib/wallet/secret";
 import { hasWalletSession } from "@/lib/wallet/session";
 import { cn } from "@/lib/utils";
 import { useBot, type BotDecisionLog } from "@/store/bot";
+import { clampSyncSec, DEFAULT_SYNC_SEC, useTerminal } from "@/store/terminal";
 import { useWallet } from "@/store/wallet";
 import {
   FOCUS_PRESETS,
@@ -74,6 +75,7 @@ export function BotDesk({ snap }: { snap: LeefSnapshot }) {
     (balances.WAX ?? 0) * snap.waxUsd + (balances.LEEF ?? 0) * snap.leefUsd;
   const winRate = b.stats.trades > 0 ? b.stats.wins / b.stats.trades : 0;
 
+  const syncSec = useTerminal((s) => clampSyncSec(s.syncSec ?? DEFAULT_SYNC_SEC));
   /** Dry-run: what the bot would do on this book right now. */
   const preview = evaluateBot({
     now: Date.now(),
@@ -82,7 +84,7 @@ export function BotDesk({ snap }: { snap: LeefSnapshot }) {
     running: true,
     strategy: b.strategy,
     goals: b.goals,
-    risk: b.risk,
+    risk: { ...b.risk, maxQuoteAgeSec: Math.max(b.risk.maxQuoteAgeSec, syncSec + 15) },
     position: b.position,
     gridAnchor: b.gridAnchor,
     balances,

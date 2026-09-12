@@ -3,6 +3,15 @@ import { marketStats } from "@/lib/leef/analytics";
 import { fmtNum, timeAgo } from "@/lib/leef/format";
 import { headline } from "@/lib/leef/rank";
 import type { LeefSnapshot, RankedPool } from "@/lib/leef/types";
+import { cn } from "@/lib/utils";
+import {
+  clampSyncSec,
+  DEFAULT_SYNC_SEC,
+  MAX_SYNC_SEC,
+  MIN_SYNC_SEC,
+  SYNC_PRESETS,
+  useTerminal,
+} from "@/store/terminal";
 
 export function StatusBar({
   snap,
@@ -18,6 +27,8 @@ export function StatusBar({
   const h = headline(ranked);
   const stats = marketStats(snap);
   const synced = mounted ? timeAgo(snap.fetchedAt) : "just now";
+  const syncSec = useTerminal((s) => clampSyncSec(s.syncSec ?? DEFAULT_SYNC_SEC));
+  const setSyncSec = useTerminal((s) => s.setSyncSec);
 
   return (
     <div className="border-b border-border bg-surface">
@@ -72,10 +83,37 @@ export function StatusBar({
             </>
           )}
         </div>
-        <div className="flex items-center gap-3">
+        <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
+          <label className="flex items-center gap-2">
+            <span className="text-subtle">Sync</span>
+            <select
+              className="h-7 rounded-md border border-border bg-background px-1.5 font-mono text-xs text-foreground"
+              value={syncSec}
+              onChange={(e) => setSyncSec(Number(e.target.value))}
+              aria-label="Book sync interval"
+            >
+              {SYNC_PRESETS.map((p) => (
+                <option key={p.sec} value={p.sec}>
+                  {p.label}
+                </option>
+              ))}
+            </select>
+          </label>
+          <input
+            type="range"
+            className="w-24 accent-teal-300 sm:w-32"
+            min={MIN_SYNC_SEC}
+            max={MAX_SYNC_SEC}
+            step={1}
+            value={syncSec}
+            onChange={(e) => setSyncSec(Number(e.target.value))}
+            aria-label="Book sync interval in seconds"
+          />
           <span>
-            Synced {synced} · refresh in{" "}
-            <span className="font-mono tabular-nums text-accent">{countdown}s</span>
+            Synced {synced} ·{" "}
+            <span className={cn("font-mono tabular-nums", syncSec <= 5 ? "text-leef" : "text-accent")}>
+              {syncSec <= 5 ? "live" : `${countdown}s`}
+            </span>
           </span>
         </div>
       </div>

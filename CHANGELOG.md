@@ -2,6 +2,14 @@
 
 All notable changes to LEEF Trader. Dates are commit-era, not release tags.
 
+## Unreleased — live / 5s book sync
+
+- Status bar **Sync** control: Live (5s), 10s, 15s, 30s, 60s, plus a 5–60s
+  slider. Book poll, countdown, bot quote-age, and rebalancer check floor
+  all follow it. Default stays 30s.
+
+---
+
 ## Unreleased — rebalancer fills + hourly cap
 
 - Paper sweeps parse Alcor asset strings (`"12.34 LEEF"`) instead of

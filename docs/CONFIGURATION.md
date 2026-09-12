@@ -29,13 +29,19 @@ default. Nothing secret is ever stored.
 | `gridStepPct` | 2.5 | Grid step size. |
 | `maxEchoLossPct` | 1.5 | Volume maker: max round-trip cost, enforced on-chain. |
 | `minNetEdgePct` | 0.1 | Minimum net edge after ALL modeled costs for any entry. |
-| `maxQuoteAgeSec` | 45 | Max book age a decision may act on (30s cadence + one miss). |
+| `maxQuoteAgeSec` | 45 | Max book age a decision may act on. Runtime uses `max(this, syncSec + 15)`. |
+
+## Terminal sync (`store/terminal.ts` → `syncSec`)
+
+| Key | Default | Meaning |
+|---|---|---|
+| `syncSec` | 30 | Seconds between Alcor book pulls. **Live = 5**. Slider 5–60. Persisted. |
 
 ## Rebalancer (`store/portfolio.ts` → `settings`, defaults in `DEFAULT_REBALANCE`)
 
 | Key | Default | Meaning |
 |---|---|---|
-| `intervalSec` | 600 | Seconds between automatic checks (desk slider 60–1800). |
+| `intervalSec` | 600 | Seconds between automatic checks (desk slider 5–1800). |
 | `minDustUsd` | 1 | Dust below this USD value is left alone. |
 | `driftPct` | 15 | Relative drift from target share that triggers repair. |
 | `maxLegs` | 3 | Max legs per atomic batch. |

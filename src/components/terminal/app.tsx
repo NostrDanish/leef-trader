@@ -24,13 +24,13 @@ import { useWalletSync } from "./use-wallet-sync";
 import { WalletDesk } from "./wallet-desk";
 
 export function TerminalApp() {
-  const { snap, ranked, isFetching, refetch, dataUpdatedAt } = useSnapshot();
+  const { snap, ranked, isFetching, refetch, dataUpdatedAt, syncSec } = useSnapshot();
   const tick = useLiveTick(snap);
   useWalletSync(snap);
   useBotLoop(snap);
   usePortfolioLoop(snap);
   const tab = useTerminal((s) => s.tab);
-  const [countdown, setCountdown] = useState(30);
+  const [countdown, setCountdown] = useState(syncSec);
 
   // Restore an external wallet session (Cloud Wallet / Anchor) on load.
   useEffect(() => {
@@ -48,15 +48,15 @@ export function TerminalApp() {
   }, []);
 
   useEffect(() => {
-    setCountdown(30);
-  }, [dataUpdatedAt]);
+    setCountdown(syncSec);
+  }, [dataUpdatedAt, syncSec]);
 
   useEffect(() => {
     const id = window.setInterval(() => {
-      setCountdown((c) => (c <= 1 ? 30 : c - 1));
+      setCountdown((c) => (c <= 1 ? syncSec : c - 1));
     }, 1000);
     return () => window.clearInterval(id);
-  }, []);
+  }, [syncSec]);
 
   return (
     <div className="flex min-h-screen flex-col overflow-x-hidden bg-bg text-fg">
