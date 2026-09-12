@@ -60,7 +60,7 @@ describe("advisor", () => {
     expect(q).toContain("PARAUSD");
   });
 
-  it("keeps clip as floor and max as ceiling from wallet size", () => {
+  it("keeps USD min as floor and USD max as ceiling from wallet value", () => {
     const s = suggestBotSettings({
       snap: snap(),
       balances: { WAX: 200 },
@@ -72,10 +72,10 @@ describe("advisor", () => {
       netPct: 0.1,
       ramPct: 0.3,
     });
-    expect(s.risk.clipWax).toBeGreaterThanOrEqual(0.1);
-    expect(s.risk.maxPositionWax).toBeGreaterThanOrEqual(s.risk.clipWax);
-    expect(s.risk.maxPositionWax).toBeLessThanOrEqual(200);
-    expect(s.risk.clipWax).toBeLessThan(s.risk.maxPositionWax);
+    expect(s.risk.minTradeUsd).toBeGreaterThanOrEqual(0.01);
+    expect(s.risk.maxPositionUsd).toBeGreaterThanOrEqual(s.risk.minTradeUsd);
+    expect(s.risk.maxPositionUsd).toBeLessThanOrEqual(200 * 0.02);
+    expect(s.risk.minTradeUsd).toBeLessThan(s.risk.maxPositionUsd);
   });
 
   it("tightens size and cadence when CPU is exhausted", () => {
@@ -101,7 +101,7 @@ describe("advisor", () => {
       netPct: 0.1,
       ramPct: 0.3,
     });
-    expect(tight.risk.clipWax).toBeLessThanOrEqual(ok.risk.clipWax);
+    expect(tight.risk.minTradeUsd).toBeLessThanOrEqual(ok.risk.minTradeUsd);
     expect(tight.risk.cooldownSec).toBeGreaterThan(ok.risk.cooldownSec);
     expect(tight.warnings.some((w) => /CPU/.test(w))).toBe(true);
   });
@@ -120,6 +120,39 @@ describe("advisor", () => {
       ramPct: null,
     });
     expect(DEFAULT_RISK).toEqual(before);
+  });
+
+  it("never suggests $1,000 exposure on a $50 wallet", () => {
+    const s = suggestBotSettings({
+      snap: snap(),
+      balances: { WAX: 2_500 },
+      base: "LEEF",
+      quote: "WAX",
+      focus: [],
+      strategy: "signal",
+      cpuPct: 0.1,
+      netPct: 0.1,
+      ramPct: 0.1,
+    });
+    expect(s.quoteUsd).toBeCloseTo(50, 6);
+    expect(s.risk.maxPositionUsd).toBeLessThanOrEqual(50);
+    expect(s.risk.maxPositionUsd).toBeLessThan(1_000);
+  });
+
+  it("caps a large wallet at the $1,000 product ceiling", () => {
+    const s = suggestBotSettings({
+      snap: snap(),
+      balances: { WAX: 250_000 },
+      base: "LEEF",
+      quote: "WAX",
+      focus: [],
+      strategy: "signal",
+      cpuPct: 0.1,
+      netPct: 0.1,
+      ramPct: 0.1,
+    });
+    expect(s.quoteUsd).toBeCloseTo(5_000, 4);
+    expect(s.risk.maxPositionUsd).toBeLessThanOrEqual(1_000);
   });
 
   it("suggests a quote the wallet actually holds", () => {

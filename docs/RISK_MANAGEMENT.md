@@ -14,7 +14,7 @@ the execution loop (`use-bot-loop.ts`). Both fail closed.
 | Max drawdown → stop | `goals.maxDrawdownPct` | 0 (off) |
 | Cooldown | `risk.cooldownSec` (adaptive ×0.5–×1.5) | 60s |
 | Hourly trade cap | `risk.maxTradesHour` | 10 |
-| Position cap | `risk.maxPositionWax` | 60 WAX |
+| Position cap | `risk.maxPositionUsd` | $1,000 marked value |
 | Entry impact cap | `risk.maxImpactPct` | 3% |
 | Min confidence (signal) | `risk.minConfidence` | 55% |
 | Min arb edge (on-chain floor) | `risk.minEdgePct` | 1.2% |

@@ -342,25 +342,53 @@ function searchPaths(
   let expansions = 0;
   let pruned = 0;
 
-  const heap: Frame[] = [
-    {
-      token: from,
-      amount: amountIn,
-      hops: 0,
-      usedPools: new Set(),
-      usedTokens: new Set([from]),
-      legs: [],
-      tvl: 0,
-      vol: 0,
-    },
-  ];
+  const heap: Frame[] = [];
+  const heapPush = (f: Frame) => {
+    heap.push(f);
+    let i = heap.length - 1;
+    while (i > 0) {
+      const p = (i - 1) >> 1;
+      if (heap[p]!.amount >= heap[i]!.amount) break;
+      const tmp = heap[p]!;
+      heap[p] = heap[i]!;
+      heap[i] = tmp;
+      i = p;
+    }
+  };
+  const heapPop = (): Frame | undefined => {
+    if (heap.length === 0) return undefined;
+    const top = heap[0]!;
+    const last = heap.pop()!;
+    if (heap.length === 0) return top;
+    heap[0] = last;
+    let i = 0;
+    for (;;) {
+      const l = i * 2 + 1;
+      const r = l + 1;
+      let m = i;
+      if (l < heap.length && heap[l]!.amount > heap[m]!.amount) m = l;
+      if (r < heap.length && heap[r]!.amount > heap[m]!.amount) m = r;
+      if (m === i) break;
+      const tmp = heap[i]!;
+      heap[i] = heap[m]!;
+      heap[m] = tmp;
+      i = m;
+    }
+    return top;
+  };
+  heapPush({
+    token: from,
+    amount: amountIn,
+    hops: 0,
+    usedPools: new Set(),
+    usedTokens: new Set([from]),
+    legs: [],
+    tvl: 0,
+    vol: 0,
+  });
 
   while (heap.length > 0) {
-    let bestI = 0;
-    for (let i = 1; i < heap.length; i++) {
-      if (heap[i]!.amount > heap[bestI]!.amount) bestI = i;
-    }
-    const cur = heap.splice(bestI, 1)[0]!;
+    const cur = heapPop()!;
     expansions += 1;
     if (expansions > MAX_EXPANSIONS) break;
 
@@ -385,7 +413,7 @@ function searchPaths(
       return true;
     });
     for (const { edge, leg } of pickOutgoing(outgoing, cur.amount)) {
-      heap.push({
+      heapPush({
         token: edge.to,
         amount: leg.amountOut,
         hops: cur.hops + 1,

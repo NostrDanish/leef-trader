@@ -4,7 +4,8 @@ import type { LeefSnapshot } from "@/lib/leef/types";
 import { assetDelta, waitForTransaction } from "./reconcile";
 import { signAndPushBatch, signAndPushSwap, type BatchLeg } from "./sign";
 import { metaOf } from "./tokens";
-import { fetchAlcorRoute, parseAssetAmount } from "./alcor-route";
+import { parseAssetAmount } from "./alcor-route";
+import { fetchAlcorRouteCached } from "@/lib/leef/quote-verify";
 import { useWallet } from "@/store/wallet";
 
 export type SwapOutcome = {
@@ -66,7 +67,7 @@ export async function executeSwap(opts: {
       for (const sl of slices) {
         const tin = metaOf(sl.tokenIn, book);
         const tout = metaOf(sl.tokenOut, book);
-        const quote = await fetchAlcorRoute({
+        const quote = await fetchAlcorRouteCached({
           tokenInId: tin.alcorId,
           tokenOutId: tout.alcorId,
           amount: sl.amountIn,
@@ -88,7 +89,7 @@ export async function executeSwap(opts: {
         legs,
         snap: book,
       });
-      const rec = await waitForTransaction(txid);
+      const rec = await waitForTransaction(txid, { budgetMs: 1_200, attempts: 3, delayMs: 200 });
       if (rec.status === "failed") throw new Error(rec.error);
       let amountOut = expectedOut;
       if (rec.status === "confirmed") {
@@ -115,7 +116,7 @@ export async function executeSwap(opts: {
     // Reconcile against the chain: the actual transfer is the truth, the
     // router quote is only an estimate. On "unknown" we return the estimate
     // and never retry blindly — the next wallet sync corrects balances.
-    const rec = await waitForTransaction(exec.txid);
+    const rec = await waitForTransaction(exec.txid, { budgetMs: 1_200, attempts: 3, delayMs: 200 });
     if (rec.status === "failed") throw new Error(rec.error);
     let amountOut = exec.expectedOut;
     if (rec.status === "confirmed") {

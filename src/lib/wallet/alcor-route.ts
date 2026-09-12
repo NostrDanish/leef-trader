@@ -58,6 +58,7 @@ export async function fetchAlcorRoute(opts: {
   slippagePct: number;
   receiver: string;
   maxHops?: number;
+  timeoutMs?: number;
 }): Promise<AlcorRouteQuote> {
   const params = new URLSearchParams({
     trade_type: "EXACT_INPUT",
@@ -69,7 +70,10 @@ export async function fetchAlcorRoute(opts: {
     maxHops: String(opts.maxHops ?? 10),
     v2: "true",
   });
-  const raw = await fetchJson(`${ROUTER}?${params.toString()}`, { timeoutMs: 12_000 });
+  const raw = await fetchJson(`${ROUTER}?${params.toString()}`, {
+    timeoutMs: opts.timeoutMs ?? 5_000,
+    priority: "high",
+  });
   if (!isQuote(raw)) throw new Error("Alcor router returned no usable route");
   return raw;
 }

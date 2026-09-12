@@ -18,8 +18,8 @@ default. Nothing secret is ever stored.
 
 | Key | Default | Meaning |
 |---|---|---|
-| `clipWax` | 10 | **Minimum** WAX per entry (floor). Optimizer never sizes below this. |
-| `maxPositionWax` | 60 | **Maximum** WAX-value in LEEF (ceiling). This clip + open position cannot exceed it. Size is dynamic in [clip, remaining room]. |
+| `minTradeUsd` | 0.01 | **Minimum** notional per new trade, USD. Converted to quote-token units at the live mark. Not a promise a $0.01 trade is executable. |
+| `maxPositionUsd` | 1000 | **Maximum** marked position value, USD. Remaining capacity = cap − current market value. |
 | `maxImpactPct` | 3 | Reject trades above this price impact. |
 | `cooldownSec` | 60 | Base cooldown; adaptive ×0.5 (arb/echo), ×2 (DCA), ×1.5 (after a loss), floor 15s. |
 | `maxTradesHour` | 10 | Hourly trade cap. |

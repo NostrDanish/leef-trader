@@ -63,7 +63,9 @@ export function WalletDesk({ snap }: { snap: LeefSnapshot }) {
 
   function sendToBot(kind: "buy" | "sell", amountIn: number) {
     if (kind === "buy") {
-      useBot.getState().setRisk({ clipWax: Math.max(0.1, amountIn) });
+      useBot.getState().setRisk({
+        minTradeUsd: Math.max(0.01, amountIn * (snap.waxUsd || 0)),
+      });
     }
     setSwap({
       tokenIn: kind === "buy" ? "WAX" : "LEEF",

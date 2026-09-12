@@ -9,6 +9,11 @@ import {
   type TickParams,
 } from "./indicators";
 import { optimizeEntrySize, scoreOpportunity } from "./net-edge";
+import {
+  DEFAULT_MAX_POSITION_USD,
+  DEFAULT_MIN_TRADE_USD,
+  usdToTokenBounds,
+} from "./risk-usd";
 import type { LeefPool, LeefSnapshot, SwapRoute } from "./types";
 
 /* ------------------------------------------------------------------ */
@@ -111,10 +116,10 @@ export type BotGoals = {
 };
 
 export type BotRisk = {
-  /** Minimum WAX per entry (floor). Optimizer never sizes below this. */
-  clipWax: number;
-  /** Max WAX-value held in LEEF at once (ceiling for this clip + open). */
-  maxPositionWax: number;
+  /** Minimum notional per new trade, USD. Converted to quote-token units at the live mark. */
+  minTradeUsd: number;
+  /** Maximum marked position value, USD. Remaining capacity sizes the next clip. */
+  maxPositionUsd: number;
   maxImpactPct: number;
   cooldownSec: number;
   maxTradesHour: number;
@@ -151,8 +156,8 @@ export const DEFAULT_GOALS: BotGoals = {
 };
 
 export const DEFAULT_RISK: BotRisk = {
-  clipWax: 10,
-  maxPositionWax: 60,
+  minTradeUsd: DEFAULT_MIN_TRADE_USD,
+  maxPositionUsd: DEFAULT_MAX_POSITION_USD,
   maxImpactPct: 3,
   cooldownSec: 60,
   maxTradesHour: 10,
@@ -528,16 +533,24 @@ export function evaluateBot(input: BotInput): Decision {
 
   /* ------------------------- manual overrides ---------------------- */
 
+  const bounds = usdToTokenBounds({
+    snap,
+    quote,
+    base,
+    risk,
+    position: input.position,
+    balances: input.balances,
+  });
+  if ("error" in bounds) return hold(bounds.error);
+  const minWax = bounds.minIn;
+  const maxWax = bounds.maxIn;
+
   if (input.force === "buy") {
-    const held = input.position?.entryWax ?? 0;
-    const maxWax = Math.min(
-      input.balances[quote] ?? 0,
-      Math.max(0, risk.maxPositionWax - held),
-    );
-    if (maxWax + 1e-12 < risk.clipWax) {
-      return hold("Remaining room is under min clip — sitting out (won't size below the floor)");
+    if (maxWax + 1e-12 < minWax) {
+      return hold(
+        `Remaining room $${bounds.remainingUsd.toFixed(2)} is under min trade $${risk.minTradeUsd.toFixed(2)} — sitting out`,
+      );
     }
-    const minWax = risk.clipWax;
     const sized = optimizeEntrySize({
       snap,
       tokenIn: quote,
@@ -548,14 +561,18 @@ export function evaluateBot(input: BotInput): Decision {
       maxIn: maxWax,
       volPerSec: realizedVolPerSec(input.series),
     });
-    const route = sized?.best.route ?? bestBuyRoute(snap, minWax, quote, base);
-    if (!route) return hold("No executable route in the clip–max band");
-    const amountWax = sized?.best.amountIn ?? minWax;
+    if (!sized) {
+      return hold(
+        `Manual buy · no size in $${risk.minTradeUsd.toFixed(2)}–$${bounds.remainingUsd.toFixed(2)} clears costs — sitting out`,
+      );
+    }
+    const route = sized.best.route;
+    const amountWax = sized.best.amountIn;
     return {
       kind: "buy",
       amountWax,
       route,
-      reason: `Manual buy · ${amountWax.toFixed(2)} ${quote} (clip ${risk.clipWax}–${risk.maxPositionWax}) · ${route.label}`,
+      reason: `Manual buy · ${amountWax.toFixed(2)} ${quote} ($${risk.minTradeUsd.toFixed(2)}–$${risk.maxPositionUsd.toFixed(0)}) · ${route.label}`,
       confidence: signal.confidence,
       expectedGrossPct: Math.max(goals.takeProfitPct, 0.5),
       edge: sized
@@ -570,16 +587,16 @@ export function evaluateBot(input: BotInput): Decision {
   /* ----------- position-independent scans (spread arb / volume) ---- */
 
   if (strategy === "spread" || strategy === "volume") {
-    const waxAvail = Math.min(risk.maxPositionWax, input.balances[quote] ?? 0);
+    const waxAvail = maxWax;
     const isVolume = strategy === "volume";
     let arbDecision: Decision | null = null;
     let scanReason: string;
 
-    if (waxAvail + 1e-12 < risk.clipWax) {
-      scanReason = `Not enough ${quote} for the min clip`;
+    if (waxAvail + 1e-12 < minWax) {
+      scanReason = `Not enough ${quote} for the $${risk.minTradeUsd.toFixed(2)} min trade`;
     } else if (isVolume) {
       // Echo: round-trip allowed, gated by the loss budget (negative profit gate).
-      const plan = findBestArb(snap, waxAvail, -risk.maxEchoLossPct, true, risk.clipWax);
+      const plan = findBestArb(snap, waxAvail, -risk.maxEchoLossPct, true, minWax);
       if (plan) {
         const costPct = -plan.profitPct * 100;
         arbDecision = {
@@ -597,7 +614,7 @@ export function evaluateBot(input: BotInput): Decision {
       // floor needs the raw spread to clear it with slippage headroom.
       const gatePct =
         ((1 + risk.minEdgePct / 100) / Math.max(0.9, 1 - risk.slippage / 100) - 1) * 100;
-      const plan = findBestArb(snap, waxAvail, gatePct, false, risk.clipWax);
+      const plan = findBestArb(snap, waxAvail, gatePct, false, minWax);
       if (plan) {
         arbDecision = {
           kind: "arb",
@@ -605,7 +622,7 @@ export function evaluateBot(input: BotInput): Decision {
           reason: `Arb #${plan.buyPool.id}→#${plan.sellPool.id} · est +${(plan.profitPct * 100).toFixed(2)}% after fees · impact ${(plan.impactPct * 100).toFixed(1)}%`,
         };
       }
-      const probe = findBestArb(snap, waxAvail, -100, false, risk.clipWax);
+      const probe = findBestArb(snap, waxAvail, -100, false, minWax);
       scanReason = `No atomic arb ≥ ${risk.minEdgePct}% after fees+impact (${
         probe ? `best spread ${(probe.profitPct * 100).toFixed(2)}%` : "no two WAX books"
       })`;
@@ -617,12 +634,6 @@ export function evaluateBot(input: BotInput): Decision {
   }
 
   /* ------------------- entry sizing (NetEdgeEngine) ---------------- */
-
-  const waxAvail = input.balances[quote] ?? 0;
-  const heldWax = input.position?.entryWax ?? 0;
-  const roomWax = Math.max(0, risk.maxPositionWax - heldWax);
-  const maxWax = Math.min(waxAvail, roomWax);
-  const minWax = risk.clipWax;
 
   /**
    * Entries flow through the NetEdgeEngine: scan sizes below the risk cap,
@@ -636,8 +647,10 @@ export function evaluateBot(input: BotInput): Decision {
     confidence: number,
     maxWaxArg: number,
   ): Decision => {
-    if (!(maxWaxArg > 0.01) || maxWaxArg + 1e-12 < minWax) {
-      return hold(`Position cap reached, clip larger than remaining room, or no ${quote}`);
+    if (!(maxWaxArg > 0) || maxWaxArg + 1e-12 < minWax) {
+      return hold(
+        `Position cap reached ($${bounds.positionUsd.toFixed(2)} / $${risk.maxPositionUsd.toFixed(0)}), remaining room under min trade, or no ${quote}`,
+      );
     }
     if (!(expectedGrossPct > 0)) return hold("No positive expected move on this book — sitting out");
     const sized = optimizeEntrySize({

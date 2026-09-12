@@ -292,7 +292,7 @@ export function BotDesk({ snap }: { snap: LeefSnapshot }) {
 
           <GoalsCard />
           <AdvisorCard snap={snap} />
-          <RiskCard strategy={b.strategy} />
+          <RiskCard strategy={b.strategy} snap={snap} />
         </div>
 
         {/* ------------------------------ right rail ------------------------------ */}
@@ -729,52 +729,77 @@ function GoalsCard() {
   );
 }
 
-function RiskCard({ strategy }: { strategy: BotStrategy }) {
+function RiskCard({ strategy, snap }: { strategy: BotStrategy; snap: LeefSnapshot }) {
   const risk = useBot((s) => s.risk);
+  const quote = useBot((s) => s.quote);
   const setRisk = useBot((s) => s.setRisk);
+  const notice = useBot((s) => s.riskMigrationNotice);
+  const clearNotice = useBot((s) => s.clearRiskMigrationNotice);
   const [slidersOn, setSlidersOn] = useState(false);
   useEffect(() => setSlidersOn(true), []);
+  const quoteSym = (quote || "WAX").toUpperCase();
+  const quoteUsd =
+    quoteSym === "WAX"
+      ? snap.waxUsd
+      : quoteSym === "LEEF"
+        ? snap.leefUsd
+        : snap.universe.find((u) => u.symbol === quoteSym)?.usdPrice ?? 0;
+  const minTok = quoteUsd > 0 ? risk.minTradeUsd / quoteUsd : 0;
+  const maxTok = quoteUsd > 0 ? risk.maxPositionUsd / quoteUsd : 0;
   return (
     <Card className="p-4 sm:p-5">
       <h3 className="mb-1 flex items-center gap-2 text-sm font-medium">
         <Waves className="size-4 text-accent" />
-        Risk &amp; sizing
+        Risk & sizing · USD value
       </h3>
       <p className="mb-4 text-xs text-muted-foreground">
-        Min clip is the floor, max position the ceiling. Each entry picks a
-        size in that band (e.g. 0.1–500 → 1, 25, 4.4, 453 — never 0.09 or 501).
+        You set dollars. The engine converts to {quoteSym} at the live mark
+        and still refuses trades whose costs eat the thesis.
       </p>
+      {notice && (
+        <p className="mb-3 rounded-md border border-warn/30 bg-warn/10 px-2 py-1.5 text-xs text-warn">
+          {notice}{" "}
+          <button type="button" className="underline" onClick={clearNotice}>
+            dismiss
+          </button>
+        </p>
+      )}
       <div className="space-y-3">
         <Knob
           ready={slidersOn}
-          label="Min clip"
-          value={risk.clipWax}
-          min={0.1}
-          max={500}
-          step={0.1}
-          format={(v) => `${v.toFixed(1)} WAX`}
-          onChange={(clipWax) =>
+          label="Minimum trade value"
+          value={risk.minTradeUsd}
+          min={0.01}
+          max={100}
+          step={0.01}
+          format={(v) => `$${v.toFixed(2)}`}
+          onChange={(minTradeUsd) =>
             setRisk({
-              clipWax,
-              maxPositionWax: Math.max(risk.maxPositionWax, clipWax),
+              minTradeUsd,
+              maxPositionUsd: Math.max(risk.maxPositionUsd, minTradeUsd),
             })
           }
         />
         <Knob
           ready={slidersOn}
-          label="Max position"
-          value={risk.maxPositionWax}
-          min={0.1}
-          max={2000}
-          step={0.1}
-          format={(v) => `${v.toFixed(1)} WAX`}
-          onChange={(maxPositionWax) =>
+          label="Maximum position value"
+          value={risk.maxPositionUsd}
+          min={0.01}
+          max={1000}
+          step={1}
+          format={(v) => `$${v.toFixed(0)}`}
+          onChange={(maxPositionUsd) =>
             setRisk({
-              maxPositionWax,
-              clipWax: Math.min(risk.clipWax, maxPositionWax),
+              maxPositionUsd,
+              minTradeUsd: Math.min(risk.minTradeUsd, maxPositionUsd),
             })
           }
         />
+        <p className="text-xs text-muted-foreground">
+          {quoteUsd > 0
+            ? `Current ${quoteSym}: $${quoteUsd.toFixed(quoteUsd < 0.1 ? 4 : 4)} · min ${minTok.toFixed(2)} ${quoteSym} · max ${maxTok.toFixed(2)} ${quoteSym}`
+            : `${quoteSym} has no USD mark — engine will sit out`}
+        </p>
         <Knob
           ready={slidersOn}
           label="Max price impact"

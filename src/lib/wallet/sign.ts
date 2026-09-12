@@ -1,9 +1,10 @@
 import type { ArbPlan } from "@/lib/leef/bot-engine";
 import type { LeefSnapshot, SwapRoute } from "@/lib/leef/types";
 import { LEEF_CONTRACT, WAX_CONTRACT } from "@/lib/leef/types";
-import { defiboxMemo, tacoMemo } from "@/lib/leef/venue-adapters";
-import { nativePoolId, venueOfPoolId } from "@/lib/leef/venues";
-import { fetchAlcorRoute, parseAssetAmount } from "./alcor-route";
+import { swapContractOf, venueOfPoolId } from "@/lib/leef/venues";
+import { fetchAlcorRouteCached, verifyExecutableRoute } from "@/lib/leef/quote-verify";
+import { TradeError } from "./trade-error";
+import { parseAssetAmount } from "./alcor-route";
 import {
   packAddLiquid,
   packCollect,
@@ -60,7 +61,7 @@ async function buildTransfers(opts: {
   const tokenOut = metaOf(opts.route.tokenOut, opts.snap);
 
   if (allAlcor(opts.route)) {
-    const quote = await fetchAlcorRoute({
+    const quote = await fetchAlcorRouteCached({
       tokenInId: tokenIn.alcorId,
       tokenOutId: tokenOut.alcorId,
       amount: opts.amountIn,
@@ -79,23 +80,28 @@ async function buildTransfers(opts: {
     };
   }
 
-  const slip = Math.max(0, opts.slippagePct) / 100;
+  const verified = await verifyExecutableRoute({
+    route: opts.route,
+    amountIn: opts.amountIn,
+    slippagePct: opts.slippagePct,
+    account: opts.account,
+    snap: opts.snap,
+    deadlineMs: 4_000,
+  });
+  if (verified.trust !== "executable") {
+    throw new TradeError("MODEL_ONLY", "Venue quote is model-only — not signing");
+  }
   const transfers: TransferSpec[] = [];
-  for (const leg of opts.route.legs) {
+  for (let i = 0; i < opts.route.legs.length; i++) {
+    const leg = opts.route.legs[i]!;
+    const v = verified.verified[i];
     const venue = leg.venue ?? venueOfPoolId(leg.poolId);
     const tin = metaOf(leg.tokenIn, opts.snap);
-    const tout = metaOf(leg.tokenOut, opts.snap);
-    const minOut = leg.amountOut * (1 - slip);
-    const nativeId = nativePoolId(leg.poolId);
     if (venue === "alcor") {
-      const quote = await fetchAlcorRoute({
-        tokenInId: tin.alcorId,
-        tokenOutId: tout.alcorId,
-        amount: leg.amountIn,
-        slippagePct: opts.slippagePct,
-        receiver: opts.account,
-        maxHops: 1,
-      });
+      const quote = v?.alcor;
+      if (!quote) {
+        throw new TradeError("VENUE_UNAVAILABLE", "Alcor leg missing fresh quote");
+      }
       for (const s of quote.swaps) {
         transfers.push({
           tokenContract: tin.contract,
@@ -106,10 +112,10 @@ async function buildTransfers(opts: {
       }
       continue;
     }
-    const memo =
-      venue === "defibox"
-        ? defiboxMemo(minOut, tout.decimals, nativeId)
-        : tacoMemo(minOut, tout.symbol, tout.contract, tout.decimals);
+    const memo = v?.memo;
+    if (!memo) {
+      throw new TradeError("MODEL_ONLY", `${venue} leg has no fresh executable memo`);
+    }
     transfers.push({
       tokenContract: tin.contract,
       to: swapContractOf(venue),
@@ -117,7 +123,7 @@ async function buildTransfers(opts: {
       memo,
     });
   }
-  return { transfers, expectedOut: opts.route.amountOut * (1 - slip) };
+  return { transfers, expectedOut: verified.expectedOut };
 }
 
 /** An action in both worlds: plain fields for wallet UIs, packed bytes for the local signer. */

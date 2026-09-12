@@ -12,16 +12,50 @@ const WAX_RPC = [
   "https://wax.eosphere.io",
 ];
 
-export async function rpcPost(path: string, body: unknown, timeoutMs = 12_000): Promise<unknown> {
+export async function rpcPost(
+  path: string,
+  body: unknown,
+  timeoutMs = 12_000,
+  priority: "high" | "medium" | "low" = "medium",
+): Promise<unknown> {
   let last = "WAX RPC failed";
   for (const base of WAX_RPC) {
     try {
-      return await fetchJson(`${base}${path}`, { method: "POST", body, timeoutMs });
+      return await fetchJson(`${base}${path}`, { method: "POST", body, timeoutMs, priority });
     } catch (err) {
       last = err instanceof Error ? err.message : last;
     }
   }
   throw new Error(last);
+}
+
+/** Fast inclusion check — does not wait for Hyperion history indexing. */
+export async function getTransactionStatus(
+  txid: string,
+): Promise<"executed" | "soft_fail" | "hard_fail" | "unknown"> {
+  const body = { id: txid };
+  const settled = await Promise.allSettled(
+    WAX_RPC.slice(0, 2).map((base) =>
+      fetchJson(`${base}/v1/history/get_transaction`, {
+        method: "POST",
+        body,
+        timeoutMs: 700,
+        priority: "high",
+      }),
+    ),
+  );
+  for (const r of settled) {
+    if (r.status !== "fulfilled") continue;
+    const raw = r.value as {
+      trx?: { receipt?: { status?: string } };
+      processed?: { receipt?: { status?: string } };
+    };
+    const status = raw?.trx?.receipt?.status ?? raw?.processed?.receipt?.status ?? "";
+    if (status === "executed") return "executed";
+    if (status === "hard_fail") return "hard_fail";
+    if (status === "soft_fail" || status === "failed") return "soft_fail";
+  }
+  return "unknown";
 }
 
 export type ChainAccount = {

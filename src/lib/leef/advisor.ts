@@ -5,11 +5,11 @@
  * CPU/NET/RAM, and LEEF-book depth versus that quote. Never auto-applies —
  * the desk shows the scan; the user applies or ignores it.
  *
- * Clip = floor, max position = ceiling. Suggestions stay inside those
- * semantics. Quote token is not only WAX — WAXUSDC, USDT, PARAUSD, etc.
+ * User-facing risk is USD VALUE. Token amounts are derived at the live mark.
  */
 import { usdPriceOf } from "./cost-model";
 import { DEFAULT_RISK, type BotRisk, type BotStrategy } from "./bot-engine";
+import { DEFAULT_MAX_POSITION_USD, DEFAULT_MIN_TRADE_USD } from "./risk-usd";
 import type { LeefSnapshot } from "./types";
 
 export type AdvisorInput = {
@@ -30,7 +30,10 @@ export type AdvisorLine = { label: string; detail: string };
 export type AdvisorSuggestion = {
   base: string;
   quote: string;
-  risk: Pick<BotRisk, "clipWax" | "maxPositionWax" | "cooldownSec" | "maxTradesHour" | "maxImpactPct">;
+  risk: Pick<
+    BotRisk,
+    "minTradeUsd" | "maxPositionUsd" | "cooldownSec" | "maxTradesHour" | "maxImpactPct"
+  >;
   why: AdvisorLine[];
   warnings: string[];
   /** USD value of the quote-token stack used for sizing. */
@@ -107,15 +110,16 @@ export function suggestPair(
   return { base, quote: best, reason };
 }
 
-function roundClip(n: number): number {
-  if (n < 1) return Math.max(0.1, Math.round(n * 10) / 10);
+function roundUsd(n: number): number {
+  if (n < 0.1) return Math.max(DEFAULT_MIN_TRADE_USD, Math.round(n * 100) / 100);
+  if (n < 1) return Math.round(n * 100) / 100;
   if (n < 10) return Math.round(n * 10) / 10;
   return Math.round(n);
 }
 
 /**
- * Suggest clip / max / cooldown / hourly cap from this wallet + book.
- * Pure — no I/O. User must apply.
+ * Suggest min trade / max position / cooldown / hourly cap from this wallet + book.
+ * Pure — no I/O. User must apply. Never suggests more USD than the wallet holds.
  */
 export function suggestBotSettings(input: AdvisorInput): AdvisorSuggestion {
   const quote = input.quote.toUpperCase();
@@ -132,7 +136,6 @@ export function suggestBotSettings(input: AdvisorInput): AdvisorSuggestion {
   const tight =
     (cpu != null && cpu > 0.85) || (net != null && net > 0.9) || (ram != null && ram > 0.9);
 
-  // Floor: ~0.8–2% of quote stack, never below 0.1 units, never above 5% of stack.
   let clipFrac = 0.012;
   if (input.strategy === "dca") clipFrac = 0.008;
   if (input.strategy === "grid") clipFrac = 0.01;
@@ -140,17 +143,20 @@ export function suggestBotSettings(input: AdvisorInput): AdvisorSuggestion {
   if (input.strategy === "signal") clipFrac = 0.012;
   if (tight) clipFrac *= 0.5;
 
-  let clip = roundClip(Math.max(0.1, bal * clipFrac));
-  const clipCap = roundClip(Math.max(0.1, bal * 0.05));
-  clip = Math.min(clip, clipCap);
+  const walletUsd = px > 0 ? quoteUsd : 0;
+  let minTrade = roundUsd(Math.max(DEFAULT_MIN_TRADE_USD, walletUsd * clipFrac));
+  const clipCap = roundUsd(Math.max(DEFAULT_MIN_TRADE_USD, walletUsd * 0.05));
+  minTrade = Math.min(minTrade, clipCap);
 
-  // Ceiling: ~25% of quote stack (DCA 40%, volume 15%), shrunk if resources tight.
   let maxFrac = 0.25;
   if (input.strategy === "dca") maxFrac = 0.4;
   if (input.strategy === "volume") maxFrac = 0.15;
   if (tight) maxFrac *= 0.6;
-  let maxPos = roundClip(Math.max(clip, bal * maxFrac));
-  if (maxPos < clip) maxPos = clip;
+
+  // Never suggest exposure above wallet OR the product ceiling.
+  const walletCap = walletUsd > 0 ? walletUsd : DEFAULT_MAX_POSITION_USD;
+  let maxPos = roundUsd(Math.max(minTrade, Math.min(walletCap * maxFrac, DEFAULT_MAX_POSITION_USD, walletCap)));
+  if (maxPos < minTrade) maxPos = minTrade;
 
   let cooldown = DEFAULT_RISK.cooldownSec;
   let hourly = DEFAULT_RISK.maxTradesHour;
@@ -169,7 +175,7 @@ export function suggestBotSettings(input: AdvisorInput): AdvisorSuggestion {
   }
   if (net != null && net > 0.95) warnings.push(`NET ${(net * 100).toFixed(0)}% used — trades may fail`);
   if (ram != null && ram > 0.95) warnings.push(`RAM ${(ram * 100).toFixed(0)}% used — pause until you free RAM`);
-  if (!(px > 0)) warnings.push(`${quote} has no USD mark — sizing uses token units only`);
+  if (!(px > 0)) warnings.push(`${quote} has no USD mark — cannot convert value limits to token size`);
   if (bal <= 0) warnings.push(`No ${quote} in this wallet — fund it or pick another quote token`);
 
   const leefBooks = input.snap.pools.filter((p) => p.pair.symbol.toUpperCase() === quote);
@@ -179,8 +185,8 @@ export function suggestBotSettings(input: AdvisorInput): AdvisorSuggestion {
   }
   if (tvl > 0 && quoteUsd > tvl * 0.15) {
     warnings.push(`Wallet ${quote} is large vs ${base}/${quote} TVL ($${tvl.toFixed(0)}) — keep clips small`);
-    clip = roundClip(clip * 0.5);
-    maxPos = Math.max(clip, roundClip(maxPos * 0.6));
+    minTrade = roundUsd(Math.max(DEFAULT_MIN_TRADE_USD, minTrade * 0.5));
+    maxPos = Math.max(minTrade, roundUsd(maxPos * 0.6));
   }
 
   why.push({
@@ -188,13 +194,19 @@ export function suggestBotSettings(input: AdvisorInput): AdvisorSuggestion {
     detail: `${bal.toFixed(bal >= 10 ? 1 : 4)} ${quote}${px > 0 ? ` · $${quoteUsd.toFixed(2)}` : ""}`,
   });
   why.push({
-    label: "Min clip",
-    detail: `${clip} ${quote} (~${(clipFrac * 100).toFixed(1)}% of stack, floor 0.1)`,
+    label: "Min trade",
+    detail: `$${minTrade.toFixed(minTrade < 1 ? 2 : 2)} (~${(clipFrac * 100).toFixed(1)}% of stack)`,
   });
   why.push({
     label: "Max position",
-    detail: `${maxPos} ${quote} (~${(maxFrac * 100).toFixed(0)}% of stack)`,
+    detail: `$${maxPos.toFixed(maxPos < 10 ? 2 : 0)} (~${(maxFrac * 100).toFixed(0)}% of stack, cap $${DEFAULT_MAX_POSITION_USD.toFixed(0)})`,
   });
+  if (px > 0) {
+    why.push({
+      label: "Equivalent",
+      detail: `${(minTrade / px).toFixed(px < 0.1 ? 2 : 2)}–${(maxPos / px).toFixed(2)} ${quote} at $${px.toFixed(px < 0.1 ? 4 : 4)}`,
+    });
+  }
   why.push({
     label: "Resources",
     detail: `CPU ${cpu != null ? `${(cpu * 100).toFixed(0)}%` : "—"} · NET ${
@@ -218,8 +230,8 @@ export function suggestBotSettings(input: AdvisorInput): AdvisorSuggestion {
     base,
     quote,
     risk: {
-      clipWax: clip,
-      maxPositionWax: maxPos,
+      minTradeUsd: minTrade,
+      maxPositionUsd: maxPos,
       cooldownSec: cooldown,
       maxTradesHour: hourly,
       maxImpactPct: impact,

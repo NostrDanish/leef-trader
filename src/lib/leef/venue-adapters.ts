@@ -175,6 +175,71 @@ export async function fetchExternalVenues(waxUsd: number): Promise<VenuePool[]> 
   return pools;
 }
 
+/**
+ * Fresh on-chain pair row for one Defibox/Taco pool. Topology cache (120s)
+ * is NOT executable truth — live legs re-read the table row.
+ */
+export async function refreshVenuePair(
+  venue: "defibox" | "taco",
+  nativeId: number,
+  waxUsd: number,
+): Promise<VenuePool | null> {
+  try {
+    if (venue === "defibox") {
+      const raw = (await rpcPost(
+        "/v1/chain/get_table_rows",
+        {
+          json: true,
+          code: DEFIBOX_SWAP,
+          scope: DEFIBOX_SWAP,
+          table: "pairs",
+          lower_bound: nativeId,
+          upper_bound: nativeId,
+          limit: 1,
+        },
+        4_000,
+        "high",
+      )) as { rows?: TableRow[] };
+      const parsed = parseDefiboxPairs(raw.rows ?? [], waxUsd);
+      return parsed.find((p) => p.nativeId === nativeId) ?? parsed[0] ?? null;
+    }
+    let raw = (await rpcPost(
+      "/v1/chain/get_table_rows",
+      {
+        json: true,
+        code: TACO_SWAP,
+        scope: TACO_SWAP,
+        table: "pairs",
+        lower_bound: nativeId,
+        upper_bound: nativeId,
+        limit: 1,
+      },
+        4_000,
+        "high",
+      )) as { rows?: TableRow[] };
+    if (!raw.rows?.length) {
+      raw = (await rpcPost(
+        "/v1/chain/get_table_rows",
+        {
+          json: true,
+          code: TACO_SWAP,
+          scope: TACO_SWAP,
+          table: "pools",
+          lower_bound: nativeId,
+          upper_bound: nativeId,
+          limit: 1,
+        },
+        4_000,
+        "high",
+      )) as { rows?: TableRow[] };
+    }
+    const parsed = parseTacoPairs(raw.rows ?? [], waxUsd);
+    return parsed.find((p) => p.nativeId === nativeId) ?? parsed[0] ?? null;
+  } catch {
+    return null;
+  }
+}
+
 /** Defibox memo: swap,<min_out as integer units>,<pair_id> */
 export function defiboxMemo(minOut: number, decimals: number, pairId: number): string {
   const units = Math.max(0, Math.floor(minOut * 10 ** decimals));

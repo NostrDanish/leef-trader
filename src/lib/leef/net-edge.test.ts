@@ -209,10 +209,26 @@ describe("bot edge gate (evaluateBot)", () => {
     expect(d.kind).toBe("buy");
     if (d.kind === "buy") {
       expect(d.amountWax).toBeGreaterThan(0);
-      expect(d.amountWax).toBeLessThanOrEqual(DEFAULT_RISK.clipWax);
+      expect(d.amountWax).toBeLessThanOrEqual(50);
       expect(d.edge).toBeDefined();
       expect(d.reason).toMatch(/net edge/);
     }
+  });
+
+  it("rejects a $0.01 clip when fixed costs eat the thesis", () => {
+    const snap = mkSnap([mkPool(50_000, 500_000_000)]);
+    const v = evaluateEntry({
+      snap,
+      tokenIn: "WAX",
+      tokenOut: "LEEF",
+      amountIn: 0.01 / WAX_USD,
+      expectedGrossPct: 5,
+      minNetEdgePct: 0.1,
+      volPerSec: 0,
+    });
+    expect(v).not.toBeNull();
+    expect(v!.pass).toBe(false);
+    expect(v!.reason).toMatch(/net edge/);
   });
 
   it("does nothing on a shallow book — the step cannot pay its costs", () => {

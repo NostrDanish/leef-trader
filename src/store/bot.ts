@@ -9,6 +9,7 @@ import {
   type Position,
   type PricePoint,
 } from "@/lib/leef/bot-engine";
+import { migrateRiskToUsd } from "@/lib/leef/risk-usd";
 
 export type BotDecisionKind = "buy" | "sell" | "arb" | "hold" | "skip" | "stop" | "error";
 
@@ -76,6 +77,8 @@ type BotState = {
   hourWindowStart: number;
   tradesThisHour: number;
   lastReason: string;
+  /** One-shot notice after migrating WAX clip/max → USD value. */
+  riskMigrationNotice: string | null;
 
   start: (equityUsd: number) => void;
   stop: (reason?: string) => void;
@@ -100,6 +103,7 @@ type BotState = {
   ) => void;
   resetSession: (equityUsd: number) => void;
   setLastReason: (s: string) => void;
+  clearRiskMigrationNotice: () => void;
 };
 
 const freshStats = (equityUsd: number): BotStats => ({
@@ -134,6 +138,7 @@ export const useBot = create<BotState>()(
       hourWindowStart: Date.now(),
       tradesThisHour: 0,
       lastReason: "Bot is stopped",
+      riskMigrationNotice: null,
 
       start: (equityUsd) =>
         set((s) => ({
@@ -258,13 +263,14 @@ export const useBot = create<BotState>()(
           lastReason: "Session reset",
         }),
       setLastReason: (lastReason) => set({ lastReason }),
+      clearRiskMigrationNotice: () => set({ riskMigrationNotice: null }),
     }),
     {
       name: "leef-bot-v1",
       // Versioned + merging migrate: fields added to the schema after a user
       // saved state (e.g. risk.minNetEdgePct, stats.byStrategy) get filled
       // from defaults instead of crashing selectors with undefined.
-      version: 6,
+      version: 7,
       migrate: (persisted) => {
         const p = (
           persisted && typeof persisted === "object" ? persisted : {}
@@ -274,29 +280,38 @@ export const useBot = create<BotState>()(
           quote: string;
           focus: string[];
           goals: Partial<BotGoals>;
-          risk: Partial<BotRisk>;
+          risk: Partial<BotRisk> & { clipWax?: number; maxPositionWax?: number };
           position: Position | null;
           gridAnchor: number | null;
           stats: BotStats;
           series: PricePoint[];
           decisions: BotDecisionLog[];
         }>;
+        const usd = migrateRiskToUsd(p.risk);
+        const { clipWax: _c, maxPositionWax: _m, ...restRisk } = (p.risk ?? {}) as Record<string, unknown>;
+        void _c;
+        void _m;
         return {
           strategy: p.strategy ?? "signal",
           base: typeof p.base === "string" && p.base ? p.base.toUpperCase() : "LEEF",
           quote: typeof p.quote === "string" && p.quote ? p.quote.toUpperCase() : "WAX",
           focus: Array.isArray(p.focus) ? p.focus.map((s) => String(s).toUpperCase()) : ["LEEF", "WAX"],
           goals: { ...DEFAULT_GOALS, ...(p.goals ?? {}) },
-          risk: { ...DEFAULT_RISK, ...(p.risk ?? {}) },
+          risk: {
+            ...DEFAULT_RISK,
+            ...(restRisk as Partial<BotRisk>),
+            minTradeUsd: usd.minTradeUsd,
+            maxPositionUsd: usd.maxPositionUsd,
+          },
           position: p.position ?? null,
           gridAnchor: p.gridAnchor ?? null,
-          // Merge stats over defaults so fields added later (volumeUsd…) exist.
           stats:
             p.stats && typeof p.stats === "object"
               ? { ...freshStats(0), ...p.stats }
               : freshStats(0),
           series: Array.isArray(p.series) ? p.series : [],
           decisions: Array.isArray(p.decisions) ? p.decisions : [],
+          riskMigrationNotice: usd.notice,
         };
       },
       partialize: (s) => ({
@@ -313,6 +328,7 @@ export const useBot = create<BotState>()(
         stats: s.stats,
         series: s.series.slice(-MAX_SERIES),
         decisions: s.decisions.slice(0, 30),
+        riskMigrationNotice: s.riskMigrationNotice,
       }),
     },
   ),

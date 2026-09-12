@@ -9,15 +9,30 @@ import {
 import { realizedVolPerSec, usdPriceOf } from "@/lib/leef/cost-model";
 import { optimizeEntrySize } from "@/lib/leef/net-edge";
 import { fmtNum } from "@/lib/leef/format";
-import { getLeefSnapshot } from "@/lib/leef/snapshot";
+import { fetchAlcorRouteCached } from "@/lib/leef/quote-verify";
+import { exceedsMaxPositionUsd, usdToTokenBounds } from "@/lib/leef/risk-usd";
+import { getLeefSnapshot, lastSnapshotTimings } from "@/lib/leef/snapshot";
 import { bestExecutionRoute } from "@/lib/leef/route-optimizer";
 import type { LeefSnapshot } from "@/lib/leef/types";
-import { fetchAlcorRoute, parseAssetAmount, type AlcorRouteQuote } from "@/lib/wallet/alcor-route";
-import { LEEF_CONTRACT, WAX_CONTRACT } from "@/lib/leef/types";
+import { parseAssetAmount, type AlcorRouteQuote } from "@/lib/wallet/alcor-route";
+import { WAX_CONTRACT } from "@/lib/leef/types";
 import { waxResourceBlock } from "@/lib/wallet/chain";
 import { arbFloorViolation, memoMinOutSum } from "@/lib/wallet/policy";
-import { assetDelta, waitForTransaction } from "@/lib/wallet/reconcile";
+import { assetDelta, reconcileTransfersLater, waitForTransaction } from "@/lib/wallet/reconcile";
 import { signAndPushArb, signAndPushSwap } from "@/lib/wallet/sign";
+import {
+  abortSigning,
+  beginSigning,
+  emptyTimings,
+  liveCapitalBlocked,
+  markBroadcast,
+  markConfirmed,
+  markFailed,
+  markUnknown,
+  recordCycleTimings,
+  unknownBlockReason,
+} from "@/lib/wallet/trade-cycle";
+import { classifyTradeError, toastTitleFor } from "@/lib/wallet/trade-error";
 import { useBot } from "@/store/bot";
 import { useWallet } from "@/store/wallet";
 import { toast } from "@/hooks/useToast";
@@ -44,7 +59,7 @@ async function quoteArbPlan(
   slippagePct: number,
   minProfitPct: number,
 ): Promise<ArbPlan> {
-  const buy = await fetchAlcorRoute({
+  const buy = await fetchAlcorRouteCached({
     tokenInId: "wax-eosio.token",
     tokenOutId: "leef-leefmaincorp",
     amount: plan.waxIn,
@@ -55,7 +70,7 @@ async function quoteArbPlan(
   if (!(leefOut > 0)) throw new Error("Alcor returned no LEEF for the echo");
 
   const fetchSell = (slip: number) =>
-    fetchAlcorRoute({
+    fetchAlcorRouteCached({
       tokenInId: "leef-leefmaincorp",
       tokenOutId: "wax-eosio.token",
       amount: leefOut,
@@ -105,32 +120,55 @@ async function quoteArbPlan(
 
 let lastHoldReason = "";
 let holdStreak = 0;
-let executing = false;
 /** Set when the API rate-limits us — evaluations pause until then. */
 let rateLimitedUntil = 0;
+
+/** Keep polling an UNKNOWN txid. Never submits another trade. Unlocks only on fail/confirm. */
+function pollUnknown(txid: string): void {
+  void (async () => {
+    const rec = await reconcileTransfersLater(txid);
+    if (rec.status === "failed") markFailed();
+    else if (rec.status === "confirmed") markConfirmed();
+    // still unknown → stay locked
+  })();
+}
 
 /**
  * Evaluate the bot once against a snapshot. Exported so the desk can
  * dry-run ("what would it do now?") and force manual clips.
- * Executing calls are guarded — only one trade can be in flight at a time.
+ *
+ * Signing is exclusive. After broadcast, reconciliation is async so the
+ * next market scan can prepare — but a new LIVE trade is blocked until
+ * capital is known (UNKNOWN never retries).
  */
 export async function runBotOnce(
   snap: LeefSnapshot,
   opts?: { force?: "buy" | "sell"; dry?: boolean },
 ) {
-  if (executing && !opts?.dry) return null;
-  if (!opts?.dry) executing = true;
-  try {
-    return await runBotOnceInner(snap, opts);
-  } finally {
-    if (!opts?.dry) executing = false;
+  if (opts?.dry) return await runBotOnceInner(snap, opts);
+  const live = useWallet.getState().canSign();
+  if (live && liveCapitalBlocked()) {
+    const unknown = unknownBlockReason();
+    if (unknown) {
+      useBot.getState().setLastReason(unknown);
+    }
+    return null;
   }
+  return await runBotOnceInner(snap, opts);
 }
 
 async function runBotOnceInner(
   snap: LeefSnapshot,
   opts?: { force?: "buy" | "sell"; dry?: boolean },
 ) {
+  const cycleT0 = Date.now();
+  const timings = emptyTimings();
+  const snapT = lastSnapshotTimings();
+  timings.snapshotFetchMs = snapT.snapshotFetchMs;
+  timings.poolRefreshMs = snapT.poolRefreshMs;
+  timings.tradeHistoryMs = snapT.tradeHistoryMs;
+  timings.venueDiscoveryMs = snapT.venueDiscoveryMs;
+
   const b = useBot.getState();
   const w = useWallet.getState();
   const balances = w.balances();
@@ -207,35 +245,47 @@ async function runBotOnceInner(
     }
   }
 
-  // Last-second re-optimize: clip is the floor, max position the ceiling.
+  const quoteTok = b.quote || "WAX";
+  const baseTok = b.base || "LEEF";
+  const bounds = usdToTokenBounds({
+    snap: book,
+    quote: quoteTok,
+    base: baseTok,
+    risk: b.risk,
+    position: b.position,
+    balances,
+  });
+  if ("error" in bounds) {
+    b.pushDecision({ kind: "hold", mode, reason: bounds.error, priceUsd: snap.leefUsd });
+    b.setLastReason(bounds.error);
+    return { kind: "hold", reason: bounds.error };
+  }
+
+  // Last-second re-optimize: USD min is the floor, remaining USD capacity the ceiling.
   // Re-scan size + route on THIS book so we never fire the 30s-old candidate.
   if (decision.kind === "buy") {
-    const held = b.position?.entryWax ?? 0;
-    const maxIn = Math.min(
-      balances[b.quote || "WAX"] ?? 0,
-      Math.max(0, b.risk.maxPositionWax - held),
-    );
-    if (maxIn + 1e-12 < b.risk.clipWax) {
-      const reason = `Remaining room ${maxIn.toFixed(2)} ${b.quote || "WAX"} is under min clip ${b.risk.clipWax.toFixed(2)} — sitting out`;
+    if (bounds.maxIn + 1e-12 < bounds.minIn) {
+      const reason = `Remaining room $${bounds.remainingUsd.toFixed(2)} is under min trade $${b.risk.minTradeUsd.toFixed(2)} — sitting out`;
       b.pushDecision({ kind: "hold", mode, reason, priceUsd: snap.leefUsd });
       b.setLastReason(reason);
       return { kind: "hold", reason };
     }
-    const minIn = b.risk.clipWax;
     const thesis =
       decision.expectedGrossPct ?? Math.max(b.goals.takeProfitPct * 0.5, 0.2);
+    const tEdge = Date.now();
     const fresh = optimizeEntrySize({
       snap: book,
-      tokenIn: b.quote || "WAX",
-      tokenOut: b.base || "LEEF",
+      tokenIn: quoteTok,
+      tokenOut: baseTok,
       expectedGrossPct: thesis,
       minNetEdgePct: b.risk.minNetEdgePct,
-      minIn,
-      maxIn,
+      minIn: bounds.minIn,
+      maxIn: bounds.maxIn,
       volPerSec: realizedVolPerSec(b.series),
     });
+    timings.netEdgeMs = Date.now() - tEdge;
     if (!fresh) {
-      const reason = `Pre-trade size scan found nothing in ${minIn.toFixed(2)}–${maxIn.toFixed(2)} ${b.quote || "WAX"}`;
+      const reason = `Pre-trade size scan found nothing in ${bounds.minIn.toFixed(4)}–${bounds.maxIn.toFixed(4)} ${quoteTok} ($${b.risk.minTradeUsd.toFixed(2)}–$${bounds.remainingUsd.toFixed(2)})`;
       b.pushDecision({ kind: "hold", mode, reason, priceUsd: snap.leefUsd });
       b.setLastReason(reason);
       return { kind: "hold", reason };
@@ -244,7 +294,7 @@ async function runBotOnceInner(
       ...decision,
       amountWax: fresh.best.amountIn,
       route: fresh.best.route,
-      reason: `${decision.reason} · pre-trade ${fresh.best.amountIn.toFixed(2)} WAX`,
+      reason: `${decision.reason} · pre-trade ${fresh.best.amountIn.toFixed(2)} ${quoteTok}`,
       edge: {
         netEdgePct: fresh.best.netEdgePct,
         netProfitUsd: fresh.best.netProfitUsd,
@@ -253,7 +303,7 @@ async function runBotOnceInner(
     };
   }
   if (decision.kind === "arb") {
-    const maxIn = Math.min(balances[b.quote || "WAX"] ?? 0, b.risk.maxPositionWax);
+    const maxIn = bounds.maxIn;
     const floorPct =
       b.strategy === "volume" ? -b.risk.maxEchoLossPct : b.risk.minEdgePct;
     const fresh = findBestArb(
@@ -261,7 +311,7 @@ async function runBotOnceInner(
       maxIn,
       b.strategy === "volume" ? -b.risk.maxEchoLossPct : floorPct,
       b.strategy === "volume",
-      b.risk.clipWax,
+      bounds.minIn,
     );
     if (!fresh) {
       const reason = "Pre-trade arb scan found no clip in the size band";
@@ -314,27 +364,57 @@ async function runBotOnceInner(
       let txid: string | undefined;
       let note = "";
       if (live) {
-        const exec = await signAndPushSwap({
-          account: w.account,
-          permission: w.permission,
-          route: decision.route,
-          amountIn: decision.amountWax,
-          slippagePct: b.risk.slippage,
+        if (exceedsMaxPositionUsd({
           snap: book,
-        });
-        txid = exec.txid;
-        amountLeef = exec.expectedOut > 0 ? exec.expectedOut : minOut;
-        // Reconcile against the chain — the actual transfer, not the quote,
-        // sizes the position. On "unknown" we keep the estimate and never
-        // retry blindly; the next wallet sync corrects the balances.
-        const rec = await waitForTransaction(txid);
-        if (rec.status === "failed") throw new Error(rec.error);
-        if (rec.status === "confirmed") {
-          const actual = assetDelta(rec.transfers, w.account, b.base || "LEEF");
-          if (actual > 0) amountLeef = actual;
-          note = " · confirmed on-chain";
-        } else {
-          note = " · broadcast, confirmation pending (quoted estimate held)";
+          base: b.base || "LEEF",
+          risk: b.risk,
+          position: b.position,
+          extraBaseAmount: amountLeef,
+        })) {
+          const reason = `Final check: fill would exceed $${b.risk.maxPositionUsd.toFixed(0)} max position`;
+          b.pushDecision({ kind: "hold", mode, reason, priceUsd: snap.leefUsd });
+          b.setLastReason(reason);
+          return { kind: "hold", reason };
+        }
+        if (!beginSigning()) return decision;
+        const tSign = Date.now();
+        try {
+          const exec = await signAndPushSwap({
+            account: w.account,
+            permission: w.permission,
+            route: decision.route,
+            amountIn: decision.amountWax,
+            slippagePct: b.risk.slippage,
+            snap: book,
+          });
+          timings.signMs = Date.now() - tSign;
+          timings.broadcastMs = timings.signMs;
+          txid = exec.txid;
+          markBroadcast(txid);
+          amountLeef = exec.expectedOut > 0 ? exec.expectedOut : minOut;
+          const tConf = Date.now();
+          const rec = await waitForTransaction(txid, { budgetMs: 1_200, attempts: 3, delayMs: 200 });
+          timings.confirmationMs = Date.now() - tConf;
+          if (rec.status === "failed") {
+            markFailed();
+            throw new Error(rec.error);
+          }
+          if (rec.status === "confirmed") {
+            const actual = assetDelta(rec.transfers, w.account, b.base || "LEEF");
+            if (actual > 0) amountLeef = actual;
+            note = rec.transfers.length ? " · confirmed on-chain" : " · included (transfers pending)";
+            markConfirmed();
+            if (rec.transfers.length === 0) {
+              void reconcileTransfersLater(txid);
+            }
+          } else {
+            markUnknown(txid);
+            note = " · broadcast, confirmation pending — not retrying";
+            void pollUnknown(txid);
+          }
+        } catch (err) {
+          abortSigning();
+          throw err;
         }
       } else {
         w.applyPaperFill(b.quote || "WAX", decision.amountWax, b.base || "LEEF", amountLeef);
@@ -396,24 +476,43 @@ async function runBotOnceInner(
       let note = "";
       const t0 = Date.now();
       if (live) {
-        const exec = await signAndPushSwap({
-          account: w.account,
-          permission: w.permission,
-          route: decision.route,
-          amountIn: decision.amountLeef,
-          slippagePct: b.risk.slippage,
-          snap: book,
-        });
-        txid = exec.txid;
-        if (exec.expectedOut > 0) waxOut = exec.expectedOut;
-        const rec = await waitForTransaction(txid);
-        if (rec.status === "failed") throw new Error(rec.error);
-        if (rec.status === "confirmed") {
-          const actual = assetDelta(rec.transfers, w.account, "WAX", WAX_CONTRACT);
-          if (actual > 0) waxOut = actual;
-          note = " · confirmed on-chain";
-        } else {
-          note = " · broadcast, confirmation pending (quoted estimate held)";
+        if (!beginSigning()) return decision;
+        const tSign = Date.now();
+        try {
+          const exec = await signAndPushSwap({
+            account: w.account,
+            permission: w.permission,
+            route: decision.route,
+            amountIn: decision.amountLeef,
+            slippagePct: b.risk.slippage,
+            snap: book,
+          });
+          timings.signMs = Date.now() - tSign;
+          timings.broadcastMs = timings.signMs;
+          txid = exec.txid;
+          markBroadcast(txid);
+          if (exec.expectedOut > 0) waxOut = exec.expectedOut;
+          const tConf = Date.now();
+          const rec = await waitForTransaction(txid, { budgetMs: 1_200, attempts: 3, delayMs: 200 });
+          timings.confirmationMs = Date.now() - tConf;
+          if (rec.status === "failed") {
+            markFailed();
+            throw new Error(rec.error);
+          }
+          if (rec.status === "confirmed") {
+            const actual = assetDelta(rec.transfers, w.account, "WAX", WAX_CONTRACT);
+            if (actual > 0) waxOut = actual;
+            note = rec.transfers.length ? " · confirmed on-chain" : " · included (transfers pending)";
+            markConfirmed();
+            if (rec.transfers.length === 0) void reconcileTransfersLater(txid);
+          } else {
+            markUnknown(txid);
+            note = " · broadcast, confirmation pending — not retrying";
+            void pollUnknown(txid);
+          }
+        } catch (err) {
+          abortSigning();
+          throw err;
         }
       } else {
         w.applyPaperFill(b.base || "LEEF", decision.amountLeef, b.quote || "WAX", waxOut);
@@ -511,21 +610,40 @@ async function runBotOnceInner(
       let realizedWax: number | null = null;
       const t0 = Date.now();
       if (live) {
-        const res = await signAndPushArb({
-          account: w.account,
-          permission: w.permission,
-          plan,
-          minProfitPct: floorPct,
-          snap,
-        });
-        txid = res.txid;
-        const rec = await waitForTransaction(txid);
-        if (rec.status === "failed") throw new Error(rec.error);
-        if (rec.status === "confirmed") {
-          realizedWax = assetDelta(rec.transfers, w.account, "WAX", WAX_CONTRACT);
-          note = " · confirmed on-chain";
-        } else {
-          note = " · broadcast, confirmation pending (quoted estimate held)";
+        if (!beginSigning()) return decision;
+        const tSign = Date.now();
+        try {
+          const res = await signAndPushArb({
+            account: w.account,
+            permission: w.permission,
+            plan,
+            minProfitPct: floorPct,
+            snap,
+          });
+          timings.signMs = Date.now() - tSign;
+          timings.broadcastMs = timings.signMs;
+          txid = res.txid;
+          markBroadcast(txid);
+          const tConf = Date.now();
+          const rec = await waitForTransaction(txid, { budgetMs: 1_200, attempts: 3, delayMs: 200 });
+          timings.confirmationMs = Date.now() - tConf;
+          if (rec.status === "failed") {
+            markFailed();
+            throw new Error(rec.error);
+          }
+          if (rec.status === "confirmed") {
+            realizedWax = assetDelta(rec.transfers, w.account, "WAX", WAX_CONTRACT);
+            note = rec.transfers.length ? " · confirmed on-chain" : " · included (transfers pending)";
+            markConfirmed();
+            if (rec.transfers.length === 0) void reconcileTransfersLater(txid);
+          } else {
+            markUnknown(txid);
+            note = " · broadcast, confirmation pending — not retrying";
+            void pollUnknown(txid);
+          }
+        } catch (err) {
+          abortSigning();
+          throw err;
         }
       } else {
         // Same symbol in and out — the fill nets the profit onto the balance.
@@ -566,20 +684,23 @@ async function runBotOnceInner(
       return decision;
     }
   } catch (err) {
-    const msg = err instanceof Error ? err.message : "Trade failed";
-    if (msg.includes("429")) {
-      // Rate limited — back off instead of retrying every cycle.
+    const { code, message } = classifyTradeError(err);
+    if (code === "API_RATE_LIMIT") {
       rateLimitedUntil = Date.now() + 3 * 60_000;
       const reason = "Rate limited by the API — backing off for 3 minutes";
       b.pushDecision({ kind: "error", mode, reason, priceUsd: snap.leefUsd });
       b.setLastReason(reason);
-      toast({ title: "Rate limited", description: reason });
+      toast({ title: toastTitleFor(code), description: reason });
       return decision;
     }
-    b.pushDecision({ kind: "error", mode, reason: msg, priceUsd: snap.leefUsd });
-    b.setLastReason(msg);
-    toast({ title: "Trade failed", description: msg, variant: "destructive" });
+    const reason = `${code}: ${message}`;
+    b.pushDecision({ kind: "error", mode, reason, priceUsd: snap.leefUsd });
+    b.setLastReason(reason);
+    toast({ title: toastTitleFor(code), description: message, variant: "destructive" });
     return decision;
+  } finally {
+    timings.totalTradeCycleMs = Date.now() - cycleT0;
+    recordCycleTimings(timings);
   }
   return decision;
 }

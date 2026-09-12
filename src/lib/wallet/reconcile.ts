@@ -1,20 +1,21 @@
 /**
  * Transaction reconciliation.
  *
- * A broadcast txid is NOT a fill. After every live trade we fetch the actual
- * transaction from a Hyperion history node and read the real token transfers
- * out of it: what actually left the wallet, what actually came back. Those
- * deltas — not the router's quote — update positions, P&L and the journal.
+ * A broadcast txid is NOT a fill. After every live trade we confirm inclusion
+ * then read actual token transfers. Those deltas — not the router's quote —
+ * update positions, P&L and the journal.
+ *
+ * Fast path: RPC /v1/history/get_transaction (block inclusion).
+ * Fallback: Hyperion /v2/history/get_transaction (transfer parse).
  *
  * Statuses:
- *  - confirmed: the tx executed; transfers were parsed.
+ *  - confirmed: the tx executed; transfers were parsed when available.
  *  - failed:    the tx is on-chain but did not execute (nothing moved).
- *  - unknown:   no history node has it (yet). NEVER retry the trade on
- *               unknown — the tx may still land; retrying is how double
- *               spends happen. Reconcile first, trade later.
+ *  - unknown:   no node has it (yet). NEVER retry the trade on unknown —
+ *               the tx may still land; retrying is how double spends happen.
  */
 import { fetchJson } from "@/lib/fetchJson";
-import { HYPERION } from "./chain";
+import { getTransactionStatus, HYPERION } from "./chain";
 import { parseAsset } from "./tokens";
 
 export type TxTransfer = {
@@ -100,35 +101,76 @@ export function assetDelta(
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
+async function hyperionOnce(txid: string): Promise<ReconcileResult | null> {
+  for (const base of HYPERION) {
+    try {
+      const raw = await fetchJson(
+        `${base}/v2/history/get_transaction?id=${encodeURIComponent(txid)}`,
+        { timeoutMs: 5_000, priority: "high" },
+      );
+      const parsed = parseHyperionTransfers(raw);
+      if (!parsed) continue;
+      if (!parsed.executed) {
+        return { status: "failed", txid, error: "Transaction failed on-chain — nothing moved" };
+      }
+      return { status: "confirmed", txid, transfers: parsed.transfers };
+    } catch {
+      /* next host */
+    }
+  }
+  return null;
+}
+
 /**
- * Poll Hyperion until the transaction is indexed (or we give up).
- * Default budget ≈ 4 attempts × 2.5s + request time ≈ 12–15s, which covers
- * Hyperion's indexing lag after a successful broadcast.
+ * Confirm inclusion as quickly as the chain will tell us.
+ *
+ * 1. RPC history status (block inclusion) — usually sub-second after land.
+ * 2. Hyperion for transfer parse (needed for exact fill amounts).
+ *
+ * Default budget is short on the HOT path (~1.2s). Callers that need full
+ * transfer reconciliation can pass a longer budget; the bot should NOT
+ * hold the next-decision lock on Hyperion lag.
  */
 export async function waitForTransaction(
   txid: string,
-  opts?: { attempts?: number; delayMs?: number },
+  opts?: { attempts?: number; delayMs?: number; budgetMs?: number },
 ): Promise<ReconcileResult> {
-  const attempts = Math.max(1, opts?.attempts ?? 4);
-  const delayMs = Math.max(250, opts?.delayMs ?? 2_500);
+  const budgetMs = opts?.budgetMs ?? 1_200;
+  const attempts = Math.max(1, opts?.attempts ?? 3);
+  const delayMs = Math.max(80, opts?.delayMs ?? 250);
+  const t0 = Date.now();
+
   for (let i = 0; i < attempts; i++) {
     if (i > 0) await sleep(delayMs);
-    for (const base of HYPERION) {
-      try {
-        const raw = await fetchJson(
-          `${base}/v2/history/get_transaction?id=${encodeURIComponent(txid)}`,
-          { timeoutMs: 8_000 },
-        );
-        const parsed = parseHyperionTransfers(raw);
-        if (!parsed) continue; // not indexed yet — try the next host/attempt
-        if (!parsed.executed) {
-          return { status: "failed", txid, error: "Transaction failed on-chain — nothing moved" };
-        }
-        return { status: "confirmed", txid, transfers: parsed.transfers };
-      } catch {
-        /* try the next Hyperion host */
-      }
+    if (Date.now() - t0 > budgetMs) break;
+
+    const rpc = await getTransactionStatus(txid);
+    if (rpc === "hard_fail" || rpc === "soft_fail") {
+      return { status: "failed", txid, error: "Transaction failed on-chain — nothing moved" };
+    }
+
+    const hyp = await hyperionOnce(txid);
+    if (hyp) return hyp;
+
+    // Included but Hyperion hasn't indexed transfers yet — still a fill.
+    if (rpc === "executed") {
+      return { status: "confirmed", txid, transfers: [] };
     }
   }
   return { status: "unknown", txid };
+}
+
+/**
+ * Background transfer parse after a fast inclusion confirm. Never retries
+ * the original transaction — only reads history.
+ */
+export async function reconcileTransfersLater(
+  txid: string,
+  opts?: { attempts?: number; delayMs?: number },
+): Promise<ReconcileResult> {
+  return await waitForTransaction(txid, {
+    attempts: opts?.attempts ?? 8,
+    delayMs: opts?.delayMs ?? 800,
+    budgetMs: 12_000,
+  });
 }

@@ -2,6 +2,24 @@
 
 All notable changes to LEEF Trader. Dates are commit-era, not release tags.
 
+## Unreleased — hot-path speed + USD value risk
+
+- Snapshot hot path is market state only (tracked pools + prices). Tape,
+  remaining pools, and Defibox/Taco topology refresh in the background and
+  no longer block `runBotOnce`.
+- Live confirmation prefers RPC inclusion (~1.2s budget) over Hyperion
+  indexing. Transfer parse continues asynchronously. UNKNOWN still never
+  retries.
+- Fetch layer: HIGH/MEDIUM/LOW priority so analytics cannot starve quotes.
+- Alcor quotes: 5s timeout, 1.2s dedupe cache, inflight coalescing.
+- Defibox/Taco live legs re-read the on-chain pair row; MODEL_ONLY is not
+  executable.
+- User-facing risk is USD: `minTradeUsd` $0.01 / `maxPositionUsd` $1,000.
+  Token amounts are derived at the live quote-token mark. Old WAX clip/max
+  are **not** interpreted as dollars.
+
+---
+
 ## Unreleased — pair + focus scan (not only LEEF/WAX)
 
 - Bot trades a **base/quote** pair (LEEF/WAX, LEEF/WAXUSDC, LEEF/PARAUSD, …).
@@ -13,9 +31,9 @@ All notable changes to LEEF Trader. Dates are commit-era, not release tags.
 
 ## Unreleased — dynamic clip band + pre-trade re-optimize
 
-- `clipWax` is the **minimum** order size; `maxPositionWax` is the **ceiling**
-  (minus already held). Each entry picks a size in that band (0.1–500 can
-  fire 1, 25, 4.4, 453 — never 0.09 or 501).
+- `minTradeUsd` is the **minimum** notional; `maxPositionUsd` is the **ceiling**
+  (minus currently marked exposure). Each entry picks a token size in that
+  converted band.
 - Immediately before sign, size + route are scanned again on the current
   book so the fill is not the 30s-old candidate.
 
