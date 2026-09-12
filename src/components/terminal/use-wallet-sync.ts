@@ -1,6 +1,7 @@
 import type { LeefSnapshot } from "@/lib/leef/types";
 import { accountResources, fetchAllBalances } from "@/lib/wallet/chain";
 import { tokenCatalog } from "@/lib/wallet/tokens";
+import { canonicalBalanceBook } from "@/lib/wallet/balances";
 import { useWallet } from "@/store/wallet";
 
 /**
@@ -26,20 +27,10 @@ export async function syncWalletBalances(snap: LeefSnapshot): Promise<void> {
         ramPct: null,
       })),
     ]);
-    const bal: Record<string, number> = {};
-    for (const t of all) {
-      const prev = bal[t.symbol];
-      if (prev == null) {
-        bal[t.symbol] = t.amount;
-        continue;
-      }
-      // Scam tokens clone real symbols — the contract with a priced,
-      // non-dust pool (the universe) wins the symbol slot.
-      const inUniverse = snap.universe.some(
-        (u) => u.symbol === t.symbol && u.contract === t.contract,
-      );
-      if (inUniverse) bal[t.symbol] = t.amount;
-    }
+    // Preserve every contract under SYMBOL@CONTRACT. A bare-symbol alias is
+    // emitted only when exactly one held contract owns that symbol, so cloned
+    // USDT/WAXUSDC assets can never overwrite one another.
+    const bal = canonicalBalanceBook(all);
     useWallet.getState().setLiveBalances(bal, res);
   } catch {
     /* keep last live book */

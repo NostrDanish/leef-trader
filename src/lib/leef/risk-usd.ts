@@ -10,6 +10,8 @@
     * Never treat a WAX (or USDC) quantity as if it were dollars.
     */
 import { usdPriceOf } from "./cost-model";
+import { requireTradePrice } from "@/lib/market/price-oracle";
+import { balanceForIdentifier } from "@/lib/wallet/balances";
 import type { LeefSnapshot } from "./types";
 
 export const DEFAULT_MIN_TRADE_USD = 0.01;
@@ -67,10 +69,9 @@ export function usdToTokenBounds(opts: {
   balances: Record<string, number>;
 }): UsdBounds | { error: string } {
   const quote = opts.quote.toUpperCase();
-  const quoteUsd = usdPriceOf(quote, opts.snap);
-  if (!(quoteUsd > 0)) {
-    return { error: `No USD mark for ${quote} — cannot size a value-based trade` };
-  }
+  const authoritative = requireTradePrice(opts.snap, quote);
+  if ("error" in authoritative) return { error: authoritative.error };
+  const quoteUsd = authoritative.priceUsd;
   const minIn = tokenAmountForUsd(Math.max(0, opts.risk.minTradeUsd), quoteUsd);
   if (minIn == null) {
     return { error: `Invalid ${quote} USD price — sitting out` };
@@ -78,7 +79,7 @@ export function usdToTokenBounds(opts: {
   const positionUsd = positionMarkUsd(opts.position, opts.snap, opts.base);
   const remainingUsd = Math.max(0, opts.risk.maxPositionUsd - positionUsd);
   const remainingTokens = remainingUsd / quoteUsd;
-  const walletQuote = opts.balances[quote] ?? 0;
+  const walletQuote = balanceForIdentifier(opts.balances, opts.snap.universe, quote);
   const maxIn = Math.min(Math.max(0, walletQuote), Math.max(0, remainingTokens));
   return {
     quoteUsd,

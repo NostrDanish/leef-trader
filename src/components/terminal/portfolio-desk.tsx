@@ -21,6 +21,7 @@ import {
 import { fmtNum, fmtUsd } from "@/lib/leef/format";
 import type { LeefSnapshot } from "@/lib/leef/types";
 import { findToken } from "@/lib/leef/universe";
+import { portfolioState } from "@/lib/market/portfolio-governor";
 import { hasSecret } from "@/lib/wallet/secret";
 import { hasWalletSession } from "@/lib/wallet/session";
 import { cn } from "@/lib/utils";
@@ -42,8 +43,13 @@ export function PortfolioDesk({ snap }: { snap: LeefSnapshot }) {
   const liveReady = mode === "live" && (hasSecret() || hasWalletSession());
   const liveBook = snap.source === "live";
 
-  const { holdings, unknown } = holdingsFromBalances(balances, snap.universe);
+  const { holdings, unknown } = holdingsFromBalances(
+    balances,
+    snap.universe,
+    snap.spotAt ?? snap.fetchedAt,
+  );
   const totalUsd = holdings.reduce((s, h) => s + h.usd, 0);
+  const governor = portfolioState(snap, balances);
   const shares = targetShares(p.ladder);
   const ladderSet = new Set(p.ladder);
 
@@ -85,6 +91,17 @@ export function PortfolioDesk({ snap }: { snap: LeefSnapshot }) {
           <Badge variant={p.running ? (liveReady ? "leef" : "accent") : "plain"}>
             {p.running ? (liveReady ? "Live · running" : "Paper · running") : "Stopped"}
           </Badge>
+          <Badge
+            variant={
+              governor.state === "RUNNING"
+                ? "leef"
+                : governor.state === "ASSET_CONCENTRATION"
+                  ? "warn"
+                  : "plain"
+            }
+          >
+            Governor · {governor.state.toLowerCase().replaceAll("_", " ")}
+          </Badge>
           <Badge variant="plain">{p.cycles} cycles</Badge>
           <Badge variant="wax">{fmtUsd(p.movedUsd, 2)} moved</Badge>
         </div>
@@ -103,6 +120,18 @@ export function PortfolioDesk({ snap }: { snap: LeefSnapshot }) {
           The Alcor book is stale — sweeps pause until live data returns.
         </div>
       )}
+      <div
+        className={cn(
+          "rounded-lg border px-3 py-2 text-xs",
+          governor.state === "RUNNING"
+            ? "border-leef/30 bg-leef/5 text-muted-foreground"
+            : "border-warn/30 bg-warn/10 text-warn",
+        )}
+      >
+        Portfolio governor: {governor.reason}. Profit strategies can deploy only
+        inventory above operational reserves; post-trade concentration is simulated
+        before execution.
+      </div>
 
       <div className="grid gap-5 lg:grid-cols-5">
         {/* ------------------------------ left rail ------------------------------ */}
@@ -312,12 +341,14 @@ export function PortfolioDesk({ snap }: { snap: LeefSnapshot }) {
               </p>
             ) : (
               <div className="-mx-4 min-w-0 overflow-x-auto px-4 sm:mx-0 sm:px-0">
-                <table className="w-full min-w-[560px] text-left text-xs">
+                <table className="w-full min-w-[820px] text-left text-xs">
                   <thead className="text-subtle">
                     <tr className="border-b border-border">
                       <th className="py-2 pr-3 font-medium">Token</th>
                       <th className="py-2 pr-3 font-medium">Amount</th>
-                      <th className="py-2 pr-3 font-medium">USD</th>
+                      <th className="py-2 pr-3 font-medium">Price</th>
+                      <th className="py-2 pr-3 font-medium">USD value</th>
+                      <th className="py-2 pr-3 font-medium">Source / confidence</th>
                       <th className="py-2 pr-3 font-medium">Share</th>
                       <th className="py-2 font-medium">Target</th>
                     </tr>
@@ -345,7 +376,33 @@ export function PortfolioDesk({ snap }: { snap: LeefSnapshot }) {
                             {fmtNum(h.amount, { compact: true, digits: 4 })}
                           </td>
                           <td className="py-2.5 pr-3 font-mono tabular-nums">
+                            {fmtUsd(h.price.priceUsd, h.price.priceUsd < 0.01 ? 6 : 3)}
+                            {h.price.stableState && (
+                              <span
+                                className={cn(
+                                  "ml-1 text-[10px]",
+                                  h.price.stableState === "PEGGED" ? "text-leef" : "text-warn",
+                                )}
+                              >
+                                {h.price.stableState}
+                              </span>
+                            )}
+                          </td>
+                          <td className="py-2.5 pr-3 font-mono tabular-nums">
                             {fmtUsd(h.usd, 2)}
+                          </td>
+                          <td className="py-2.5 pr-3">
+                            <span className="block text-foreground">
+                              {h.price.source.replaceAll("-", " ")}
+                            </span>
+                            <span
+                              className={cn(
+                                "font-mono tabular-nums",
+                                h.price.confidence >= 0.8 ? "text-leef" : "text-warn",
+                              )}
+                            >
+                              {(h.price.confidence * 100).toFixed(0)}% · {fmtUsd(h.price.liquidityUsd, 0)} liq
+                            </span>
                           </td>
                           <td className="py-2.5 pr-3">
                             <span className="flex items-center gap-2">

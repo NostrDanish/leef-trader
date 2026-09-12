@@ -35,20 +35,12 @@ describe("hot-path timings shape", () => {
     const t = emptyTimings();
     expect(t.snapshotFetchMs).toBe(0);
     expect(t.totalTradeCycleMs).toBe(0);
-    expect(Object.keys(t)).toEqual([
-      "snapshotFetchMs",
-      "poolRefreshMs",
-      "tradeHistoryMs",
-      "venueDiscoveryMs",
-      "routeSearchMs",
-      "netEdgeMs",
-      "quoteMs",
-      "policyMs",
-      "signMs",
-      "broadcastMs",
-      "confirmationMs",
-      "totalTradeCycleMs",
-    ]);
+    expect(t.queueWaitMs).toBe(0);
+    expect(t.priceOracleMs).toBe(0);
+    expect(t.sizeOptimizationMs).toBe(0);
+    expect(t.riskMs).toBe(0);
+    expect(t.candidateCount).toBe(0);
+    expect(t.routeCount).toBe(0);
   });
 });
 

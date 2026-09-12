@@ -2,6 +2,8 @@ import type { LeefSnapshot } from "./types";
 import { findToken, type UniverseToken } from "./universe";
 import { fetchAlcorRouteCached } from "@/lib/leef/quote-verify";
 import type { AlcorRouteQuote } from "@/lib/wallet/alcor-route";
+import { balanceAmount, canonicalBalanceEntries } from "@/lib/wallet/balances";
+import { tokenPrice, type TokenPrice } from "@/lib/market/price-oracle";
 
 /**
  * Priority-ladder rebalancer.
@@ -19,7 +21,12 @@ import type { AlcorRouteQuote } from "@/lib/wallet/alcor-route";
  * split routes included), so what the plan shows is what the chain does.
  */
 
-export type Holding = { token: UniverseToken; amount: number; usd: number };
+export type Holding = {
+  token: UniverseToken;
+  amount: number;
+  usd: number;
+  price: TokenPrice;
+};
 
 export type PlannedLeg = {
   from: UniverseToken;
@@ -83,24 +90,31 @@ export function targetShares(ladder: string[]): Map<string, number> {
   return map;
 }
 
-/** Value wallet balances against the universe. */
+/** Value wallet balances against the authoritative contract-aware oracle. */
 export function holdingsFromBalances(
   balances: Record<string, number>,
   universe: UniverseToken[],
+  fetchedAt = new Date().toISOString(),
 ): { holdings: Holding[]; unknown: string[] } {
   const holdings: Holding[] = [];
-  const unknown: string[] = [];
-  for (const [symbol, amount] of Object.entries(balances)) {
-    if (!(amount > 0)) continue;
-    const token = findToken(universe, symbol);
-    if (!token || !(token.usdPrice > 0)) {
-      unknown.push(symbol);
-      continue;
-    }
-    const usd = amount * token.usdPrice;
+  const knownKeys = new Set<string>();
+  const snapLike = { universe, fetchedAt, waxUsd: 0, leefUsd: 0 };
+  for (const { token, amount } of canonicalBalanceEntries(balances, universe)) {
+    const id = `${token.symbol}@${token.contract}`;
+    knownKeys.add(id.toUpperCase());
+    const price = tokenPrice(snapLike, id);
+    if (!price || !(price.priceUsd > 0)) continue;
+    const usd = amount * price.priceUsd;
     if (usd < 0.005) continue;
-    holdings.push({ token, amount, usd });
+    holdings.push({ token, amount, usd, price });
   }
+  const unknown = Object.keys(balances).filter((key) => {
+    if (!((balances[key] ?? 0) > 0)) return false;
+    if (key.includes("@")) return !knownKeys.has(key.toUpperCase());
+    // Ignore a safe convenience alias when exactly one universe contract owns
+    // the symbol; report genuinely unknown or ambiguous legacy balances.
+    return universe.filter((t) => t.symbol === key.toUpperCase()).length !== 1;
+  });
   holdings.sort((a, b) => b.usd - a.usd);
   return { holdings, unknown };
 }
@@ -126,8 +140,8 @@ export function planRebalance(input: {
   const legs: PlannedLeg[] = [];
   const spentByToken = new Map<string, number>();
   const spendable = (t: UniverseToken): number => {
-    const bal = balances[t.symbol] ?? 0;
-    const reserve = t.symbol === "WAX" ? reserveWax : 0;
+    const bal = balanceAmount(balances, t, input.universe);
+    const reserve = t.symbol === "WAX" && t.contract === "eosio.token" ? reserveWax : 0;
     return Math.max(0, bal - reserve - (spentByToken.get(t.alcorId) ?? 0));
   };
   const commitSpend = (t: UniverseToken, amount: number) =>
@@ -209,36 +223,46 @@ export function planRebalance(input: {
   return { legs: capped, notes, totalUsd, unroutable };
 }
 
-/** Attach live Alcor router quotes; legs without a route drop out. */
+/** Attach live Alcor router quotes with bounded parallelism. */
 export async function quoteLegs(
   legs: PlannedLeg[],
   account: string,
   slippage: number,
   maxImpactPct: number,
+  concurrency = 3,
 ): Promise<PlannedLeg[]> {
-  const out: PlannedLeg[] = [];
-  for (const leg of legs) {
-    try {
-      const quote = await fetchAlcorRouteCached({
-        tokenInId: leg.from.alcorId,
-        tokenOutId: leg.to.alcorId,
-        amount: leg.amountIn,
-        slippagePct: slippage,
-        receiver: account,
-        maxHops: 10,
-      });
-      const impact = parseFloat(quote.priceImpact);
-      if (Number.isFinite(impact) && impact > maxImpactPct) {
-        out.push({ ...leg, quoteError: `Impact ${impact.toFixed(1)}% above ${maxImpactPct}% cap` });
-        continue;
+  const out = new Array<PlannedLeg>(legs.length);
+  let next = 0;
+  const worker = async () => {
+    for (;;) {
+      const i = next++;
+      const leg = legs[i];
+      if (!leg) return;
+      try {
+        const quote = await fetchAlcorRouteCached({
+          tokenInId: leg.from.alcorId,
+          tokenOutId: leg.to.alcorId,
+          amount: leg.amountIn,
+          slippagePct: slippage,
+          receiver: account,
+          maxHops: 10,
+        });
+        const impact = parseFloat(quote.priceImpact);
+        out[i] = Number.isFinite(impact) && impact > maxImpactPct
+          ? { ...leg, quoteError: `Impact ${impact.toFixed(1)}% above ${maxImpactPct}% cap` }
+          : { ...leg, quote };
+      } catch (err) {
+        out[i] = {
+          ...leg,
+          quoteError: err instanceof Error ? err.message : "No route",
+        };
       }
-      out.push({ ...leg, quote });
-    } catch (err) {
-      out.push({
-        ...leg,
-        quoteError: err instanceof Error ? err.message : "No route",
-      });
     }
-  }
+  };
+  const workers = Array.from(
+    { length: Math.min(Math.max(1, Math.floor(concurrency)), legs.length) },
+    () => worker(),
+  );
+  await Promise.all(workers);
   return out;
 }

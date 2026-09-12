@@ -349,12 +349,24 @@ export function InfraStatus() {
         </Section>
 
         <Section title="Trade cycle timings (last live trade)">
+          <TimingRow label="request queue" ms={timings.queueWaitMs} />
+          <TimingRow label="network" ms={timings.networkMs} />
+          <TimingRow label="JSON parse" ms={timings.parseMs} />
+          <TimingRow label="price oracle" ms={timings.priceOracleMs} />
           <TimingRow label="route search" ms={timings.routeSearchMs} />
+          <TimingRow label="size optimization" ms={timings.sizeOptimizationMs} />
           <TimingRow label="net edge" ms={timings.netEdgeMs} />
+          <TimingRow label="risk / governor" ms={timings.riskMs} />
           <TimingRow label="quote" ms={timings.quoteMs} />
           <TimingRow label="sign" ms={timings.signMs} />
           <TimingRow label="confirmation" ms={timings.confirmationMs} />
           <TimingRow label="total trade" ms={timings.totalTradeCycleMs} />
+          <div className="flex items-center justify-between border-t border-border pt-1 font-mono">
+            <span className="text-muted-foreground">candidates / routes / quotes</span>
+            <span className="text-fg">
+              {timings.candidateCount} / {timings.routeCount} / {timings.quoteCount}
+            </span>
+          </div>
         </Section>
       </div>
 

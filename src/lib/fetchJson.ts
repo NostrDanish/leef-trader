@@ -26,7 +26,22 @@ export type FetchPriority = "high" | "medium" | "low";
 
 const PRIORITY_RANK: Record<FetchPriority, number> = { high: 0, medium: 1, low: 2 };
 
-type Waiter = { resolve: () => void; priority: FetchPriority };
+type Waiter = { resolve: () => void; priority: FetchPriority; signal?: AbortSignal };
+
+export type FetchTiming = {
+  url: string;
+  priority: FetchPriority;
+  queueWaitMs: number;
+  networkMs: number;
+  parseMs: number;
+  totalMs: number;
+  status: number | null;
+};
+
+let lastTiming: FetchTiming | null = null;
+export function lastFetchTiming(): FetchTiming | null {
+  return lastTiming;
+}
 
 /** host → in-flight count + waiters */
 const hostLoad = new Map<string, { inFlight: number; queue: Waiter[] }>();
@@ -47,7 +62,11 @@ function hostOf(url: string): string {
 
 function takeNext(queue: Waiter[], inFlight: number): Waiter | undefined {
   if (queue.length === 0) return undefined;
-  // When the host is nearly full, only HIGH may take the reserved slot.
+  // Cancelled/obsolete market requests leave the queue before consuming a
+  // network slot. This is especially important for LOW discovery work.
+  for (let i = queue.length - 1; i >= 0; i--) {
+    if (queue[i]!.signal?.aborted) queue.splice(i, 1);
+  }
   const highOnly = inFlight >= MAX_PER_HOST - HIGH_RESERVED;
   let bestI = -1;
   for (let i = 0; i < queue.length; i++) {
@@ -59,7 +78,12 @@ function takeNext(queue: Waiter[], inFlight: number): Waiter | undefined {
   return queue.splice(bestI, 1)[0];
 }
 
-async function acquire(host: string, priority: FetchPriority): Promise<() => void> {
+async function acquire(
+  host: string,
+  priority: FetchPriority,
+  signal?: AbortSignal,
+): Promise<() => void> {
+  if (signal?.aborted) throw new DOMException("Request cancelled before queue", "AbortError");
   if (!host) return () => undefined;
   let entry = hostLoad.get(host);
   if (!entry) {
@@ -72,8 +96,21 @@ async function acquire(host: string, priority: FetchPriority): Promise<() => voi
     return false;
   };
   if (!canGo()) {
-    await new Promise<void>((resolve) => entry!.queue.push({ resolve, priority }));
+    await new Promise<void>((resolve, reject) => {
+      const waiter: Waiter = { resolve, priority, signal };
+      entry!.queue.push(waiter);
+      signal?.addEventListener(
+        "abort",
+        () => {
+          const i = entry!.queue.indexOf(waiter);
+          if (i >= 0) entry!.queue.splice(i, 1);
+          reject(new DOMException("Queued request cancelled", "AbortError"));
+        },
+        { once: true },
+      );
+    });
   }
+  if (signal?.aborted) throw new DOMException("Queued request cancelled", "AbortError");
   entry.inFlight += 1;
   return () => {
     entry!.inFlight -= 1;
@@ -97,20 +134,33 @@ function withTimeout(user: AbortSignal | undefined, timeoutMs: number): AbortSig
   return user.aborted ? user : t;
 }
 
-async function attempt(url: string, init: RequestInit, timeoutMs: number): Promise<unknown> {
+async function attempt(
+  url: string,
+  init: RequestInit,
+  timeoutMs: number,
+): Promise<{ value: unknown; networkMs: number; parseMs: number; status: number }> {
+  const networkAt = performance.now();
   const res = await fetch(url, {
     ...init,
     signal: withTimeout(init.signal ?? undefined, timeoutMs),
   });
   const text = await res.text();
+  const networkMs = performance.now() - networkAt;
   if (!res.ok) {
     // Keep enough of the body to expose Antelope eosio_assert details[].message
     // (a 180-char slice cut the real contract assert off entirely).
     throw new FetchJsonError(`HTTP ${res.status}: ${text.slice(0, 600)}`, res.status);
   }
-  if (!text) return null;
+  if (!text) return { value: null, networkMs, parseMs: 0, status: res.status };
+  const parseAt = performance.now();
   try {
-    return JSON.parse(text);
+    const value: unknown = JSON.parse(text);
+    return {
+      value,
+      networkMs,
+      parseMs: performance.now() - parseAt,
+      status: res.status,
+    };
   } catch {
     throw new FetchJsonError(`Invalid JSON from ${new URL(url).hostname}`);
   }
@@ -122,11 +172,24 @@ async function callHost(
   timeoutMs: number,
   priority: FetchPriority,
 ): Promise<unknown> {
+  const totalAt = performance.now();
   const host = hostOf(url);
   await cooldownWait(host);
-  const release = await acquire(host, priority);
+  const queueAt = performance.now();
+  const release = await acquire(host, priority, init.signal ?? undefined);
+  const queueWaitMs = performance.now() - queueAt;
   try {
-    return await attempt(url, init, timeoutMs);
+    const result = await attempt(url, init, timeoutMs);
+    lastTiming = {
+      url,
+      priority,
+      queueWaitMs,
+      networkMs: result.networkMs,
+      parseMs: result.parseMs,
+      totalMs: performance.now() - totalAt,
+      status: result.status,
+    };
+    return result.value;
   } catch (err) {
     const status = err instanceof FetchJsonError ? err.status : undefined;
     if (status === 429 || status === 503) {
@@ -135,7 +198,17 @@ async function callHost(
       hostCooldown.set(host, Date.now() + 10_000 + Math.random() * 5_000);
       if (retryable) {
         await cooldownWait(host);
-        return await attempt(url, init, timeoutMs);
+        const retry = await attempt(url, init, timeoutMs);
+        lastTiming = {
+          url,
+          priority,
+          queueWaitMs,
+          networkMs: retry.networkMs,
+          parseMs: retry.parseMs,
+          totalMs: performance.now() - totalAt,
+          status: retry.status,
+        };
+        return retry.value;
       }
     }
     throw err;

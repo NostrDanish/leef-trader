@@ -1,5 +1,6 @@
 import { bestExecutionRoute, splitSlices } from "@/lib/leef/route-optimizer";
-import { getLeefSnapshot } from "@/lib/leef/snapshot";
+import { refreshExecutionState } from "@/lib/market/execution-state";
+import { governTrade } from "@/lib/market/portfolio-governor";
 import type { LeefSnapshot } from "@/lib/leef/types";
 import { assetDelta, waitForTransaction } from "./reconcile";
 import { signAndPushBatch, signAndPushSwap, type BatchLeg } from "./sign";
@@ -39,18 +40,10 @@ export async function executeSwap(opts: {
       `Need ${opts.amountIn} ${opts.tokenIn.toUpperCase()}, wallet has ${have.toFixed(4)}`,
     );
   }
-  // Fresh book, then size-specific route. Live still requotes Alcor CLMM
-  // immediately before sign (executable truth).
+  // Size-specific route from the engine cache, then refresh ONLY its critical
+  // pools when stale. The signer still obtains the final executable quote.
   let book = opts.snap;
-  if (opts.snap.source === "live") {
-    try {
-      const latest = await getLeefSnapshot();
-      if (latest.source === "live") book = latest;
-    } catch {
-      /* keep the desk snapshot */
-    }
-  }
-  const route = bestExecutionRoute(
+  let route = bestExecutionRoute(
     book.pools,
     book.aux,
     opts.amountIn,
@@ -58,6 +51,37 @@ export async function executeSwap(opts: {
     opts.tokenOut,
   );
   if (!route) throw new Error("No backed route for this pair and size");
+  if (opts.snap.source === "live") {
+    const exec = await refreshExecutionState(opts.snap, route);
+    book = exec.snap;
+    route = bestExecutionRoute(
+      book.pools,
+      book.aux,
+      opts.amountIn,
+      opts.tokenIn,
+      opts.tokenOut,
+    );
+    if (!route) throw new Error("Route disappeared after critical-pool refresh");
+  }
+  const governed = governTrade(book, w.balances(), {
+    tokenIn: opts.tokenIn,
+    tokenOut: opts.tokenOut,
+    amountIn: opts.amountIn,
+    expectedOut: route.amountOut,
+    // Manual swaps are explicit user intent, but still need an economically
+    // non-destructive route. Positive output delta is not a profit forecast;
+    // classify this as portfolio maintenance so reserves/concentration govern.
+    expectedNetProfitUsd: 0,
+    kind: "rebalance",
+    route,
+  });
+  if (!governed.allowed || governed.allowedAmountIn + 1e-12 < opts.amountIn) {
+    throw new Error(
+      governed.allowed
+        ? `Portfolio reserve allows only ${governed.allowedAmountIn.toFixed(8)} ${opts.tokenIn}`
+        : `Portfolio governor: ${governed.reason}`,
+    );
+  }
 
   const slices = splitSlices(route);
   if (w.canSign()) {

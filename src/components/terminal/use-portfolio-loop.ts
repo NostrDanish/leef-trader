@@ -40,7 +40,7 @@ export async function runRebalancer(snap: LeefSnapshot, opts?: { force?: boolean
     }
 
     const balances = w.balances();
-    const { holdings, unknown } = holdingsFromBalances(balances, snap.universe);
+    const { holdings, unknown } = holdingsFromBalances(balances, snap.universe, snap.spotAt ?? snap.fetchedAt);
     if (holdings.length === 0) {
       p.setLastPlanNote("No priced holdings found in this wallet");
       return;

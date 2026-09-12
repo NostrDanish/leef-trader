@@ -20,11 +20,12 @@ export function tokenCatalog(
   snap?: Pick<LeefSnapshot, "pools" | "aux" | "universe">,
 ): TokenMeta[] {
   const map = new Map<string, TokenMeta>();
-  for (const t of BASE) map.set(t.symbol, t);
+  const key = (symbol: string, contract: string) => `${symbol.toUpperCase()}@${contract}`;
+  for (const t of BASE) map.set(key(t.symbol, t.contract), t);
   const put = (symbol: string, contract: string, decimals: number) => {
     const s = symbol.toUpperCase();
-    if (!s || !contract || map.has(s)) return;
-    map.set(s, {
+    if (!s || !contract || map.has(key(s, contract))) return;
+    map.set(key(s, contract), {
       symbol: s,
       contract,
       decimals: decimals || 4,
@@ -46,16 +47,23 @@ export function tokenCatalog(
 }
 
 export function metaOf(
-  symbol: string,
+  identifier: string,
   snap?: Pick<LeefSnapshot, "pools" | "aux" | "universe">,
 ): TokenMeta {
-  const s = symbol.toUpperCase();
-  return tokenCatalog(snap).find((t) => t.symbol === s) ?? {
-    symbol: s,
-    contract: "eosio.token",
-    decimals: 4,
-    alcorId: `${s.toLowerCase()}-eosio.token`,
-  };
+  const raw = identifier.trim();
+  const up = raw.toUpperCase();
+  const catalog = tokenCatalog(snap);
+  const exact =
+    catalog.find((t) => t.alcorId === raw.toLowerCase()) ??
+    catalog.find((t) => `${t.symbol}@${t.contract}`.toUpperCase() === up);
+  if (exact) return exact;
+  const matches = catalog.filter((t) => t.symbol === up);
+  if (matches.length === 1) return matches[0]!;
+  throw new Error(
+    matches.length > 1
+      ? `${up} is ambiguous — select SYMBOL@CONTRACT`
+      : `Unknown token ${identifier} — contract identity required`,
+  );
 }
 
 /**

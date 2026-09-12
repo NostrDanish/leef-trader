@@ -2,6 +2,32 @@
 
 All notable changes to LEEF Trader. Dates are commit-era, not release tags.
 
+## Unreleased — price oracle + execution state + portfolio governor
+
+- Authoritative contract-aware `TokenPriceOracle`: portfolio and risk prices
+  now carry source, age, confidence, liquidity, raw market observation and
+  stable target/deviation/state. Weak/tiny stable observations cannot turn 53
+  WAXUSDC into $23; stressed/depegged/uncertain prices are blocked for trading.
+- Canonical wallet balances use `SYMBOL@CONTRACT`; bare-symbol aliases exist
+  only when one held contract is unambiguous. `findToken` and `metaOf` now fail
+  closed on same-symbol contract collisions.
+- Compact `ExecutionMarketState` replaces the bot/manual swap's second full
+  snapshot rebuild: only route-critical Alcor pools and price references are
+  refreshed if stale, then the existing fresh executable venue quote remains
+  mandatory before signing.
+- Portfolio Governor simulates after-trade inventory, preserves absolute USD
+  operating reserves, enforces concentration bands, and can resize strategy
+  proposals to deployable capital. Profit, rebalance, and volume intents are
+  classified separately.
+- Rebalancer quotes run with bounded parallelism (three by default) rather than
+  serially; `fetchJson` now cancels obsolete queued requests and reports queue,
+  network, parse and total latency.
+- Portfolio holdings show unit price, USD value, price source, confidence,
+  liquidity and stable state; the Infrastructure desk includes expanded
+  request/oracle/size/risk timing counters.
+
+---
+
 ## Unreleased — persistent market engine + provider failover + stable fix
 
 The app is now a persistent Antelope trading engine with a React terminal

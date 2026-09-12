@@ -5,13 +5,15 @@ import {
   type ArbPlan,
   type Position,
 } from "@/lib/leef/bot-engine";
-import { realizedVolPerSec, usdPriceOf } from "@/lib/leef/cost-model";
+import { realizedVolPerSec } from "@/lib/leef/cost-model";
 import { optimizeEntrySize } from "@/lib/leef/net-edge";
 import { fmtNum } from "@/lib/leef/format";
 import { fetchAlcorRouteCached } from "@/lib/leef/quote-verify";
 import { exceedsMaxPositionUsd, usdToTokenBounds } from "@/lib/leef/risk-usd";
-import { getLeefSnapshot, lastSnapshotTimings } from "@/lib/leef/snapshot";
+import { lastSnapshotTimings } from "@/lib/leef/snapshot";
 import { bestExecutionRoute } from "@/lib/leef/route-optimizer";
+import { refreshExecutionState } from "@/lib/market/execution-state";
+import { governTrade, portfolioState } from "@/lib/market/portfolio-governor";
 import type { LeefSnapshot } from "@/lib/leef/types";
 import { parseAssetAmount, type AlcorRouteQuote } from "@/lib/wallet/alcor-route";
 import { WAX_CONTRACT } from "@/lib/leef/types";
@@ -36,14 +38,12 @@ import { useBot } from "@/store/bot";
 import { clampSyncSec, DEFAULT_SYNC_SEC, useTerminal } from "@/store/terminal";
 import { useWallet } from "@/store/wallet";
 import { toast } from "@/hooks/useToast";
+import { lastFetchTiming } from "@/lib/fetchJson";
 
 function equityUsdOf(balances: Record<string, number>, snap: LeefSnapshot): number {
-  let usd = (balances.LEEF ?? 0) * snap.leefUsd;
-  for (const [sym, qty] of Object.entries(balances)) {
-    if (sym === "LEEF") continue;
-    usd += qty * usdPriceOf(sym, snap);
-  }
-  return usd;
+  // Portfolio governor already canonicalizes balances and avoids double-counting
+  // legacy aliases, so equity cannot merge two same-symbol contracts.
+  return portfolioState(snap, balances).totalUsd;
 }
 
 /**
@@ -242,15 +242,23 @@ async function runBotOnceInner(
 
   if (opts?.dry) return decision;
 
-  // Fresh book right before capital moves (live + paper). Fail closed if
-  // Alcor is gone — never size/route on a stale fallback.
+  // Compact pre-trade state: refresh only critical route/price pools if the
+  // engine's chain spot is stale. Never rebuild the full 11 MB universe here;
+  // signAndPushSwap still obtains a fresh venue-specific executable quote.
   let book = snap;
   if (snap.source === "live") {
+    const tMarket = Date.now();
     try {
-      const latest = await getLeefSnapshot();
-      if (latest.source === "live") book = latest;
-    } catch {
-      /* keep the cycle's snapshot */
+      const exec = await refreshExecutionState(snap, "route" in decision ? decision.route : null);
+      book = exec.snap;
+      timings.poolRefreshMs = exec.refreshMs;
+    } catch (err) {
+      const reason = `Critical execution state unavailable: ${err instanceof Error ? err.message : "refresh failed"}`;
+      b.pushDecision({ kind: "hold", mode, reason, priceUsd: snap.leefUsd });
+      b.setLastReason(reason);
+      return { kind: "hold", reason };
+    } finally {
+      timings.snapshotFetchMs = Date.now() - tMarket;
     }
   }
 
@@ -282,6 +290,7 @@ async function runBotOnceInner(
     const thesis =
       decision.expectedGrossPct ?? Math.max(b.goals.takeProfitPct * 0.5, 0.2);
     const tEdge = Date.now();
+    const tSize = Date.now();
     const fresh = optimizeEntrySize({
       snap: book,
       tokenIn: quoteTok,
@@ -292,7 +301,10 @@ async function runBotOnceInner(
       maxIn: bounds.maxIn,
       volPerSec: realizedVolPerSec(b.series),
     });
+    timings.sizeOptimizationMs = Date.now() - tSize;
     timings.netEdgeMs = Date.now() - tEdge;
+    timings.candidateCount = fresh?.tried.length ?? 0;
+    timings.routeCount = fresh ? 1 : 0;
     if (!fresh) {
       const reason = `Pre-trade size scan found nothing in ${bounds.minIn.toFixed(4)}–${bounds.maxIn.toFixed(4)} ${quoteTok} ($${b.risk.minTradeUsd.toFixed(2)}–$${bounds.remainingUsd.toFixed(2)})`;
       b.pushDecision({ kind: "hold", mode, reason, priceUsd: snap.leefUsd });
@@ -351,6 +363,51 @@ async function runBotOnceInner(
       return { kind: "hold", reason };
     }
     decision = { ...decision, route: routed };
+  }
+
+  // Portfolio Governor: simulate the AFTER portfolio before execution. A
+  // profitable strategy cannot consume operational inventory or create an
+  // unusable concentration. It may resize a buy to the actually deployable
+  // amount; strategy decides WHAT, governor decides HOW MUCH.
+  if (decision.kind === "buy") {
+    const tRisk = Date.now();
+    const governed = governTrade(book, balances, {
+      tokenIn: quoteTok,
+      tokenOut: baseTok,
+      amountIn: decision.amountWax,
+      expectedOut: decision.route.amountOut,
+      expectedNetProfitUsd: decision.edge?.netProfitUsd ?? 0,
+      kind: "profit",
+      route: decision.route,
+    });
+    timings.riskMs = Date.now() - tRisk;
+    if (!governed.allowed) {
+      const reason = `Portfolio governor: ${governed.reason}`;
+      b.pushDecision({ kind: "hold", mode, reason, priceUsd: book.leefUsd });
+      b.setLastReason(reason);
+      return { kind: "hold", reason };
+    }
+    if (governed.allowedAmountIn + 1e-12 < decision.amountWax) {
+      const resized = bestExecutionRoute(
+        book.pools,
+        book.aux,
+        governed.allowedAmountIn,
+        quoteTok,
+        baseTok,
+      );
+      if (!resized || governed.allowedAmountIn < bounds.minIn) {
+        const reason = "Portfolio governor reserve leaves no economically viable clip";
+        b.pushDecision({ kind: "hold", mode, reason, priceUsd: book.leefUsd });
+        b.setLastReason(reason);
+        return { kind: "hold", reason };
+      }
+      decision = {
+        ...decision,
+        amountWax: governed.allowedAmountIn,
+        route: resized,
+        reason: `${decision.reason} · ${governed.reason}`,
+      };
+    }
   }
 
   // WAX resource preflight: never sign a live trade on an exhausted account.
@@ -708,6 +765,12 @@ async function runBotOnceInner(
     toast({ title: toastTitleFor(code), description: message, variant: "destructive" });
     return decision;
   } finally {
+    const fetchTiming = lastFetchTiming();
+    if (fetchTiming) {
+      timings.queueWaitMs = fetchTiming.queueWaitMs;
+      timings.networkMs = fetchTiming.networkMs;
+      timings.parseMs = fetchTiming.parseMs;
+    }
     timings.totalTradeCycleMs = Date.now() - cycleT0;
     recordCycleTimings(timings);
   }

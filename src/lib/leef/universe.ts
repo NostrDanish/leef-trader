@@ -6,6 +6,7 @@ import {
   stableUsdPrice,
   type StableState,
 } from "@/lib/market/stables";
+import type { PriceSource } from "@/lib/market/price-oracle";
 
 /**
  * The tradable token universe on Alcor/WAX, built from the full pool list.
@@ -30,8 +31,14 @@ export type UniverseToken = {
   stable: boolean;
   /** Trusted-stable oracle state (PEGGED/…/UNKNOWN) when `stable`. */
   stableState?: StableState;
-  /** 0..1 price confidence from the stable oracle. */
+  /** 0..1 price confidence from the authoritative price oracle. */
   priceConfidence?: number;
+  /** Raw market observation (may differ from stable target valuation). */
+  marketPriceUsd?: number;
+  /** Human/machine-readable price provenance. */
+  priceSource?: PriceSource;
+  /** Unix ms when this token price was last derived. */
+  priceTimestamp?: number;
 };
 
 type RawToken = {
@@ -61,11 +68,25 @@ function priceWithStableOracle(
   contract: string,
   observedUsd: number,
   liquidityUsd: number,
-): { usdPrice: number; stable: boolean; stableState?: StableState; priceConfidence?: number } {
+): {
+  usdPrice: number;
+  stable: boolean;
+  stableState?: StableState;
+  priceConfidence?: number;
+  marketPriceUsd: number;
+  priceSource: PriceSource;
+  priceTimestamp: number;
+} {
   if (!isTrustedStable(symbol, contract)) {
     // Symbol clone on a foreign contract: NOT a stable — price it as-is and
     // never force it to $1.
-    return { usdPrice: observedUsd, stable: false };
+    return {
+      usdPrice: observedUsd,
+      stable: false,
+      marketPriceUsd: observedUsd,
+      priceSource: "alcor-wax",
+      priceTimestamp: Date.now(),
+    };
   }
   const oracle = stableUsdPrice(observedUsd, { liquidityUsd });
   return {
@@ -73,6 +94,9 @@ function priceWithStableOracle(
     stable: true,
     stableState: oracle.state,
     priceConfidence: oracle.confidence,
+    marketPriceUsd: observedUsd,
+    priceSource: "stable-anchor+alcor",
+    priceTimestamp: Date.now(),
   };
 }
 
@@ -125,6 +149,9 @@ export function buildUniverse(rawPools: unknown, waxUsd: number): UniverseToken[
       stable: oracle.stable,
       stableState: oracle.stableState,
       priceConfidence: oracle.priceConfidence,
+      marketPriceUsd: oracle.marketPriceUsd,
+      priceSource: oracle.priceSource,
+      priceTimestamp: oracle.priceTimestamp,
     });
   };
 
@@ -212,6 +239,9 @@ export function repriceUniverse(
         stable: oracle.stable,
         stableState: oracle.stableState,
         priceConfidence: oracle.priceConfidence,
+        marketPriceUsd: oracle.marketPriceUsd,
+        priceSource: oracle.priceSource,
+        priceTimestamp: oracle.priceTimestamp,
       };
     }
     if (isTrustedStable(other.symbol.toUpperCase(), other.contract)) {
@@ -228,24 +258,34 @@ export function repriceUniverse(
         stable: oracle.stable,
         stableState: oracle.stableState,
         priceConfidence: oracle.priceConfidence,
+        marketPriceUsd: oracle.marketPriceUsd,
+        priceSource: oracle.priceSource,
+        priceTimestamp: oracle.priceTimestamp,
       };
     }
     return t;
   });
 }
 
-/** Case/contract-insensitive lookup. Accepts "WAX", "wax-eosio.token" or "WAX@eosio.token". */
+/**
+ * Contract-aware lookup. Accepts an Alcor id or SYMBOL@CONTRACT. A bare
+ * symbol resolves ONLY when the universe contains exactly one matching
+ * contract; ambiguous symbols fail closed instead of picking whichever row
+ * happened to sort first.
+ */
 export function findToken(
   universe: UniverseToken[],
   idOrSymbol: string,
 ): UniverseToken | undefined {
   const s = idOrSymbol.trim();
   const up = s.toUpperCase();
-  return (
+  const exact =
     universe.find((t) => t.alcorId === s.toLowerCase()) ??
-    universe.find((t) => `${t.symbol}@${t.contract}`.toUpperCase() === up) ??
-    universe.find((t) => t.symbol === up)
-  );
+    universe.find((t) => `${t.symbol}@${t.contract}`.toUpperCase() === up);
+  if (exact) return exact;
+  if (s.includes("@") || s.includes("-")) return undefined;
+  const matches = universe.filter((t) => t.symbol === up);
+  return matches.length === 1 ? matches[0] : undefined;
 }
 
 export function usdOf(universe: UniverseToken[], idOrSymbol: string): number {
@@ -323,6 +363,9 @@ export function mergeUniverseFromBook(
       stable: oracle.stable,
       stableState: oracle.stableState,
       priceConfidence: oracle.priceConfidence,
+      marketPriceUsd: oracle.marketPriceUsd,
+      priceSource: oracle.priceSource,
+      priceTimestamp: oracle.priceTimestamp,
     });
   }
   for (const p of aux) {
@@ -347,6 +390,9 @@ export function mergeUniverseFromBook(
         stable: oracle.stable,
         stableState: oracle.stableState,
         priceConfidence: oracle.priceConfidence,
+        marketPriceUsd: oracle.marketPriceUsd,
+        priceSource: oracle.priceSource,
+        priceTimestamp: oracle.priceTimestamp,
       });
     }
     if (bWax && p.tokenB.quantity > 0 && p.tokenA.quantity > 0 && waxUsd > 0) {
@@ -368,6 +414,9 @@ export function mergeUniverseFromBook(
         stable: oracle.stable,
         stableState: oracle.stableState,
         priceConfidence: oracle.priceConfidence,
+        marketPriceUsd: oracle.marketPriceUsd,
+        priceSource: oracle.priceSource,
+        priceTimestamp: oracle.priceTimestamp,
       });
     }
   }

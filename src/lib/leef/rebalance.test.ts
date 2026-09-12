@@ -50,6 +50,17 @@ describe("holdingsFromBalances", () => {
     expect(holdings.find((h) => h.token.symbol === "TLM")?.usd).toBeCloseTo(2.4, 8);
     expect(holdings.find((h) => h.token.symbol === "DUST")?.usd).toBeCloseTo(0.42, 8);
   });
+
+  it("does not merge same-symbol contracts", () => {
+    const dupes = [tok("USDT", "a.token", 1), tok("USDT", "b.token", 0.2)];
+    const { holdings } = holdingsFromBalances(
+      { "USDT@a.token": 5, "USDT@b.token": 7 },
+      dupes,
+    );
+    expect(holdings).toHaveLength(2);
+    expect(holdings.find((h) => h.token.contract === "a.token")?.usd).toBeCloseTo(5, 8);
+    expect(holdings.find((h) => h.token.contract === "b.token")?.usd).toBeCloseTo(1.4, 8);
+  });
 });
 
 describe("planRebalance", () => {

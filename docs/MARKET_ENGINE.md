@@ -186,6 +186,68 @@ power saving. The engine never trusts old timers:
 - a stale book (> cadence + 15 s) is **never** traded — the bot journals
   "not trading from stale data".
 
+## Authoritative price oracle
+
+`src/lib/market/price-oracle.ts` is the only economic interpretation layer
+for token prices. Every `TokenPrice` includes:
+
+- canonical `SYMBOL@CONTRACT` identity,
+- portfolio/risk `priceUsd`,
+- raw `marketPriceUsd`,
+- source, timestamp/age, confidence and liquidity,
+- stable target/deviation/state,
+- `tradeAllowed` plus an actionable reason.
+
+Trusted stables use a bounded model: PEGGED/MINOR observations use their deep
+market mark; weak, tiny or divergent observations cannot turn 53 WAXUSDC into
+$23, so accounting stays at the explicit stable anchor while the divergent
+market value remains visible. `STRESSED`, `DEPEGGED`, low-confidence or stale
+prices are not allowed to size or authorize trades. An unknown token merely
+containing "USD" never receives the anchor.
+
+Bare symbols are no longer economic identity. `findToken`, `metaOf`, balance
+sync, holdings and risk sizing resolve `SYMBOL@CONTRACT`; a bare symbol works
+only when exactly one contract is unambiguous. Hyperion balance rows are kept
+as canonical keys, and compatibility aliases are emitted only for unique
+symbols.
+
+## Background state vs execution state
+
+The full snapshot remains the background state (universe discovery, tape,
+analytics, venue topology). `src/lib/market/execution-state.ts` is the compact
+pre-trade state: if the chain spot is older than eight seconds, it refreshes
+only the candidate route's Alcor pool ids plus the WAX/stable references.
+The bot and manual swap paths no longer call `getLeefSnapshot()` a second time
+before capital moves. After the compact refresh, the venue adapter still
+obtains a fresh executable quote immediately before signing.
+
+## Portfolio Governor
+
+`src/lib/market/portfolio-governor.ts` sits between Net Edge and Risk. It
+simulates the complete post-trade portfolio and asks whether the proposal is
+profitable **and** leaves the machine operational. Configurable canonical
+asset bands define target/min/max shares and absolute USD reserves.
+
+For each proposal it records before/after portfolio, requested and allowed
+amount, reserve impact, concentration impact, state and reason. A strategy can
+propose a $100 buy; the governor can resize it to the deployable $38, reject it
+for concentration, or classify an intentional maintenance trade as
+`REBALANCING`. Profit strategies cannot consume reserves; maintenance trades
+may repair an already concentrated portfolio.
+
+State model: RUNNING / WAITING / LOW_LIQUIDITY / ASSET_CONCENTRATION /
+REBALANCING / BLOCKED. Security, resource, policy and unknown-transaction
+errors remain hard blocks—they never trigger "buy something" behavior.
+
+## Request scheduling and quote parallelism
+
+`fetchJson.ts` retains its HIGH/MEDIUM/LOW queue and HIGH-reserved host slot,
+adds cancellation while requests are still queued, and records queue wait,
+network, parse and total latency. Obsolete low-priority requests leave the
+queue before consuming a network slot. Rebalancer legs now quote with bounded
+parallelism (default three); output order remains deterministic and the
+existing per-host scheduler still limits Alcor load.
+
 ## Wallet session vs market session
 
 - `WalletSession` — account, permission, auth type, signer (in-memory
@@ -204,6 +266,18 @@ power saving. The engine never trusts old timers:
   and Hyperion endpoint (latency / block lag / score / tx-eligibility),
   market state (Alcor API + on-chain spot), route cache stats, signer
   session, automation phase, suspension history, and the endpoint editor.
+
+## Honest venue execution limits
+
+Alcor is the only integrated venue currently exposing a fresh exact CLMM
+router response with ready-to-sign min-out memos. Defibox and Taco legs are
+re-read from their on-chain pair rows immediately before signing, then quoted
+with their constant-product reserve math and an on-chain min-out memo. That is
+fresh validation, but it is not an external exact router simulation. Such
+legs remain subject to the existing `MODEL_ONLY` / liquidity-drift checks and
+are never mislabeled as globally optimal. Route search itself is a bounded
+heuristic over paths and numerical splits; extra hops win only when modeled
+output is better and final execution validation succeeds.
 
 ## Market-data priorities
 

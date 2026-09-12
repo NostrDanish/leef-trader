@@ -26,14 +26,24 @@ export type CycleTimings = {
   poolRefreshMs: number;
   tradeHistoryMs: number;
   venueDiscoveryMs: number;
+  queueWaitMs: number;
+  networkMs: number;
+  parseMs: number;
+  priceOracleMs: number;
   routeSearchMs: number;
+  sizeOptimizationMs: number;
   netEdgeMs: number;
   quoteMs: number;
+  riskMs: number;
   policyMs: number;
   signMs: number;
   broadcastMs: number;
   confirmationMs: number;
   totalTradeCycleMs: number;
+  candidateCount: number;
+  routeCount: number;
+  quoteCount: number;
+  rejectedCandidates: number;
 };
 
 export const emptyTimings = (): CycleTimings => ({
@@ -41,14 +51,24 @@ export const emptyTimings = (): CycleTimings => ({
   poolRefreshMs: 0,
   tradeHistoryMs: 0,
   venueDiscoveryMs: 0,
+  queueWaitMs: 0,
+  networkMs: 0,
+  parseMs: 0,
+  priceOracleMs: 0,
   routeSearchMs: 0,
+  sizeOptimizationMs: 0,
   netEdgeMs: 0,
   quoteMs: 0,
+  riskMs: 0,
   policyMs: 0,
   signMs: 0,
   broadcastMs: 0,
   confirmationMs: 0,
   totalTradeCycleMs: 0,
+  candidateCount: 0,
+  routeCount: 0,
+  quoteCount: 0,
+  rejectedCandidates: 0,
 });
 
 type Lock = {
