@@ -13,6 +13,7 @@ import {
   packedTransactionBody,
   packTransferData,
   signingDigest,
+  transactionIdOf,
   transactionHeaderFromInfo,
   type AddLiquidData,
   type ChainInfo,
@@ -20,7 +21,9 @@ import {
   type SubLiquidData,
   type TransferActionData,
 } from "./antelope";
-import { getChainInfo, pushSigned } from "./chain";
+import { BroadcastTimeoutError, getChainInfo, pushSigned } from "./chain";
+import { reconcileTransfersLater } from "./reconcile";
+import { markConfirmed, markFailed, markUnknown } from "./trade-cycle";
 import {
   ALCOR_SWAP_CONTRACT,
   arbFloorViolation,
@@ -200,9 +203,34 @@ async function dispatchActions(opts: {
     })),
   });
 
+  // Transaction id is sha256(packed_trx) — known BEFORE broadcast, so a
+  // network timeout can be reconciled by txid instead of guessed at.
+  const txid = transactionIdOf(packedTx);
   const digest = signingDigest(rawInfo.chain_id, packedTx);
   const signature = signDigest(digest);
-  return await pushSigned(packedTransactionBody(packedTx, [signature]));
+  try {
+    return await pushSigned(packedTransactionBody(packedTx, [signature]));
+  } catch (err) {
+    if (err instanceof BroadcastTimeoutError) {
+      // The node never answered — the transaction may still land. Lock the
+      // capital as UNKNOWN with the known txid and let reconciliation decide.
+      // NEVER re-sign, NEVER re-broadcast, NEVER duplicate-spend.
+      markUnknown(txid);
+      // Start reconciliation here, at the boundary where the txid is known.
+      // The caller may classify/return the error, but this read-only poll keeps
+      // running and is the only path that can unlock UNKNOWN capital.
+      void reconcileTransfersLater(txid).then((rec) => {
+        if (rec.status === "confirmed") markConfirmed();
+        else if (rec.status === "failed") markFailed();
+        // still unknown → stay locked; never submit another transaction
+      });
+      throw new TradeError(
+        "TRANSACTION_UNKNOWN",
+        `Broadcast timed out — tracking tx ${txid.slice(0, 10)}… on-chain; not resubmitting`,
+      );
+    }
+    throw err;
+  }
 }
 
 function transferSpec(contract: string, data: TransferActionData): ActionSpec {

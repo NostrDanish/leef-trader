@@ -15,7 +15,8 @@
  *               the tx may still land; retrying is how double spends happen.
  */
 import { fetchJson } from "@/lib/fetchJson";
-import { getTransactionStatus, HYPERION } from "./chain";
+import { getTransactionStatus } from "./chain";
+import { historyPool } from "@/lib/wax/provider-pool";
 import { parseAsset } from "./tokens";
 
 export type TxTransfer = {
@@ -102,10 +103,14 @@ export function assetDelta(
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 async function hyperionOnce(txid: string): Promise<ReconcileResult | null> {
-  for (const base of HYPERION) {
+  const hosts = historyPool
+    .health()
+    .filter((e) => e.status !== "disabled")
+    .slice(0, 3);
+  for (const e of hosts) {
     try {
       const raw = await fetchJson(
-        `${base}/v2/history/get_transaction?id=${encodeURIComponent(txid)}`,
+        `${e.url}/v2/history/get_transaction?id=${encodeURIComponent(txid)}`,
         { timeoutMs: 5_000, priority: "high" },
       );
       const parsed = parseHyperionTransfers(raw);

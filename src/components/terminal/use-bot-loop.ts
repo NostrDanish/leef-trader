@@ -1,4 +1,3 @@
-import { useEffect, useRef } from "react";
 import {
   adaptiveCooldownSec,
   evaluateBot,
@@ -739,41 +738,44 @@ function seedSeriesFromTape(snap: LeefSnapshot) {
   }
 }
 
-/** Drives the bot: appends the real 30s print, then evaluates each cycle. */
-export function useBotLoop(snap: LeefSnapshot) {
-  const fetchedAt = snap.fetchedAt;
-  const running = useBot((s) => s.running);
-  const lastSnap = useRef("");
-  const prevRunning = useRef(false);
+/**
+ * Per-snapshot bot bookkeeping + evaluation driver.
+ *
+ * Used to live inside a React effect; now a plain function the MarketEngine
+ * calls on every fresh (or on-chain patched) snapshot — the trading loop
+ * keeps running no matter what the component tree does.
+ */
+let lastSeenSnap = "";
+let prevRunning = false;
 
-  useEffect(() => {
-    const justStarted = running && !prevRunning.current;
-    prevRunning.current = running;
+export function botOnSnapshot(snap: LeefSnapshot): void {
+  const b = useBot.getState();
+  const justStarted = b.running && !prevRunning;
+  prevRunning = b.running;
 
-    const b = useBot.getState();
-    const isNewSnap = lastSnap.current !== fetchedAt;
-    if (isNewSnap) {
-      lastSnap.current = fetchedAt;
-      seedSeriesFromTape(snap);
-      if (snap.leefUsd > 0) {
-        const t = Date.parse(fetchedAt) || Date.now();
-        const last = b.series[b.series.length - 1];
-        if (!last || t - last.t > 15_000) b.pushSeries({ t, usd: snap.leefUsd });
-      }
-      if (b.position && snap.leefUsd > b.position.highUsd) {
-        b.bumpPositionHigh(snap.leefUsd);
-      }
+  const identity = `${snap.fetchedAt}|${snap.spotAt ?? ""}`;
+  const isNewSnap = lastSeenSnap !== identity;
+  if (isNewSnap) {
+    lastSeenSnap = identity;
+    seedSeriesFromTape(snap);
+    if (snap.leefUsd > 0) {
+      const t = Date.parse(snap.fetchedAt) || Date.now();
+      const last = b.series[b.series.length - 1];
+      if (!last || t - last.t > 15_000) b.pushSeries({ t, usd: snap.leefUsd });
     }
-    if (!b.running) return;
-    if (!isNewSnap && !justStarted) return;
-    if (Date.now() < rateLimitedUntil) {
-      if (b.lastReason !== "rate-limited") {
-        b.setLastReason(
-          `Rate limited — paused until ${new Date(rateLimitedUntil).toISOString().slice(11, 19)} UTC`,
-        );
-      }
-      return;
+    if (b.position && snap.leefUsd > b.position.highUsd) {
+      b.bumpPositionHigh(snap.leefUsd);
     }
-    void runBotOnce(snap);
-  }, [fetchedAt, running, snap]);
+  }
+  if (!b.running) return;
+  if (!isNewSnap && !justStarted) return;
+  if (Date.now() < rateLimitedUntil) {
+    if (b.lastReason !== "rate-limited") {
+      b.setLastReason(
+        `Rate limited — paused until ${new Date(rateLimitedUntil).toISOString().slice(11, 19)} UTC`,
+      );
+    }
+    return;
+  }
+  void runBotOnce(snap);
 }

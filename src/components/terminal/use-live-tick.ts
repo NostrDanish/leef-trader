@@ -11,6 +11,7 @@ import {
 } from "@/lib/leef/tick-engine";
 import type { LeefPool, LeefSnapshot, SwapRoute } from "@/lib/leef/types";
 import { rankExecutionRoutes } from "@/lib/leef/route-optimizer";
+import { routesCached } from "@/lib/market/route-cache";
 import { useTerminal } from "@/store/terminal";
 
 export type LiveTickState = {
@@ -64,9 +65,21 @@ export function useLiveTick(snap: LeefSnapshot): LiveTickState {
   );
 
   const amount = Number(amountIn) || 0;
+  const routePoolIds = useMemo(
+    () => [...snap.pools.map((p) => p.id), ...snap.aux.map((p) => p.id)],
+    [snap.pools, snap.aux],
+  );
   const routes = useMemo(
-    () => rankExecutionRoutes(snap.pools, snap.aux, amount, tokenIn, tokenOut),
-    [snap.pools, snap.aux, amount, tokenIn, tokenOut],
+    () =>
+      routesCached(
+        () => rankExecutionRoutes(snap.pools, snap.aux, amount, tokenIn, tokenOut),
+        {
+          key: `terminal:${tokenIn.toUpperCase()}>${tokenOut.toUpperCase()}`,
+          poolIds: routePoolIds,
+          inputsKey: amount.toPrecision(12),
+        },
+      ),
+    [snap.pools, snap.aux, amount, tokenIn, tokenOut, routePoolIds],
   );
   const bestRoute = routes[0] ?? null;
   const swapPoolId = bestRoute ? leefLegPoolId(bestRoute) : (bestBuy?.pool.id ?? null);

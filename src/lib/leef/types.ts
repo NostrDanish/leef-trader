@@ -118,6 +118,11 @@ export type SnapshotSource = "live" | "fallback";
 export type LeefSnapshot = {
   source: SnapshotSource;
   fetchedAt: string;
+  /**
+   * When on-chain pool state (swap.alcor table reads) last patched this
+   * snapshot's prices — the block-driven heartbeat between API pulls.
+   */
+  spotAt?: string;
   waxUsd: number;
   leefUsd: number;
   waxPerLeef: number;

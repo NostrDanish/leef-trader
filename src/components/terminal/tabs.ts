@@ -8,6 +8,7 @@ import {
   LineChart,
   PieChart,
   Radio,
+  ServerCog,
   Wallet,
   type LucideIcon,
 } from "lucide-react";
@@ -26,4 +27,5 @@ export const TABS: TabDef[] = [
   { id: "pool", label: "Pool desk", short: "LP", icon: LineChart },
   { id: "il", label: "IL calc", short: "IL", icon: Calculator },
   { id: "tape", label: "Tape", short: "Tape", icon: Activity },
+  { id: "infra", label: "Infrastructure", short: "Infra", icon: ServerCog },
 ];

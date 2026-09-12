@@ -2,14 +2,22 @@
 
 A WAX-native trading terminal and automated trading engine for the LEEF
 ecosystem, executing on Alcor's concentrated-liquidity AMM. Browser-based,
-non-custodial: keys never leave the tab.
+non-custodial: keys never leave the tab. The site loads **once** — a
+persistent market engine (block heartbeat, health-scored RPC failover,
+on-chain pool state) keeps prices, routes, balances and strategies updating
+continuously with no page refresh and no key re-import.
 
 [![Edit with Shakespeare](https://shakespeare.diy/badge.svg)](https://shakespeare.diy/clone?url=https%3A%2F%2Fgithub.com%2FNostrDanish%2Fleef-trader.git)
 
 ## What it does
 
-- **Terminal**: live LEEF pool book from Alcor (30s refresh), ranked routes,
-  tape of recent fills, pool analytics, LP management, token universe.
+- **Terminal**: live LEEF pool book (Alcor API pulls + direct `swap.alcor`
+  table reads between them), ranked routes, tape of recent fills, pool
+  analytics, LP management, token universe.
+- **Infrastructure**: a health-scored pool of 8 WAX RPC nodes + 5 Hyperion
+  history nodes with automatic failover, cooldown/restore, block-lag
+  rejection and runtime endpoint configuration — plus a live infrastructure
+  status desk. See [MARKET ENGINE](./docs/MARKET_ENGINE.md).
 - **Manual trading**: Buy Now / Sell Now pick the **best executable route for
   that exact size** across Alcor, Defibox, and TacoSwap (direct, multi-hop, or
   split) — paper by default, live when a wallet/session key is connected.
@@ -36,7 +44,9 @@ strategy signal
   → execution policy     transaction policy firewall (allowlisted
                          contracts/actions/tokens/receivers)
   → Alcor CLMM router    fresh exact quote, min-out enforced on-chain
-  → sign + broadcast     session key (in-memory) or WCW/Anchor
+  → sign + broadcast     session key (in-memory) or WCW/Anchor —
+                         ONE submission; a timeout locks capital as
+                         UNKNOWN with the known txid, never a duplicate
   → reconcile            actual transfers read back from the chain —
                          positions and P&L settle from chain truth
   → calibration          predicted vs realized edge recorded per strategy
@@ -46,8 +56,9 @@ If no trade clears the required net edge after costs, the bot does nothing.
 Doing nothing is a successful decision.
 
 See [`docs/`](./docs/) for the full documentation set — start with
-[ARCHITECTURE](./docs/ARCHITECTURE.md), [TRADING ENGINE](./docs/TRADING_ENGINE.md)
-and [NET EDGE](./docs/NET_EDGE.md).
+[ARCHITECTURE](./docs/ARCHITECTURE.md),
+[MARKET ENGINE](./docs/MARKET_ENGINE.md),
+[TRADING ENGINE](./docs/TRADING_ENGINE.md) and [NET EDGE](./docs/NET_EDGE.md).
 
 ## Develop
 

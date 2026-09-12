@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { restoreWallet } from "@/lib/wallet/session";
+import { marketEngine } from "@/lib/market/market-engine";
 import { useTerminal } from "@/store/terminal";
 import { useWallet } from "@/store/wallet";
 import { BotDesk } from "./bot-desk";
@@ -7,6 +8,7 @@ import { Dashboard } from "./dashboard";
 import { TerminalHeader } from "./header";
 import { IlCalc } from "./il";
 import { ImportKeyDialog } from "./import-key";
+import { InfraStatus } from "./infra-status";
 import { LiveStrip } from "./live-strip";
 import { Overview } from "./overview";
 import { PoolsTable } from "./pools";
@@ -16,21 +18,22 @@ import { DesktopNav, MobileNav } from "./shell-nav";
 import { StatusBar } from "./status-bar";
 import { Tape } from "./tape";
 import { TickDesk } from "./tick";
-import { useBotLoop } from "./use-bot-loop";
 import { useLiveTick } from "./use-live-tick";
-import { usePortfolioLoop } from "./use-portfolio-loop";
 import { useSnapshot } from "./use-snapshot";
-import { useWalletSync } from "./use-wallet-sync";
 import { WalletDesk } from "./wallet-desk";
 
 export function TerminalApp() {
   const { snap, ranked, isFetching, refetch, dataUpdatedAt, syncSec } = useSnapshot();
   const tick = useLiveTick(snap);
-  useWalletSync(snap);
-  useBotLoop(snap);
-  usePortfolioLoop(snap);
   const tab = useTerminal((s) => s.tab);
   const [countdown, setCountdown] = useState(syncSec);
+
+  // The persistent market engine: chain heartbeat, market pulls, on-chain
+  // pool state, balances, bot + rebalancer drivers, suspension resync.
+  // Started ONCE — it outlives every component (no refresh, ever).
+  useEffect(() => {
+    marketEngine.start();
+  }, []);
 
   // Restore an external wallet session (Cloud Wallet / Anchor) on load.
   useEffect(() => {
@@ -95,6 +98,7 @@ export function TerminalApp() {
         {tab === "wallet" && <WalletDesk snap={snap} />}
         {tab === "bot" && <BotDesk snap={snap} />}
         {tab === "portfolio" && <PortfolioDesk snap={snap} />}
+        {tab === "infra" && <InfraStatus />}
       </main>
 
       <footer className="border-t border-border py-4 pb-24 text-xs text-subtle md:pb-4">

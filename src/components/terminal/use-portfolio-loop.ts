@@ -1,4 +1,3 @@
-import { useEffect, useRef } from "react";
 import {
   holdingsFromBalances,
   planRebalance,
@@ -223,24 +222,26 @@ function fmtCompact(n: number): string {
     : n.toLocaleString(undefined, { maximumFractionDigits: 4 });
 }
 
-/** Interval driver — evaluates the book and fires the rebalancer when due. */
-export function usePortfolioLoop(snap: LeefSnapshot) {
-  const fetchedAt = snap.fetchedAt;
-  const running = usePortfolio((s) => s.running);
-  const prevRunning = useRef(false);
-  const lastSnap = useRef("");
+let lastSeenSnap = "";
+let prevRunning = false;
 
-  useEffect(() => {
-    const justStarted = running && !prevRunning.current;
-    prevRunning.current = running;
-    const isNewSnap = lastSnap.current !== fetchedAt;
-    if (isNewSnap) lastSnap.current = fetchedAt;
+/**
+ * Per-snapshot rebalancer driver (plain function — called by the MarketEngine,
+ * not by a React effect). Evaluates the book and fires the rebalancer when due.
+ */
+export function rebalancerOnSnapshot(snap: LeefSnapshot): void {
+  const running = usePortfolio.getState().running;
+  const justStarted = running && !prevRunning;
+  prevRunning = running;
 
-    const p = usePortfolio.getState();
-    if (!p.running) return;
-    const due = Date.now() - p.lastRunAt >= p.settings.intervalSec * 1000;
-    if (!due && !justStarted) return;
-    if (!isNewSnap && !justStarted) return;
-    void runRebalancer(snap);
-  }, [fetchedAt, running, snap]);
+  const identity = `${snap.fetchedAt}|${snap.spotAt ?? ""}`;
+  const isNewSnap = lastSeenSnap !== identity;
+  if (isNewSnap) lastSeenSnap = identity;
+
+  const p = usePortfolio.getState();
+  if (!p.running) return;
+  const due = Date.now() - p.lastRunAt >= p.settings.intervalSec * 1000;
+  if (!due && !justStarted) return;
+  if (!isNewSnap && !justStarted) return;
+  void runRebalancer(snap);
 }

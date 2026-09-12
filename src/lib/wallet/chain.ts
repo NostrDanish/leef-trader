@@ -1,16 +1,19 @@
 import { parseAsset, type TokenMeta } from "./tokens";
 import { fetchJson } from "@/lib/fetchJson";
+import { historyPool, rpcPool, BroadcastTimeoutError } from "@/lib/wax/provider-pool";
+
+export { BroadcastTimeoutError };
 
 /**
- * Public WAX (Antelope) RPC endpoints. Called directly from the browser;
- * fetchJson retries through a CORS proxy if a node doesn't allow the origin.
+ * WAX chain access — every call goes through the health-scored provider
+ * pools (src/lib/wax/provider-pool.ts). No hardcoded endpoint lists, no
+ * blind sequential retry:
+ *
+ *  - READS: best-health endpoint first, automatic failover.
+ *  - TRANSACTIONS: ONE submission to a trading-eligible node. A timeout
+ *    surfaces as BroadcastTimeoutError for reconciliation — the signed
+ *    payload is never blindly re-broadcast.
  */
-const WAX_RPC = [
-  "https://wax.greymass.com",
-  "https://wax.eosrio.io",
-  "https://api.waxsweden.org",
-  "https://wax.eosphere.io",
-];
 
 export async function rpcPost(
   path: string,
@@ -18,15 +21,7 @@ export async function rpcPost(
   timeoutMs = 12_000,
   priority: "high" | "medium" | "low" = "medium",
 ): Promise<unknown> {
-  let last = "WAX RPC failed";
-  for (const base of WAX_RPC) {
-    try {
-      return await fetchJson(`${base}${path}`, { method: "POST", body, timeoutMs, priority });
-    } catch (err) {
-      last = err instanceof Error ? err.message : last;
-    }
-  }
-  throw new Error(last);
+  return await rpcPool.call(path, body, { timeoutMs, priority });
 }
 
 /** Fast inclusion check — does not wait for Hyperion history indexing. */
@@ -35,14 +30,18 @@ export async function getTransactionStatus(
 ): Promise<"executed" | "soft_fail" | "hard_fail" | "unknown"> {
   const body = { id: txid };
   const settled = await Promise.allSettled(
-    WAX_RPC.slice(0, 2).map((base) =>
-      fetchJson(`${base}/v1/history/get_transaction`, {
-        method: "POST",
-        body,
-        timeoutMs: 700,
-        priority: "high",
-      }),
-    ),
+    rpcPool
+      .health()
+      .filter((e) => e.status !== "disabled")
+      .slice(0, 3)
+      .map((e) =>
+        fetchJson(`${e.url}/v1/history/get_transaction`, {
+          method: "POST",
+          body,
+          timeoutMs: 700,
+          priority: "high",
+        }),
+      ),
   );
   for (const r of settled) {
     if (r.status !== "fulfilled") continue;
@@ -200,19 +199,28 @@ export async function fetchBalances(
 }
 
 export async function getChainInfo(): Promise<unknown> {
-  return await rpcPost("/v1/chain/get_info", {}, 8_000);
+  return await rpcPool.getInfo(8_000);
+}
+
+/** Head-block snapshot for the engine heartbeat (also feeds health scores). */
+export async function headInfo(): Promise<{
+  headBlock: number;
+  libBlock: number;
+  headBlockTime: string;
+  chainId: string;
+}> {
+  const info = await rpcPool.getInfo(4_000);
+  return {
+    headBlock: Number(info.head_block_num ?? 0),
+    libBlock: Number(info.last_irreversible_block_num ?? 0),
+    headBlockTime: String(info.head_block_time ?? ""),
+    chainId: String(info.chain_id ?? ""),
+  };
 }
 
 /* ------------------------------------------------------------------ */
-/* Full wallet token scan (Hyperion)                                   */
+/* Full wallet token scan (Hyperion history pool)                       */
 /* ------------------------------------------------------------------ */
-
-/** Hyperion history endpoints (also used by the reconciler). */
-export const HYPERION = [
-  "https://api.waxsweden.org",
-  "https://wax.eosphere.io",
-  "https://wax.eosusa.io",
-];
 
 export type TokenBalance = {
   symbol: string;
@@ -222,35 +230,34 @@ export type TokenBalance = {
 };
 
 /**
- * Every token balance of an account in one Hyperion call.
- * Falls back to per-token /v1/chain/get_currency_balance for `known` tokens
- * when no Hyperion endpoint answers.
+ * Every token balance of an account in one Hyperion call (history pool with
+ * failover). Falls back to per-token /v1/chain/get_currency_balance for
+ * `known` tokens when no Hyperion endpoint answers.
  */
 export async function fetchAllBalances(
   account: string,
   known: TokenMeta[],
 ): Promise<TokenBalance[]> {
-  for (const base of HYPERION) {
-    try {
-      const raw = (await fetchJson(
-        `${base}/v2/state/get_tokens?account=${encodeURIComponent(account)}&limit=400`,
-        { timeoutMs: 10_000 },
-      )) as {
-        tokens?: { symbol?: string; precision?: number; amount?: number; contract?: string }[];
-      };
-      if (raw && Array.isArray(raw.tokens)) {
-        return raw.tokens
-          .filter((t) => t && typeof t.amount === "number" && t.symbol && t.contract)
-          .map((t) => ({
-            symbol: String(t.symbol).toUpperCase(),
-            contract: String(t.contract),
-            decimals: Number(t.precision ?? 4) || 4,
-            amount: t.amount as number,
-          }));
-      }
-    } catch {
-      /* try the next Hyperion endpoint */
+  try {
+    const raw = (await historyPool.call(
+      `/v2/state/get_tokens?account=${encodeURIComponent(account)}&limit=400`,
+      undefined,
+      { timeoutMs: 10_000, priority: "medium", method: "GET" },
+    )) as {
+      tokens?: { symbol?: string; precision?: number; amount?: number; contract?: string }[];
+    };
+    if (raw && Array.isArray(raw.tokens)) {
+      return raw.tokens
+        .filter((t) => t && typeof t.amount === "number" && t.symbol && t.contract)
+        .map((t) => ({
+          symbol: String(t.symbol).toUpperCase(),
+          contract: String(t.contract),
+          decimals: Number(t.precision ?? 4) || 4,
+          amount: t.amount as number,
+        }));
     }
+  } catch {
+    /* fall back to chain RPC below */
   }
   const bal = await fetchBalances(account, known);
   return known.map((t) => ({
@@ -261,12 +268,19 @@ export async function fetchAllBalances(
   }));
 }
 
+/**
+ * Broadcast a SIGNED transaction. Exactly ONE submission to a
+ * trading-eligible node. No failover and no retry here — regardless of HTTP
+ * vs network failure. The caller knows sha256(packed_trx) before this call,
+ * so any ambiguous response can be reconciled safely without a duplicate.
+ */
 export async function pushSigned(signed: unknown): Promise<{ txid: string }> {
-  const raw = (await rpcPost("/v1/chain/push_transaction", signed, 15_000)) as {
-    transaction_id?: string;
-    processed?: { id?: string };
-  };
-  const txid = raw.transaction_id ?? raw.processed?.id;
+  const raw = await rpcPool.pushTransaction("/v1/chain/push_transaction", signed, {
+    timeoutMs: 15_000,
+    priority: "high",
+  });
+  const r = raw as { transaction_id?: string; processed?: { id?: string } };
+  const txid = r.transaction_id ?? r.processed?.id;
   if (!txid) throw new Error("Broadcast did not return a transaction id");
   return { txid };
 }

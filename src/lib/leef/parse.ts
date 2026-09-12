@@ -1,5 +1,6 @@
 import { feeToPct, isLeefToken, isWaxToken, q64Price } from "./amm";
 import type { AuxPool, LeefPool, LiveTrade, TokenRef } from "./types";
+import { isTrustedStable } from "@/lib/market/stables";
 
 function num(v: unknown): number {
   if (typeof v === "number" && Number.isFinite(v)) return v;
@@ -144,8 +145,10 @@ export function attachUsdPrices(
   let waxUsd = waxUsdHint ?? 0;
   const usdtPool = aux.find(
     (p) =>
-      (isWaxToken(p.tokenA) && p.tokenB.symbol === "USDT") ||
-      (isWaxToken(p.tokenB) && p.tokenA.symbol === "USDT"),
+      (isWaxToken(p.tokenA) &&
+        isTrustedStable(p.tokenB.symbol.toUpperCase(), p.tokenB.contract)) ||
+      (isWaxToken(p.tokenB) &&
+        isTrustedStable(p.tokenA.symbol.toUpperCase(), p.tokenA.contract)),
   );
   if (usdtPool && waxUsd <= 0) {
     const wax = isWaxToken(usdtPool.tokenA) ? usdtPool.tokenA : usdtPool.tokenB;
@@ -166,19 +169,22 @@ export function attachUsdPrices(
   const leefUsd =
     leefUsdHint && leefUsdHint > 0 ? leefUsdHint : waxPerLeef * waxUsd;
 
-  const waxBySymbol = new Map<string, number>();
-  waxBySymbol.set("WAX", 1);
+  // Canonical per-token conversion map: "SYMBOL@contract" → WAX per token.
+  // Symbol alone is NOT identity — a clone "WAXUSDC" on a foreign contract
+  // must never borrow the real one's price.
+  const waxByToken = new Map<string, number>();
+  waxByToken.set("WAX@eosio.token", 1);
   for (const p of aux) {
     const aWax = isWaxToken(p.tokenA);
     const bWax = isWaxToken(p.tokenB);
     if (aWax && p.tokenA.quantity > 0) {
-      waxBySymbol.set(
-        p.tokenB.symbol,
+      waxByToken.set(
+        `${p.tokenB.symbol.toUpperCase()}@${p.tokenB.contract}`,
         p.tokenB.quantity > 0 ? p.tokenA.quantity / p.tokenB.quantity : 0,
       );
     } else if (bWax && p.tokenB.quantity > 0) {
-      waxBySymbol.set(
-        p.tokenA.symbol,
+      waxByToken.set(
+        `${p.tokenA.symbol.toUpperCase()}@${p.tokenA.contract}`,
         p.tokenA.quantity > 0 ? p.tokenB.quantity / p.tokenA.quantity : 0,
       );
     }
@@ -188,16 +194,19 @@ export function attachUsdPrices(
     if (isWaxToken(p.pair)) {
       p.waxPerLeef = p.pairPerLeef;
     } else {
-      const pairInWax = waxBySymbol.get(p.pair.symbol);
+      const pairInWax = waxByToken.get(`${p.pair.symbol.toUpperCase()}@${p.pair.contract}`);
       if (pairInWax && pairInWax > 0) p.waxPerLeef = p.pairPerLeef * pairInWax;
     }
-    if (p.waxPerLeef != null) p.usdPerLeef = p.waxPerLeef * waxUsd;
-    else if (p.pair.symbol === "USDT" || p.pair.symbol === "WAXUSDC") {
+    if (p.waxPerLeef != null) {
+      p.usdPerLeef = p.waxPerLeef * waxUsd;
+    } else if (isTrustedStable(p.pair.symbol.toUpperCase(), p.pair.contract)) {
+      // Only the TRUSTED stable contract prices LEEF directly in USD —
+      // a symbol clone on another contract is just another volatile pair.
       p.usdPerLeef = p.pairPerLeef;
     }
     if (p.tvlUsd <= 0) {
       if (isWaxToken(p.pair)) p.tvlUsd = p.pair.quantity * 2 * waxUsd;
-      else if (p.pair.symbol === "USDT" || p.pair.symbol === "WAXUSDC") {
+      else if (isTrustedStable(p.pair.symbol.toUpperCase(), p.pair.contract)) {
         p.tvlUsd = p.pair.quantity * 2;
       }
     }

@@ -28,6 +28,7 @@
  * the current book/series or a documented, configurable CostConfig value.
  */
 import type { LeefSnapshot, SwapRoute } from "./types";
+import { isTrustedStable } from "@/lib/market/stables";
 
 export type CostConfig = {
   /** Estimated WAX CPU/NET cost of one transaction, USD. ≈0 when staked. */
@@ -69,12 +70,19 @@ export type CostBreakdown = {
   fixedUsd: number;
 };
 
-/** USD mid price of a token from the snapshot's own book math. 0 = unpriceable. */
+/**
+ * USD mid price of a token from the snapshot's own book math. 0 = unpriceable.
+ * Canonical identity: when several universe entries share a symbol (clone
+ * tokens), the TRUSTED contract wins — a scam "WAXUSDC" never sets the price.
+ */
 export function usdPriceOf(symbol: string, snap: LeefSnapshot): number {
   const s = symbol.toUpperCase();
   if (s === "WAX") return snap.waxUsd;
   if (s === "LEEF") return snap.leefUsd;
-  return snap.universe.find((u) => u.symbol === s)?.usdPrice ?? 0;
+  const matches = snap.universe.filter((u) => u.symbol === s);
+  if (matches.length === 0) return 0;
+  const trusted = matches.find((u) => isTrustedStable(u.symbol, u.contract));
+  return (trusted ?? matches[0]!).usdPrice;
 }
 
 /**

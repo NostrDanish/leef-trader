@@ -3,6 +3,7 @@ import { marketStats } from "@/lib/leef/analytics";
 import { fmtNum, timeAgo } from "@/lib/leef/format";
 import { headline } from "@/lib/leef/rank";
 import type { LeefSnapshot, RankedPool } from "@/lib/leef/types";
+import { useMarketEngine } from "@/hooks/useMarketEngine";
 import { cn } from "@/lib/utils";
 import {
   clampSyncSec,
@@ -23,12 +24,24 @@ export function StatusBar({
   countdown: number;
 }) {
   const [mounted, setMounted] = useState(false);
+  const [now, setNow] = useState(Date.now());
   useEffect(() => setMounted(true), []);
+  // Live infra pulse (head block age etc.) between engine commits.
+  useEffect(() => {
+    const id = window.setInterval(() => setNow(Date.now()), 1000);
+    return () => window.clearInterval(id);
+  }, []);
+  const engine = useMarketEngine();
   const h = headline(ranked);
   const stats = marketStats(snap);
   const synced = mounted ? timeAgo(snap.fetchedAt) : "just now";
   const syncSec = useTerminal((s) => clampSyncSec(s.syncSec ?? DEFAULT_SYNC_SEC));
   const setSyncSec = useTerminal((s) => s.setSyncSec);
+  const blockAgeSec =
+    engine.headBlockAt > 0 ? Math.max(0, (now - engine.headBlockAt) / 1000) : null;
+  const blockFresh = blockAgeSec != null && blockAgeSec < 5;
+  const bestRpc = engine.rpc[0];
+  const spotAgeMs = engine.snapshot?.spotAt ? now - Date.parse(engine.snapshot.spotAt) : null;
 
   return (
     <div className="border-b border-border bg-surface">
@@ -84,6 +97,39 @@ export function StatusBar({
           )}
         </div>
         <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
+          <span
+            className="font-mono tabular-nums"
+            title={`Head block · best RPC ${bestRpc ? bestRpc.url : "—"} (${bestRpc ? `${Math.round(bestRpc.latencyMs ?? 0)}ms` : "—"})`}
+          >
+            <span className={blockFresh ? "text-leef" : "text-warn"}>●</span> WAX{" "}
+            {blockAgeSec != null ? (
+              <span className={cn(blockFresh ? "text-fg" : "text-warn")}>
+                #{fmtNum(engine.headBlock, { digits: 0 })} · {blockAgeSec.toFixed(1)}s
+              </span>
+            ) : (
+              <span className="text-warn">connecting…</span>
+            )}
+          </span>
+          {spotAgeMs != null && spotAgeMs < 30_000 && (
+            <span className="hidden font-mono tabular-nums text-accent md:inline">
+              ◆ chain spot {(spotAgeMs / 1000).toFixed(0)}s
+            </span>
+          )}
+          <span
+            className="font-mono"
+            title={
+              engine.signer.mode === "live"
+                ? `Signer ready (${engine.signer.authType ?? "wallet"}) — market updates never re-import it`
+                : "Paper mode — no signer"
+            }
+          >
+            <span className={engine.signer.ready ? "text-leef" : "text-subtle"}>●</span>{" "}
+            {engine.signer.mode === "live" ? "signer" : "paper"}
+          </span>
+          <span className="font-mono" title={`Auto trade ${engine.autoTrade.bot ? "active" : "off"} · phase ${engine.autoTrade.phase}`}>
+            <span className={engine.autoTrade.bot ? "text-leef" : "text-subtle"}>●</span>{" "}
+            {engine.autoTrade.bot ? "auto" : "idle"}
+          </span>
           <label className="flex items-center gap-2">
             <span className="text-subtle">Sync</span>
             <select

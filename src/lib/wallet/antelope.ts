@@ -544,6 +544,15 @@ export function signingDigest(chainIdHex: string, packedTx: Uint8Array): Uint8Ar
   return sha256(concat(chainId, packedTx, new Uint8Array(32)));
 }
 
+/**
+ * Antelope transaction id = sha256(packed_trx). Computable BEFORE broadcast,
+ * so a network timeout during push_transaction can be reconciled by txid
+ * instead of guessed at.
+ */
+export function transactionIdOf(packedTx: Uint8Array): string {
+  return bytesToHex(sha256(packedTx));
+}
+
 export type ChainInfo = {
   chain_id: string;
   head_block_time: string;

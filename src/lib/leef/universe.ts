@@ -1,6 +1,11 @@
 import { isWaxToken } from "./amm";
 import type { AuxPool, LeefPool } from "./types";
 import { LEEF_CONTRACT, LEEF_SYMBOL, WAX_CONTRACT, WAX_SYMBOL } from "./types";
+import {
+  isTrustedStable,
+  stableUsdPrice,
+  type StableState,
+} from "@/lib/market/stables";
 
 /**
  * The tradable token universe on Alcor/WAX, built from the full pool list.
@@ -18,11 +23,15 @@ export type UniverseToken = {
   poolId: number;
   /** WAX per 1 token at that pool's spot. */
   waxPerToken: number;
-  /** USD per token (waxPerToken × waxUsd; ~1 for stables). */
+  /** USD per token (waxPerToken × waxUsd; oracle-priced for trusted stables). */
   usdPrice: number;
   /** TVL of the valuation pool. */
   tvlUsd: number;
   stable: boolean;
+  /** Trusted-stable oracle state (PEGGED/…/UNKNOWN) when `stable`. */
+  stableState?: StableState;
+  /** 0..1 price confidence from the stable oracle. */
+  priceConfidence?: number;
 };
 
 type RawToken = {
@@ -41,12 +50,31 @@ type RawPoolRow = {
   tokenB?: RawToken;
 };
 
-const STABLES = new Set(["USDT", "USDC", "WAXUSDT", "WAXUSDC", "DAI"]);
-
 const num = (v: unknown): number => {
   const n = typeof v === "number" ? v : parseFloat(String(v));
   return Number.isFinite(n) ? n : 0;
 };
+
+/** Oracle-price a trusted stable's raw observation; pass through otherwise. */
+function priceWithStableOracle(
+  symbol: string,
+  contract: string,
+  observedUsd: number,
+  liquidityUsd: number,
+): { usdPrice: number; stable: boolean; stableState?: StableState; priceConfidence?: number } {
+  if (!isTrustedStable(symbol, contract)) {
+    // Symbol clone on a foreign contract: NOT a stable — price it as-is and
+    // never force it to $1.
+    return { usdPrice: observedUsd, stable: false };
+  }
+  const oracle = stableUsdPrice(observedUsd, { liquidityUsd });
+  return {
+    usdPrice: oracle.usdPrice,
+    stable: true,
+    stableState: oracle.state,
+    priceConfidence: oracle.confidence,
+  };
+}
 
 /**
  * Rank every token by its deepest WAX (or stable) pool and price it.
@@ -71,17 +99,16 @@ export function buildUniverse(rawPools: unknown, waxUsd: number): UniverseToken[
     if (!symbol || !contract || qty <= 0 || otherQty <= 0 || tvlUsd < 5) return;
 
     const otherSym = String(other.symbol ?? "").toUpperCase();
-    const stableOther = STABLES.has(otherSym);
+    const stableOther = isTrustedStable(otherSym, String(other.contract ?? ""));
     if (!otherIsWax && !stableOther) return;
 
     // Price: WAX per token (directly for WAX pools, via $-stable pools).
-    const waxPerToken = otherIsWax ? otherQty / qty : 0;
-    const usdPrice = otherIsWax
+    const rawUsd = otherIsWax
       ? (otherQty / qty) * waxUsd
-      : qty > 0
-        ? otherQty / qty // stable per token ≈ USD
-        : 0;
-    if (!(usdPrice > 0) || usdPrice > 1e6) return;
+      : otherQty / qty; // stable per token ≈ USD (trusted contract only)
+    if (!(rawUsd > 0) || rawUsd > 1e6) return;
+    const oracle = priceWithStableOracle(symbol, contract, rawUsd, tvlUsd);
+    if (!(oracle.usdPrice > 0) || oracle.usdPrice > 1e6) return;
 
     const key = `${symbol}@${contract}`;
     const prev = best.get(key);
@@ -92,10 +119,12 @@ export function buildUniverse(rawPools: unknown, waxUsd: number): UniverseToken[
       decimals: Number(tok.decimals ?? 4) || 4,
       alcorId: `${symbol.toLowerCase()}-${contract}`,
       poolId,
-      waxPerToken,
-      usdPrice,
+      waxPerToken: otherIsWax ? otherQty / qty : 0,
+      usdPrice: oracle.usdPrice,
       tvlUsd,
-      stable: STABLES.has(symbol),
+      stable: oracle.stable,
+      stableState: oracle.stableState,
+      priceConfidence: oracle.priceConfidence,
     });
   };
 
@@ -129,9 +158,16 @@ export function buildUniverse(rawPools: unknown, waxUsd: number): UniverseToken[
       }
       continue;
     }
-    // Stable pools (USDT/WAXUSDC…): price the non-stable side in USD.
-    const aStable = STABLES.has(String(a.symbol ?? "").toUpperCase());
-    const bStable = STABLES.has(String(b.symbol ?? "").toUpperCase());
+    // Trusted-stable pools (WAXUSDC@eth.token, USDT@usdt.alcor…): price the
+    // non-stable side in USD. Symbol clones on other contracts don't count.
+    const aStable = isTrustedStable(
+      String(a.symbol ?? "").toUpperCase(),
+      String(a.contract ?? ""),
+    );
+    const bStable = isTrustedStable(
+      String(b.symbol ?? "").toUpperCase(),
+      String(b.contract ?? ""),
+    );
     if (aStable && !bStable) consider(b, a, id, tvlUsd, false);
     if (bStable && !aStable) consider(a, b, id, tvlUsd, false);
   }
@@ -162,10 +198,37 @@ export function repriceUniverse(
     if (mine.quantity <= 0 || other.quantity <= 0) return t;
     if (isWaxToken(other)) {
       const wpt = other.quantity / mine.quantity;
-      return { ...t, waxPerToken: wpt, usdPrice: wpt * waxUsd, tvlUsd: pool.tvlUsd };
+      const oracle = priceWithStableOracle(
+        t.symbol,
+        t.contract,
+        wpt * waxUsd,
+        pool.tvlUsd,
+      );
+      return {
+        ...t,
+        waxPerToken: wpt,
+        usdPrice: oracle.usdPrice,
+        tvlUsd: pool.tvlUsd,
+        stable: oracle.stable,
+        stableState: oracle.stableState,
+        priceConfidence: oracle.priceConfidence,
+      };
     }
-    if (STABLES.has(other.symbol.toUpperCase())) {
-      return { ...t, usdPrice: other.quantity / mine.quantity, tvlUsd: pool.tvlUsd };
+    if (isTrustedStable(other.symbol.toUpperCase(), other.contract)) {
+      const oracle = priceWithStableOracle(
+        t.symbol,
+        t.contract,
+        other.quantity / mine.quantity,
+        pool.tvlUsd,
+      );
+      return {
+        ...t,
+        usdPrice: oracle.usdPrice,
+        tvlUsd: pool.tvlUsd,
+        stable: oracle.stable,
+        stableState: oracle.stableState,
+        priceConfidence: oracle.priceConfidence,
+      };
     }
     return t;
   });
@@ -242,22 +305,36 @@ export function mergeUniverseFromBook(
     const pairUsd =
       p.usdPerLeef && p.pairPerLeef > 0 ? p.usdPerLeef / p.pairPerLeef : 0;
     if (!(pairUsd > 0)) continue;
+    const oracle = priceWithStableOracle(
+      p.pair.symbol.toUpperCase(),
+      p.pair.contract,
+      pairUsd,
+      p.tvlUsd,
+    );
     putToken(map, {
       symbol: p.pair.symbol.toUpperCase(),
       contract: p.pair.contract,
       decimals: p.pair.decimals,
       alcorId: `${p.pair.symbol.toLowerCase()}-${p.pair.contract}`,
       poolId: p.id,
-      waxPerToken: waxUsd > 0 ? pairUsd / waxUsd : 0,
-      usdPrice: pairUsd,
+      waxPerToken: waxUsd > 0 ? oracle.usdPrice / waxUsd : 0,
+      usdPrice: oracle.usdPrice,
       tvlUsd: p.tvlUsd,
-      stable: STABLES.has(p.pair.symbol.toUpperCase()),
+      stable: oracle.stable,
+      stableState: oracle.stableState,
+      priceConfidence: oracle.priceConfidence,
     });
   }
   for (const p of aux) {
     const aWax = isWaxToken(p.tokenA);
     const bWax = isWaxToken(p.tokenB);
     if (aWax && p.tokenA.quantity > 0 && p.tokenB.quantity > 0 && waxUsd > 0) {
+      const oracle = priceWithStableOracle(
+        p.tokenB.symbol.toUpperCase(),
+        p.tokenB.contract,
+        (p.tokenA.quantity / p.tokenB.quantity) * waxUsd,
+        p.tvlUsd,
+      );
       putToken(map, {
         symbol: p.tokenB.symbol.toUpperCase(),
         contract: p.tokenB.contract,
@@ -265,12 +342,20 @@ export function mergeUniverseFromBook(
         alcorId: `${p.tokenB.symbol.toLowerCase()}-${p.tokenB.contract}`,
         poolId: p.id,
         waxPerToken: p.tokenA.quantity / p.tokenB.quantity,
-        usdPrice: (p.tokenA.quantity / p.tokenB.quantity) * waxUsd,
+        usdPrice: oracle.usdPrice,
         tvlUsd: p.tvlUsd,
-        stable: STABLES.has(p.tokenB.symbol.toUpperCase()),
+        stable: oracle.stable,
+        stableState: oracle.stableState,
+        priceConfidence: oracle.priceConfidence,
       });
     }
     if (bWax && p.tokenB.quantity > 0 && p.tokenA.quantity > 0 && waxUsd > 0) {
+      const oracle = priceWithStableOracle(
+        p.tokenA.symbol.toUpperCase(),
+        p.tokenA.contract,
+        (p.tokenB.quantity / p.tokenA.quantity) * waxUsd,
+        p.tvlUsd,
+      );
       putToken(map, {
         symbol: p.tokenA.symbol.toUpperCase(),
         contract: p.tokenA.contract,
@@ -278,9 +363,11 @@ export function mergeUniverseFromBook(
         alcorId: `${p.tokenA.symbol.toLowerCase()}-${p.tokenA.contract}`,
         poolId: p.id,
         waxPerToken: p.tokenB.quantity / p.tokenA.quantity,
-        usdPrice: (p.tokenB.quantity / p.tokenA.quantity) * waxUsd,
+        usdPrice: oracle.usdPrice,
         tvlUsd: p.tvlUsd,
-        stable: STABLES.has(p.tokenA.symbol.toUpperCase()),
+        stable: oracle.stable,
+        stableState: oracle.stableState,
+        priceConfidence: oracle.priceConfidence,
       });
     }
   }

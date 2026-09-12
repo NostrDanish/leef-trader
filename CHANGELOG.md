@@ -2,6 +2,55 @@
 
 All notable changes to LEEF Trader. Dates are commit-era, not release tags.
 
+## Unreleased — persistent market engine + provider failover + stable fix
+
+The app is now a persistent Antelope trading engine with a React terminal
+attached (see `docs/MARKET_ENGINE.md`).
+
+- **Zero page refresh**: a singleton MarketEngine (`src/lib/market/`) owns
+  the block heartbeat, market pulls, on-chain spot reads, balance sync, the
+  bot loop and the rebalancer. React subscribes
+  (`useMarketEngine`/`useSyncExternalStore`); mounting/unmounting components
+  never stops trading. No reload is ever needed for prices, routes,
+  balances, portfolio or tx status — and market updates never re-import the
+  signing key (memory-only by design).
+- **Health-scored RPC failover** (`src/lib/wax/provider-pool.ts`): 8-node
+  WAX RPC pool + 5-node Hyperion pool, scored on success × block-lag
+  freshness × latency; failed reads fail over to the next-best node,
+  repeated failures cool a node out and a background probe restores it.
+  Nodes > 6 blocks behind (or with a wrong chain id) never broadcast
+  transactions. Endpoint lists are editable at runtime (Infrastructure
+  desk → Endpoints).
+- **No-duplicate broadcast**: transactions are submitted once to a
+  trading-eligible node; the txid (`sha256(packed_trx)`) is known before
+  broadcast, so a network timeout locks capital as UNKNOWN with a known
+  txid for reconciliation instead of re-signing/re-broadcasting. There is
+  exactly one submission attempt — no automatic transaction failover.
+- **On-chain pool state** (`src/lib/wax/alcor-onchain.ts`): hot pools are
+  re-read straight from `swap.alcor`'s `pools` table
+  (`currSlot.sqrtPriceX64`/`tick`, Alcor v2 SDK pattern) between API pulls —
+  prices and strategies move at chain speed, not API cadence.
+- **Dependency-aware route invalidation** (`route-cache.ts`): pool version
+  counters; a route stays valid while none of its pools changed. Unrelated
+  pool changes never invalidate it; browser resume discards everything.
+- **Browser suspension handling**: timer-drift + visibility/online/focus
+  detection → on wake: resync from chain truth, discard stale routes,
+  balance refresh; a stale book is never traded.
+- **Stablecoin/canonical fix**: trusted stable registry by SYMBOL@CONTRACT
+  (`WAXUSDC@eth.token` etc.) with PEGGED/…/DEPEGGED oracle states — 53
+  WAXUSDC now values ≈ $53; symbol clones on foreign contracts are no longer
+  treated as $1 stables or allowed to hijack prices
+  (`attachUsdPrices`, `universe.ts`, `cost-model` all contract-aware).
+- **Infrastructure desk** (nav → Infra): chain head/age, per-endpoint
+  health (latency/block lag/score/tx-eligibility), market state, route
+  stats, signer + automation phase, engine/trade cycle timings, suspension
+  history, endpoint editor. Status bar gains live chain/signer/auto dots.
+- Tests: provider failover/lag/timeout/cooldown/restore, stable oracle and
+  the 53-WAXUSDC valuation, clone isolation, route invalidation, on-chain
+  row parsing/patching, engine state surface.
+
+---
+
 ## Unreleased — 10s floor + invalid-amount quotes
 
 - Live sync / cooldown / rebalancer check floor is **10 seconds** (was 5).
