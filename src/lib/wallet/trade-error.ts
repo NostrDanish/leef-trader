@@ -23,6 +23,8 @@ export type TradeErrorCode =
   | "POLICY_BLOCK"
   | "POSITION_LIMIT"
   | "NET_EDGE_TOO_LOW"
+  | "PRICE_UNCERTAIN"
+  | "PRICE_DEPEGGED"
   | "VENUE_UNAVAILABLE"
   | "MODEL_ONLY"
   | "UNKNOWN";
@@ -82,6 +84,10 @@ export function classifyTradeError(err: unknown): { code: TradeErrorCode; messag
   }
   if (/policy|not allowlisted|foreign receiver/.test(m)) return { code: "POLICY_BLOCK", message: shown };
   if (/position cap|max position|remaining room/.test(m)) return { code: "POSITION_LIMIT", message: shown };
+  if (/depegged|stable.*deviation/.test(m)) return { code: "PRICE_DEPEGGED", message: shown };
+  if (/price uncertain|price confidence|authoritative usd price|price is stale/.test(m)) {
+    return { code: "PRICE_UNCERTAIN", message: shown };
+  }
   if (/net edge/.test(m)) return { code: "NET_EDGE_TOO_LOW", message: shown };
   if (/model.only|fresh executable/.test(m)) return { code: "MODEL_ONLY", message: shown };
   if (/unknown/.test(m) && /tx|transaction/.test(m)) return { code: "TRANSACTION_UNKNOWN", message: shown };
@@ -117,6 +123,10 @@ export function toastTitleFor(code: TradeErrorCode): string {
       return "Position limit";
     case "NET_EDGE_TOO_LOW":
       return "No net edge";
+    case "PRICE_UNCERTAIN":
+      return "Price uncertain";
+    case "PRICE_DEPEGGED":
+      return "Stablecoin depegged";
     case "TRANSACTION_UNKNOWN":
       return "Tx unconfirmed";
     case "TRANSACTION_FAILED":

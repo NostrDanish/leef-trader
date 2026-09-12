@@ -265,17 +265,27 @@ export function governTrade(
   const outAfter = after.assets.find((a) => a.price.tokenId === outPx.tokenId)?.sharePct ?? 0;
   const concentrationImpactPct = outAfter - outBefore;
   if (proposal.kind !== "rebalance" && after.state === "ASSET_CONCENTRATION") {
-    return {
-      allowed: false,
-      state: "ASSET_CONCENTRATION",
-      reason: `Post-trade simulation rejected: ${after.reason}`,
-      requestedAmountIn: proposal.amountIn,
-      allowedAmountIn: 0,
-      before,
-      after,
-      reserveImpactUsd: (proposal.amountIn - allowedAmountIn) * inPx.priceUsd,
-      concentrationImpactPct,
-    };
+    // A portfolio can start outside its bands (e.g. a freshly imported
+    // WAX-heavy wallet). Reject only trades that CREATE or WORSEN the largest
+    // concentration. A WAX→LEEF trade that improves a WAX-heavy portfolio is
+    // allowed even if one small trade cannot repair the whole portfolio.
+    const beforeMax = before.assets.reduce((m, a) => Math.max(m, a.sharePct), 0);
+    const afterMax = after.assets.reduce((m, a) => Math.max(m, a.sharePct), 0);
+    const worsensConcentration =
+      before.state !== "ASSET_CONCENTRATION" || afterMax > beforeMax + 0.05;
+    if (worsensConcentration) {
+      return {
+        allowed: false,
+        state: "ASSET_CONCENTRATION",
+        reason: `Post-trade simulation rejected: ${after.reason}`,
+        requestedAmountIn: proposal.amountIn,
+        allowedAmountIn: 0,
+        before,
+        after,
+        reserveImpactUsd: (proposal.amountIn - allowedAmountIn) * inPx.priceUsd,
+        concentrationImpactPct,
+      };
+    }
   }
   return {
     allowed: true,
@@ -283,7 +293,9 @@ export function governTrade(
     reason:
       allowedAmountIn + 1e-12 < proposal.amountIn
         ? `Resized to preserve ${inPx.symbol} operating reserve`
-        : `Post-trade inventory remains operational`,
+        : before.state === "ASSET_CONCENTRATION" && after.state === "ASSET_CONCENTRATION"
+          ? `Trade improves portfolio concentration`
+          : `Post-trade inventory remains operational`,
     requestedAmountIn: proposal.amountIn,
     allowedAmountIn,
     before,

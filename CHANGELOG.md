@@ -2,6 +2,26 @@
 
 All notable changes to LEEF Trader. Dates are commit-era, not release tags.
 
+## Unreleased — restore trade flow + static market UI
+
+- Fixed a recent prediction/execution regression: verified stable anchors with
+  weak local pools can size candidates again (final executable venue quote and
+  min-out still decide execution), and profit trades that improve an already
+  concentrated imported wallet are no longer rejected merely because one
+  small trade cannot repair the entire allocation.
+- Portfolio Governor now blocks only newly created or worsened concentration;
+  reserve preservation, depeg rejection, stale prices and policy/resource
+  protections remain unchanged.
+- Removed the duplicated animated market marquee, pause/play controls,
+  synthetic candle/noise generation, chart indicators and ticker tuning UI
+  (including the now-unused chart/strip components). The single top status row
+  now shows only authoritative LEEF/WAX prices, current conversion, route and
+  the existing sync countdown.
+- Added explicit PRICE_UNCERTAIN and PRICE_DEPEGGED execution classifications
+  and regression tests for weak stable references and improving trades.
+
+---
+
 ## Unreleased — price oracle + execution state + portfolio governor
 
 - Authoritative contract-aware `TokenPriceOracle`: portfolio and risk prices

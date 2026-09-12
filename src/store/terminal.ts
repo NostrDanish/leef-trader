@@ -1,7 +1,5 @@
 import { create } from "zustand";
 import { persist } from "zustand/middleware";
-import type { IndicatorId } from "@/lib/leef/indicators";
-import { DEFAULT_TICK_PARAMS, type TickKnobs } from "@/lib/leef/tick-engine";
 
 /** Book-pull cadence. Live = 10s — fastest that stays polite to Alcor. */
 export const MIN_SYNC_SEC = 10;
@@ -53,9 +51,7 @@ type TerminalState = {
     | "turnover";
   poolDir: "asc" | "desc";
   tickPoolId: number | null;
-  tick: TickKnobs;
-  tickPaused: boolean;
-  /** Seconds between Alcor book pulls. 5 = Live. */
+  /** Seconds between authoritative market pulls. */
   syncSec: number;
   setTab: (tab: TabId) => void;
   selectPool: (id: number) => void;
@@ -67,10 +63,6 @@ type TerminalState = {
   setPoolSort: (k: TerminalState["poolSort"]) => void;
   togglePoolDir: () => void;
   setTickPool: (id: number | null) => void;
-  setTick: (p: Partial<TickKnobs>) => void;
-  toggleEngine: (id: IndicatorId) => void;
-  resetTick: () => void;
-  setTickPaused: (v: boolean) => void;
   setSyncSec: (sec: number) => void;
 };
 
@@ -87,8 +79,6 @@ export const useTerminal = create<TerminalState>()(
   poolSort: "tvl",
   poolDir: "desc",
   tickPoolId: 217,
-  tick: { ...DEFAULT_TICK_PARAMS, engines: { ...DEFAULT_TICK_PARAMS.engines } },
-  tickPaused: false,
   syncSec: DEFAULT_SYNC_SEC,
   setTab: (tab) => set({ tab }),
   selectPool: (id) => set({ selectedPoolId: id, tab: "pool" }),
@@ -110,27 +100,6 @@ export const useTerminal = create<TerminalState>()(
     })),
   togglePoolDir: () => set((s) => ({ poolDir: s.poolDir === "asc" ? "desc" : "asc" })),
   setTickPool: (id) => set({ tickPoolId: id }),
-  setTick: (p) =>
-    set((s) => ({
-      tick: {
-        ...s.tick,
-        ...p,
-        engines: p.engines ? { ...p.engines } : s.tick.engines,
-      },
-    })),
-  toggleEngine: (id) =>
-    set((s) => ({
-      tick: {
-        ...s.tick,
-        engines: { ...s.tick.engines, [id]: !s.tick.engines[id] },
-      },
-    })),
-  resetTick: () =>
-    set({
-      tick: { ...DEFAULT_TICK_PARAMS, engines: { ...DEFAULT_TICK_PARAMS.engines } },
-      tickPaused: false,
-    }),
-  setTickPaused: (v) => set({ tickPaused: v }),
   setSyncSec: (sec) => set({ syncSec: clampSyncSec(sec) }),
     }),
     {

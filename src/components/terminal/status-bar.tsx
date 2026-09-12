@@ -3,6 +3,7 @@ import { marketStats } from "@/lib/leef/analytics";
 import { fmtNum, timeAgo } from "@/lib/leef/format";
 import { headline } from "@/lib/leef/rank";
 import type { LeefSnapshot, RankedPool } from "@/lib/leef/types";
+import type { LiveTickState } from "./use-live-tick";
 import { useMarketEngine } from "@/hooks/useMarketEngine";
 import { cn } from "@/lib/utils";
 import {
@@ -18,10 +19,12 @@ export function StatusBar({
   snap,
   ranked,
   countdown,
+  tick,
 }: {
   snap: LeefSnapshot;
   ranked: RankedPool[];
   countdown: number;
+  tick: LiveTickState;
 }) {
   const [mounted, setMounted] = useState(false);
   const [now, setNow] = useState(Date.now());
@@ -42,6 +45,8 @@ export function StatusBar({
   const blockFresh = blockAgeSec != null && blockAgeSec < 5;
   const bestRpc = engine.rpc[0];
   const spotAgeMs = engine.snapshot?.spotAt ? now - Date.parse(engine.snapshot.spotAt) : null;
+  const route = tick.bestRoute;
+  const conversion = route && route.amountIn > 0 ? route.amountOut / route.amountIn : 0;
 
   return (
     <div className="border-b border-border bg-surface">
@@ -75,6 +80,21 @@ export function StatusBar({
               {fmtNum(stats.leefLocked, { compact: true })} LEEF
             </strong>
           </span>
+          <span className="text-border">·</span>
+          <span className="font-mono tabular-nums">
+            LEEF <strong className="text-fg">${fmtNum(snap.leefUsd, { digits: 8 })}</strong>
+          </span>
+          <span className="font-mono tabular-nums">
+            1M <strong className="text-wax">{fmtNum(snap.waxPerLeef * 1_000_000, { digits: 4 })} WAX</strong>
+          </span>
+          <span className="font-mono tabular-nums">
+            WAX <strong className="text-fg">${fmtNum(snap.waxUsd, { digits: 5 })}</strong>
+          </span>
+          {route && (
+            <span className="hidden font-mono tabular-nums text-accent xl:inline">
+              {route.tokenIn}→{route.tokenOut} · 1 = {fmtNum(conversion, { compact: true, digits: 5 })}
+            </span>
+          )}
           {h.bestBuy && (
             <>
               <span className="hidden text-border sm:inline">·</span>

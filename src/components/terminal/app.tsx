@@ -9,7 +9,6 @@ import { TerminalHeader } from "./header";
 import { IlCalc } from "./il";
 import { ImportKeyDialog } from "./import-key";
 import { InfraStatus } from "./infra-status";
-import { LiveStrip } from "./live-strip";
 import { Overview } from "./overview";
 import { PoolsTable } from "./pools";
 import { PortfolioDesk } from "./portfolio-desk";
@@ -70,8 +69,7 @@ export function TerminalApp() {
           void refetch();
         }}
       />
-      <StatusBar snap={snap} ranked={ranked} countdown={countdown} />
-      <LiveStrip tick={tick} />
+      <StatusBar snap={snap} ranked={ranked} countdown={countdown} tick={tick} />
       <ImportKeyDialog />
 
       {snap.warning && snap.source === "fallback" && (

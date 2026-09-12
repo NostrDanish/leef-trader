@@ -200,10 +200,12 @@ for token prices. Every `TokenPrice` includes:
 
 Trusted stables use a bounded model: PEGGED/MINOR observations use their deep
 market mark; weak, tiny or divergent observations cannot turn 53 WAXUSDC into
-$23, so accounting stays at the explicit stable anchor while the divergent
-market value remains visible. `STRESSED`, `DEPEGGED`, low-confidence or stale
-prices are not allowed to size or authorize trades. An unknown token merely
-containing "USD" never receives the anchor.
+$23, so accounting and candidate sizing stay at the verified stable anchor
+while the divergent market value remains visible. A weak tiny pool alone does
+not disable a verified stable route—the mandatory final executable venue quote
+and min-out remain execution truth. Strong, liquid `DEPEGGED` evidence and
+stale prices block trading. An unknown token merely containing "USD" never
+receives the anchor.
 
 Bare symbols are no longer economic identity. `findToken`, `metaOf`, balance
 sync, holdings and risk sizing resolve `SYMBOL@CONTRACT`; a bare symbol works
@@ -230,10 +232,13 @@ asset bands define target/min/max shares and absolute USD reserves.
 
 For each proposal it records before/after portfolio, requested and allowed
 amount, reserve impact, concentration impact, state and reason. A strategy can
-propose a $100 buy; the governor can resize it to the deployable $38, reject it
-for concentration, or classify an intentional maintenance trade as
-`REBALANCING`. Profit strategies cannot consume reserves; maintenance trades
-may repair an already concentrated portfolio.
+propose a $100 buy; the governor can resize it to the deployable $38, reject a
+trade that creates/worsens concentration, or classify an intentional
+maintenance trade as `REBALANCING`. A freshly imported wallet may already sit
+outside target bands; economically positive trades that reduce its largest
+concentration are allowed even when one clip cannot fully rebalance it. Profit
+strategies cannot consume reserves; maintenance trades may repair an already
+concentrated portfolio.
 
 State model: RUNNING / WAITING / LOW_LIQUIDITY / ASSET_CONCENTRATION /
 REBALANCING / BLOCKED. Security, resource, policy and unknown-transaction
@@ -278,6 +283,17 @@ legs remain subject to the existing `MODEL_ONLY` / liquidity-drift checks and
 are never mislabeled as globally optimal. Route search itself is a bounded
 heuristic over paths and numerical splits; extra hops win only when modeled
 output is better and final execution validation succeeds.
+
+## Low-motion terminal UI
+
+The old UI-only live ticker was intentionally removed: no duplicated scrolling
+price marquee, pause/play control, seeded candle path, synthetic noise,
+indicator chart decoration or ticker tuning sliders run in the terminal. Those
+calculations were never execution truth—the strategy engine maintains its own
+real snapshot series. One static status row now shows authoritative LEEF/WAX
+prices, current route conversion and the existing synchronization countdown.
+The detailed market desk is a static pool/route table that updates only when
+the MarketEngine publishes real state.
 
 ## Market-data priorities
 

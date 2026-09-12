@@ -97,9 +97,19 @@ function stablePrice(t: UniverseToken, timestamp: number, now: number): TokenPri
   // trading; no caller can mistake the anchor for an executable market price.
   const priceUsd =
     state === "PEGGED" || state === "MINOR_DEVIATION" ? observed : target;
-  const confidence = Math.max(0, Math.min(1, t.priceConfidence ?? (state === "UNKNOWN" ? 0.55 : 0.9)));
+  const observedConfidence = Math.max(
+    0,
+    Math.min(1, t.priceConfidence ?? (state === "UNKNOWN" ? 0.55 : 0.9)),
+  );
+  // Verified stable contract + explicit $1 anchor is high-confidence for USD
+  // sizing even when its local market observation is weak. Executability is
+  // still decided by a fresh venue quote/min-out, never by this anchor alone.
+  const anchorConfidence = state === "UNKNOWN" ? 0.82 : observedConfidence;
+  const confidence = Math.max(observedConfidence, anchorConfidence);
   const ageMs = Math.max(0, now - timestamp);
-  const deviationBlocked = (deviationPct ?? Infinity) > MAX_STABLE_TRADE_DEVIATION_PCT;
+  // Only a LIQUID, confident divergent market is evidence of a real depeg.
+  // A $10 pool at $0.43 is noise and cannot disable a verified WAXUSDC route.
+  const deviationBlocked = strongDepeg && (deviationPct ?? Infinity) > MAX_STABLE_TRADE_DEVIATION_PCT;
   const tradeAllowed =
     !strongDepeg &&
     !deviationBlocked &&

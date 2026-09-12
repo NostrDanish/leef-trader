@@ -83,7 +83,7 @@ describe("TokenPriceOracle", () => {
     expect(tokenPrice(s, "WAXUSDT@eth.token")!.priceUsd).toBeCloseTo(1, 4);
   });
 
-  it("a tiny or divergent stable observation cannot turn accounting into $0.43", () => {
+  it("a tiny divergent stable observation cannot break sizing or execution prediction", () => {
     const weak = token("WAXUSDC", "eth.token", 0.43, {
       stable: true,
       stableState: "UNKNOWN",
@@ -93,7 +93,10 @@ describe("TokenPriceOracle", () => {
     const p = tokenPrice(snap([weak]), "WAXUSDC@eth.token")!;
     expect(p.marketPriceUsd).toBeCloseTo(0.43, 4);
     expect(p.priceUsd).toBe(1); // explicit stable accounting anchor
-    expect(p.tradeAllowed).toBe(false); // but never trade against uncertainty
+    // A verified stable anchor may size a candidate; the mandatory fresh
+    // executable venue quote/min-out still decides whether funds move.
+    expect(p.tradeAllowed).toBe(true);
+    expect(p.confidence).toBeGreaterThanOrEqual(0.8);
   });
 
   it("strong depeg evidence is visible and blocked for trading", () => {
@@ -178,6 +181,26 @@ describe("Portfolio Governor", () => {
     });
     expect(d.allowed).toBe(false);
     expect(d.state).toBe("ASSET_CONCENTRATION");
+  });
+
+  it("allows a profitable trade that IMPROVES an already concentrated wallet", () => {
+    const s = snap(BASE);
+    const balances = canonicalBalanceBook([
+      { symbol: "WAX", contract: "eosio.token", amount: 2_000 },
+      { symbol: "LEEF", contract: "leefmaincorp", amount: 100 },
+      { symbol: "WAXUSDC", contract: "eth.token", amount: 1 },
+    ]);
+    expect(portfolioState(s, balances).state).toBe("ASSET_CONCENTRATION");
+    const d = governTrade(s, balances, {
+      tokenIn: "WAX@eosio.token",
+      tokenOut: "LEEF@leefmaincorp",
+      amountIn: 100,
+      expectedOut: 380,
+      expectedNetProfitUsd: 0.1,
+      kind: "profit",
+    });
+    expect(d.allowed).toBe(true);
+    expect(d.reason).toMatch(/improves/);
   });
 
   it("allows a rebalance proposal to repair an already concentrated portfolio", () => {
