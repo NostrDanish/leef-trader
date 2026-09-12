@@ -21,7 +21,7 @@ default. Nothing secret is ever stored.
 | `minTradeUsd` | 0.01 | **Minimum** notional per new trade, USD. Converted to quote-token units at the live mark. Not a promise a $0.01 trade is executable. |
 | `maxPositionUsd` | 1000 | **Maximum** marked position value, USD. Remaining capacity = cap − current market value. |
 | `maxImpactPct` | 3 | Reject trades above this price impact. |
-| `cooldownSec` | 60 | Base cooldown; adaptive ×0.5 (arb/echo), ×2 (DCA), ×1.5 (after a loss), floor 15s. |
+| `cooldownSec` | 60 | Base cooldown; adaptive ×0.5 (arb/echo), ×2 (DCA), ×1.5 (after a loss), floor 5s. UI 5s–30m. |
 | `maxTradesHour` | 10 | Hourly trade cap (UI slider 1–120). |
 | `slippage` | 0.6 | Min-out guard on swap memos (the hard limit, not the estimate). |
 | `minConfidence` | 55 | Signal strategy vote threshold, %. |

@@ -325,9 +325,9 @@ export function reversionRead(series: PricePoint[]): {
 /**
  * Adaptive cooldown: arb/echo round trips are self-contained and can re-arm
  * faster; DCA is deliberately slow; a losing trade slows the bot down
- * (simple anti-tilt, never a martingale). The 15s floor is the runaway
- * protection — no configuration may trade faster than that.
- */
+  * (simple anti-tilt, never a martingale). The 5s floor matches the Live
+  * book pull — no configuration may trade faster than that.
+  */
 export function adaptiveCooldownSec(
   baseSec: number,
   strategy: BotStrategy,
@@ -337,7 +337,7 @@ export function adaptiveCooldownSec(
   if (strategy === "spread" || strategy === "volume") factor = 0.5;
   else if (strategy === "dca") factor = 2;
   if (lastPnlUsd < 0) factor *= 1.5;
-  return Math.max(15, Math.round(baseSec * factor));
+  return Math.max(5, Math.round(baseSec * factor));
 }
 
 function bestBuyRoute(

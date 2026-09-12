@@ -816,10 +816,12 @@ function RiskCard({ strategy, snap }: { strategy: BotStrategy; snap: LeefSnapsho
           ready={slidersOn}
           label="Cooldown"
           value={risk.cooldownSec}
-          min={30}
-          max={600}
-          step={15}
-          format={(v) => `${v}s`}
+          min={5}
+          max={1800}
+          step={5}
+          format={(v) =>
+            v < 60 ? `${v}s` : v % 60 === 0 ? `${v / 60}m` : `${Math.floor(v / 60)}m ${v % 60}s`
+          }
           onChange={(cooldownSec) => setRisk({ cooldownSec })}
         />
         <Knob

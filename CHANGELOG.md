@@ -2,6 +2,14 @@
 
 All notable changes to LEEF Trader. Dates are commit-era, not release tags.
 
+## Unreleased — cooldown 5s–30m
+
+- Bot **Cooldown** slider: 5 seconds to 30 minutes (was 30s–10m). Adaptive
+  floor dropped from 15s to 5s so a 5s setting actually fires.
+- Rebalancer **Check every** already 5s–30m.
+
+---
+
 ## Unreleased — live / 5s book sync
 
 - Status bar **Sync** control: Live (5s), 10s, 15s, 30s, 60s, plus a 5–60s
