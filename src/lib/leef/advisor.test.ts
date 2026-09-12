@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { listQuoteTokens, suggestBotSettings, suggestPair } from "./advisor";
+import { listBaseTokens, listQuoteTokens, suggestBotSettings, suggestPair } from "./advisor";
 import { DEFAULT_RISK } from "./bot-engine";
 import type { LeefPool, LeefSnapshot } from "./types";
 
@@ -58,6 +58,12 @@ describe("advisor", () => {
     expect(q).toContain("WAX");
     expect(q).toContain("WAXUSDC");
     expect(q).toContain("PARAUSD");
+    expect(q).not.toContain("LEEF");
+  });
+
+  it("never lists WAX as a base or LEEF as a quote", () => {
+    expect(listBaseTokens(snap())).not.toContain("WAX");
+    expect(listQuoteTokens(snap(), "LEEF")).not.toContain("LEEF");
   });
 
   it("keeps USD min as floor and USD max as ceiling from wallet value", () => {
@@ -72,7 +78,7 @@ describe("advisor", () => {
       netPct: 0.1,
       ramPct: 0.3,
     });
-    expect(s.risk.minTradeUsd).toBeGreaterThanOrEqual(0.01);
+    expect(s.risk.minTradeUsd).toBeGreaterThanOrEqual(0);
     expect(s.risk.maxPositionUsd).toBeGreaterThanOrEqual(s.risk.minTradeUsd);
     expect(s.risk.maxPositionUsd).toBeLessThanOrEqual(200 * 0.02);
     expect(s.risk.minTradeUsd).toBeLessThan(s.risk.maxPositionUsd);

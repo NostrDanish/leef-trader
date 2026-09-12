@@ -9,7 +9,7 @@
  */
 import { usdPriceOf } from "./cost-model";
 import { DEFAULT_RISK, type BotRisk, type BotStrategy } from "./bot-engine";
-import { DEFAULT_MAX_POSITION_USD, DEFAULT_MIN_TRADE_USD } from "./risk-usd";
+import { DEFAULT_MAX_POSITION_USD } from "./risk-usd";
 import type { LeefSnapshot } from "./types";
 
 export type AdvisorInput = {
@@ -45,30 +45,37 @@ const STABLEISH = new Set(["USDT", "USDC", "WAXUSDT", "WAXUSDC", "PARAUSD", "DAI
 
 const CORE = ["LEEF", "WAX", "WAXUSDC", "WAXUSDT", "USDT", "PARAUSD"] as const;
 
-/** Bases you can accumulate (LEEF first, then other liquid names). */
+/** Bases you can accumulate. WAX is the quote/gas asset — never a base. */
 export function listBaseTokens(snap: LeefSnapshot): string[] {
   const set = new Set<string>(["LEEF"]);
   for (const u of snap.universe) {
-    if (u.symbol === "WAX") continue;
-    if (u.usdPrice > 0 && u.tvlUsd >= 20) set.add(u.symbol);
+    const s = u.symbol.toUpperCase();
+    if (s === "WAX") continue;
+    if (u.usdPrice > 0 && u.tvlUsd >= 20) set.add(s);
   }
-  for (const p of snap.pools) set.add(p.leef.symbol.toUpperCase());
+  for (const p of snap.pools) {
+    const s = p.leef.symbol.toUpperCase();
+    if (s && s !== "WAX") set.add(s);
+  }
+  set.delete("WAX");
   return [...set].sort((a, b) => (a === "LEEF" ? -1 : b === "LEEF" ? 1 : a.localeCompare(b)));
 }
 
-/** Quote side: WAX, stables, and whatever LEEF (or the base) actually books against. */
+/** Quote side: WAX and stables. LEEF is the inventory asset — never a quote. */
 export function listQuoteTokens(snap: LeefSnapshot, base = "LEEF"): string[] {
   const b = base.toUpperCase();
   const set = new Set<string>(["WAX", "WAXUSDC", "WAXUSDT", "USDT", "PARAUSD"]);
   for (const u of snap.universe) {
-    if (u.symbol === b) continue;
-    if (u.usdPrice > 0 && (u.tvlUsd >= 15 || STABLEISH.has(u.symbol))) set.add(u.symbol);
+    const s = u.symbol.toUpperCase();
+    if (s === b || s === "LEEF") continue;
+    if (u.usdPrice > 0 && (u.tvlUsd >= 15 || STABLEISH.has(s))) set.add(s);
   }
   for (const p of snap.pools) {
     const s = p.pair.symbol.toUpperCase();
-    if (s && s !== b) set.add(s);
+    if (s && s !== b && s !== "LEEF") set.add(s);
   }
   set.delete(b);
+  set.delete("LEEF");
   return [...set].sort((a, c) => {
     const rank = (x: string) =>
       x === "WAX" ? 0 : STABLEISH.has(x) ? 1 : x === "TLM" ? 2 : 3;
@@ -111,7 +118,9 @@ export function suggestPair(
 }
 
 function roundUsd(n: number): number {
-  if (n < 0.1) return Math.max(DEFAULT_MIN_TRADE_USD, Math.round(n * 100) / 100);
+  if (!(n > 0)) return 0;
+  if (n < 0.0001) return n;
+  if (n < 0.1) return Math.round(n * 1e6) / 1e6;
   if (n < 1) return Math.round(n * 100) / 100;
   if (n < 10) return Math.round(n * 10) / 10;
   return Math.round(n);
@@ -144,9 +153,9 @@ export function suggestBotSettings(input: AdvisorInput): AdvisorSuggestion {
   if (tight) clipFrac *= 0.5;
 
   const walletUsd = px > 0 ? quoteUsd : 0;
-  let minTrade = roundUsd(Math.max(DEFAULT_MIN_TRADE_USD, walletUsd * clipFrac));
-  const clipCap = roundUsd(Math.max(DEFAULT_MIN_TRADE_USD, walletUsd * 0.05));
-  minTrade = Math.min(minTrade, clipCap);
+  let minTrade = roundUsd(Math.max(0, walletUsd * clipFrac));
+  const clipCap = roundUsd(Math.max(0, walletUsd * 0.05));
+  if (clipCap > 0) minTrade = Math.min(minTrade, clipCap);
 
   let maxFrac = 0.25;
   if (input.strategy === "dca") maxFrac = 0.4;
@@ -185,7 +194,7 @@ export function suggestBotSettings(input: AdvisorInput): AdvisorSuggestion {
   }
   if (tvl > 0 && quoteUsd > tvl * 0.15) {
     warnings.push(`Wallet ${quote} is large vs ${base}/${quote} TVL ($${tvl.toFixed(0)}) — keep clips small`);
-    minTrade = roundUsd(Math.max(DEFAULT_MIN_TRADE_USD, minTrade * 0.5));
+    minTrade = roundUsd(Math.max(0, minTrade * 0.5));
     maxPos = Math.max(minTrade, roundUsd(maxPos * 0.6));
   }
 

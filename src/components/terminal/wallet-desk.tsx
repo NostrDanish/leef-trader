@@ -83,7 +83,8 @@ export function WalletDesk({ snap }: { snap: LeefSnapshot }) {
             </Button>
           ) : (
             <Button variant="secondary" size="sm" onClick={resetPaper}>
-              Reset paper book
+              <Trash2 className="size-3.5" />
+              Clear unsigned wallet
             </Button>
           )}
         </div>
@@ -209,9 +210,9 @@ export function WalletDesk({ snap }: { snap: LeefSnapshot }) {
         </div>
         {mode === "paper" && (
           <p className="mt-3 text-xs text-subtle">
-            Paper starts with a simulated book so you can run the bot and the
-            rebalancer risk-free. Connect Cloud Wallet / Anchor (sign per
-            trade) or import a session key (fully automatic) to go live.
+            No simulated bag — this wallet is empty until you connect Cloud
+            Wallet, Anchor, or a session key. The market book is live Alcor;
+            fills only move tokens after you sign.
           </p>
         )}
       </Card>

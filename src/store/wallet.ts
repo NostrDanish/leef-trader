@@ -3,16 +3,9 @@ import { persist } from "zustand/middleware";
 import { forgetSecret, hasSecret } from "@/lib/wallet/secret";
 import { hasWalletSession, logoutWallet, type WalletKind } from "@/lib/wallet/session";
 
-const PAPER_BALANCES: Record<string, number> = {
-  WAX: 250,
-  LEEF: 8_000_000,
-  USDT: 18,
-  WAXUSDC: 12,
-  // Dust tokens so the rebalancer has something to sweep in paper mode.
-  TLM: 1200,
-  DUST: 42_000,
-  LSW: 85,
-};
+/** Empty on purpose — no simulated LEEF/WAX bag. Paper mode is unsigned live
+ *  books with a zero wallet until the user connects. */
+const PAPER_BALANCES: Record<string, number> = {};
 
 type WalletState = {
   mode: "paper" | "live";
@@ -127,9 +120,8 @@ export const useWallet = create<WalletState>()(
     }),
     {
       name: "leef-wallet-v2",
-      // Versioned: a schema bump discards stale persisted state instead of
-      // shallow-merging it over the new shape (which can crash selectors).
-      version: 1,
+      // v2: wipe the fake 8M LEEF / 250 WAX paper bag.
+      version: 2,
       migrate: (persisted) => {
         const p = (
           persisted && typeof persisted === "object" ? persisted : {}
@@ -139,10 +131,7 @@ export const useWallet = create<WalletState>()(
           authType: "key" | WalletKind | null;
         }>;
         return {
-          paperBalances:
-            p.paperBalances && typeof p.paperBalances === "object"
-              ? p.paperBalances
-              : { ...PAPER_BALANCES },
+          paperBalances: { ...PAPER_BALANCES },
           liveAccountHint: p.liveAccountHint ?? null,
           authType: p.authType ?? null,
         };

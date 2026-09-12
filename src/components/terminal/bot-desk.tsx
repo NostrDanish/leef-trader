@@ -125,14 +125,14 @@ export function BotDesk({ snap }: { snap: LeefSnapshot }) {
         <div>
           <h2 className="text-base font-medium tracking-tight">AI trading bot</h2>
           <p className="text-xs text-muted-foreground">
-            Import a key, pick a strategy, set your goals, hit start. Every 30s
-            book pull the engines vote, guards check risk, and the bot clips —
-            paper by default, live when a session key is in this tab.
+            Connect a wallet, pick a pair, set goals, hit start. The live Alcor
+            book drives every clip — no simulated LEEF bag. Unsigned mode
+            quotes only; live fills need a session key or wallet prompt.
           </p>
         </div>
         <div className="flex flex-wrap items-center gap-2">
           <Badge variant={b.running ? (liveReady ? "leef" : "accent") : "plain"}>
-            {b.running ? (liveReady ? "Live · running" : "Paper · running") : "Stopped"}
+            {b.running ? (liveReady ? "Live · running" : "Unsigned · running") : "Stopped"}
           </Badge>
           <Badge variant="plain">
             {b.stats.trades} trades · {b.tradesThisHour}/{b.risk.maxTradesHour} this hour
@@ -202,7 +202,7 @@ export function BotDesk({ snap }: { snap: LeefSnapshot }) {
                 <CirclePlay className="size-4" />
                 {confirmLive
                   ? "Real funds will trade — click again to start LIVE"
-                  : `Start ${liveReady ? "live" : "paper"} bot`}
+                  : `Start ${liveReady ? "live" : "unsigned"} bot`}
               </Button>
             )}
             {confirmLive && !b.running && (
@@ -582,42 +582,26 @@ function AdvisorCard({ snap }: { snap: LeefSnapshot }) {
         books exist. Scan sizes from this wallet and CPU/NET/RAM. You apply.
       </p>
       <div className="mb-3 grid grid-cols-2 gap-2">
-        <label className="block text-xs text-muted-foreground">
-          Base
-          <select
-            className="mt-1 w-full rounded-md border border-border bg-background px-2 py-1.5 text-sm text-foreground"
-            value={base}
-            disabled={running}
-            onChange={(e) => {
-              setBase(e.target.value);
-              setScan(null);
-            }}
-          >
-            {bases.map((q) => (
-              <option key={q} value={q}>
-                {q}
-              </option>
-            ))}
-          </select>
-        </label>
-        <label className="block text-xs text-muted-foreground">
-          Quote
-          <select
-            className="mt-1 w-full rounded-md border border-border bg-background px-2 py-1.5 text-sm text-foreground"
-            value={quote}
-            disabled={running}
-            onChange={(e) => {
-              setQuote(e.target.value);
-              setScan(null);
-            }}
-          >
-            {quotes.map((q) => (
-              <option key={q} value={q}>
-                {q}
-              </option>
-            ))}
-          </select>
-        </label>
+        <TokenSearch
+          label="Base (not WAX)"
+          value={base}
+          options={bases}
+          disabled={running}
+          onChange={(v) => {
+            setBase(v);
+            setScan(null);
+          }}
+        />
+        <TokenSearch
+          label="Quote (not LEEF)"
+          value={quote}
+          options={quotes}
+          disabled={running}
+          onChange={(v) => {
+            setQuote(v);
+            setScan(null);
+          }}
+        />
       </div>
       <p className="mb-1 text-xs text-muted-foreground">Focus tokens (scan bias)</p>
       <div className="mb-3 flex flex-wrap gap-1.5">
@@ -930,6 +914,22 @@ function RiskCard({ strategy, snap }: { strategy: BotStrategy; snap: LeefSnapsho
   );
 }
 
+function formatUsdDraft(n: number): string {
+  if (!Number.isFinite(n) || n === 0) return "0";
+  if (Math.abs(n) >= 1) return String(n);
+  const s = n.toFixed(12).replace(/0+$/, "").replace(/\.$/, "");
+  return s === "-0" ? "0" : s;
+}
+
+function parseUsdDraft(raw: string, min: number, max: number): number | null {
+  const t = raw.trim().replace(",", ".");
+  if (t === "" || t === "." || t === "0." || t === "-." || t.endsWith(".")) return null;
+  if (/^0\.0+$/.test(t)) return 0;
+  const n = Number(t);
+  if (!Number.isFinite(n)) return null;
+  return Math.min(max, Math.max(min, n));
+}
+
 function NumField({
   label,
   suffix,
@@ -947,25 +947,120 @@ function NumField({
   step: number;
   onChange: (v: number) => void;
 }) {
+  const [draft, setDraft] = useState(() => formatUsdDraft(value));
+  const [focused, setFocused] = useState(false);
+  useEffect(() => {
+    if (!focused) setDraft(formatUsdDraft(value));
+  }, [value, focused]);
   return (
     <label className="block">
       <span className="mb-1 block text-xs text-muted-foreground">{label}</span>
       <span className="flex items-center gap-1 rounded-md border border-border bg-background px-2">
         <Input
-          type="number"
+          type="text"
           inputMode="decimal"
+          autoComplete="off"
+          spellCheck={false}
           className="h-9 border-0 bg-transparent px-0 font-mono text-sm"
-          value={String(value)}
+          value={draft}
           min={min}
           max={max}
           step={step}
+          onFocus={() => setFocused(true)}
           onChange={(e) => {
-            const n = Number(e.target.value);
-            if (Number.isFinite(n)) onChange(Math.min(max, Math.max(min, n)));
+            const raw = e.target.value.replace(/[^\d.eE+-]/g, "");
+            setDraft(raw);
+            const n = parseUsdDraft(raw, min, max);
+            if (n != null) onChange(n);
+          }}
+          onBlur={() => {
+            setFocused(false);
+            const n = parseUsdDraft(draft, min, max);
+            if (n != null) {
+              onChange(n);
+              setDraft(formatUsdDraft(n));
+            } else {
+              setDraft(formatUsdDraft(value));
+            }
           }}
         />
         <span className="text-xs text-subtle">{suffix}</span>
       </span>
+    </label>
+  );
+}
+
+function TokenSearch({
+  label,
+  value,
+  options,
+  disabled,
+  onChange,
+}: {
+  label: string;
+  value: string;
+  options: string[];
+  disabled?: boolean;
+  onChange: (v: string) => void;
+}) {
+  const [q, setQ] = useState("");
+  const [open, setOpen] = useState(false);
+  const needle = q.trim().toLowerCase();
+  const shown = (needle ? options.filter((s) => s.toLowerCase().includes(needle)) : options).slice(
+    0,
+    40,
+  );
+  return (
+    <label className="relative block text-xs text-muted-foreground">
+      {label}
+      <Input
+        type="search"
+        disabled={disabled}
+        placeholder={value || `Search ${label.toLowerCase()}…`}
+        value={open ? q : value}
+        onFocus={() => {
+          setOpen(true);
+          setQ("");
+        }}
+        onChange={(e) => {
+          setQ(e.target.value);
+          setOpen(true);
+        }}
+        onBlur={() => {
+          window.setTimeout(() => setOpen(false), 120);
+        }}
+        className="mt-1 h-9 font-mono text-sm"
+        aria-label={`Search ${label}`}
+        aria-expanded={open}
+        autoComplete="off"
+      />
+      {open && !disabled && (
+        <ul className="absolute z-20 mt-1 max-h-48 w-full overflow-auto rounded-md border border-border bg-background py-1 shadow-md">
+          {shown.length === 0 ? (
+            <li className="px-2 py-1.5 text-xs text-subtle">No match</li>
+          ) : (
+            shown.map((s) => (
+              <li key={s}>
+                <button
+                  type="button"
+                  className={cn(
+                    "flex w-full px-2 py-1.5 text-left font-mono text-sm",
+                    s === value ? "bg-accent/15 text-foreground" : "text-foreground hover:bg-muted",
+                  )}
+                  onMouseDown={(e) => e.preventDefault()}
+                  onClick={() => {
+                    onChange(s);
+                    setQ("");
+                    setOpen(false);
+                  }}
+                >
+                  {s}
+                </button>
+              </li>
+            ))
+          )}
+        </ul>
+      )}
     </label>
   );
 }

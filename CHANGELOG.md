@@ -2,6 +2,17 @@
 
 All notable changes to LEEF Trader. Dates are commit-era, not release tags.
 
+## Unreleased — type 0.00004, no fake paper bag, searchable pair
+
+- Min/max USD fields keep a typing draft: `0.` / `0.000` no longer snap
+  back to `0` on every keystroke. Commit on blur.
+- Fake paper wallet (8M LEEF / 250 WAX / dust tokens) wiped. Unsigned
+  mode is an empty wallet on the live Alcor book.
+- Base/quote pickers are searchable. WAX is never a base; LEEF is never
+  a quote. Store setters reject those swaps.
+
+---
+
 ## Unreleased — WAX micropayments: dust clips + volume maker lives again
 
 WAX with staked CPU/NET/RAM has no transfer fee. The previous "smart"
