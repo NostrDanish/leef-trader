@@ -70,8 +70,18 @@ treasures and a mix (e.g. LEEF 60 / WAX 30 / TLM 10) plus a mode:
 | Compound | ~22% | 0.85% | 1.1% | Tiny conversions and cycles. Small edges, rebuilt every fill |
 
 **Objective:** weighted target-token growth (target units), haircut by
-execution probability, quote freshness and impact. Underweight treasures
-in a multi-asset mix score higher.
+execution probability, quote freshness and impact. Mix gaps are
+**wallet-relative** ("LEEF 70%" = 70% of the whole portfolio), so a wallet
+full of USDC shows a huge LEEF gap — that working capital is exactly what
+the engine wants to deploy. Underweight treasures score higher.
+
+**Exact-quote gate (graph proposes, venue decides):** the candidate's
+growth thesis is re-run on the fresh venue quote for the exact size before
+any signer is touched (`verifyGrowthExact` in the loop, via
+`verifyExecutableRoute`). If the real output no longer grows the treasure
+within the firewall caps, the trade dies as HOLD. The GrowthScore shown in
+the UI is display-only — the firewall is the permission layer,
+expectedGrowth is the ranking key.
 
 **Constraint (anti-destruction):** never execute just because the token
 count goes up. A fair AMM convert into treasure may pay the LP fee

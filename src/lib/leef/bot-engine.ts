@@ -7,6 +7,7 @@ import {
   normalizeTargets,
   planGrowthAction,
   type GrowthMode,
+  type GrowthPlan,
   type GrowthTarget,
 } from "./growth-engine";
 import { realizedVolPerSec, usdPriceOf } from "./cost-model";
@@ -310,6 +311,8 @@ export type Decision =
       route: SwapRoute;
       reason: string;
       opportunity?: ScoredOpportunity;
+      /** Treasure-growth plan — re-verified against the exact venue quote before sign. */
+      growthPlan?: GrowthPlan;
     }
   | { kind: "sell"; amountLeef: number; route: SwapRoute; reason: string; confidence: number }
   | {
@@ -1533,6 +1536,7 @@ export function evaluateBot(input: BotInput): Decision {
         amountIn: planned.amountIn,
         route: planned.route,
         reason: planned.explain.join(" · "),
+        growthPlan: planned,
       };
     }
     case "spread":

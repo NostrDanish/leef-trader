@@ -1,9 +1,12 @@
 import { describe, expect, it } from "vitest";
 import {
+  buildTargetPortfolio,
   hopsForGrowth,
   normalizeTargets,
   planGrowthAction,
   snapshotTargets,
+  verifyGrowthExact,
+  type GrowthPlan,
 } from "./growth-engine";
 import type { LeefPool, LeefSnapshot } from "./types";
 
@@ -197,5 +200,89 @@ describe("planGrowthAction", () => {
     const wax = rows.find((r) => r.symbol === "WAX")!;
     expect(leef.gapPct).toBeGreaterThan(0);
     expect(wax.gapPct).toBeLessThan(0);
+  });
+
+  it("mix is wallet-relative: a USDC stack shows up as working capital pressure", () => {
+    // $1,000 USDC + $10-ish LEEF. LEEF 70 / WAX 30 target. Under the OLD
+    // basket-relative math LEEF looked like 100% of the mix. Wallet-relative,
+    // LEEF is ~1% of the wallet → gap ≈ +69 and USDC is deployable capital.
+    const s = snap();
+    const balances = {
+      "WAX@eosio.token": 0,
+      "LEEF@leefmaincorp": 5_000_000, // ~$10 at the fixture mark
+      LEEF: 5_000_000,
+      "USDC@usdc.alcor": 1000,
+      USDC: 1000,
+    };
+    const s2 = {
+      ...s,
+      universe: [
+        ...s.universe,
+        {
+          symbol: "USDC",
+          contract: "usdc.alcor",
+          decimals: 6,
+          alcorId: "usdc-usdc.alcor",
+          poolId: 0,
+          waxPerToken: 50,
+          usdPrice: 1,
+          tvlUsd: 500_000,
+          stable: true,
+        },
+      ],
+    };
+    const rows = snapshotTargets(s2, balances, [
+      { symbol: "LEEF", weight: 70 },
+      { symbol: "WAX", weight: 30 },
+    ]);
+    const leef = rows.find((r) => r.symbol === "LEEF")!;
+    expect(leef.sharePct).toBeLessThan(5); // ~1% of wallet, not 100% of basket
+    expect(leef.gapPct).toBeGreaterThan(60);
+    const pf = buildTargetPortfolio(s2, balances, [
+      { symbol: "LEEF", weight: 70 },
+      { symbol: "WAX", weight: 30 },
+    ]);
+    expect(pf.workingCapitalUsd).toBeGreaterThan(900);
+  });
+});
+
+describe("verifyGrowthExact (graph proposes, exact quote decides)", () => {
+  function planFromBook(): GrowthPlan {
+    const r = planGrowthAction(snap(), bag, {
+      targets: [{ symbol: "LEEF", weight: 100 }],
+      mode: "balanced",
+      minUsd: 0.05,
+      maxUsd: 2,
+      seed: 1,
+    });
+    if ("hold" in r) throw new Error(`expected a plan, got ${r.hold}`);
+    return r;
+  }
+
+  it("passes when the venue quote matches the model", () => {
+    const plan = planFromBook();
+    const v = verifyGrowthExact(plan, plan.amountIn, plan.route.amountOut, snap());
+    expect(v.pass).toBe(true);
+  });
+
+  it("blocks when the exact quote moved against the treasure", () => {
+    const plan = planFromBook();
+    // 5% worse than the model — beyond the balanced acquire drop cap.
+    const v = verifyGrowthExact(plan, plan.amountIn, plan.route.amountOut * 0.95, snap());
+    expect(v.pass).toBe(false);
+    if (!v.pass) expect(v.reason).toMatch(/drop|anti-destruction/i);
+  });
+
+  it("blocks a treasure spend the graph never should have signed", () => {
+    const plan = planFromBook();
+    const evil: GrowthPlan = {
+      ...plan,
+      tokenIn: "LEEF",
+      tokenOut: "WAX",
+      kind: "convert",
+    };
+    const v = verifyGrowthExact(evil, 1_000_000, 200, snap());
+    expect(v.pass).toBe(false);
+    if (!v.pass) expect(v.reason).toMatch(/won't spend treasure|growth/i);
   });
 });

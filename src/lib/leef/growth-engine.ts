@@ -12,7 +12,6 @@
 import type { LeefSnapshot, SwapRoute } from "./types";
 import { usdPriceOf } from "./cost-model";
 import {
-  bestExecutionRouteOnGraph,
   buildRouteGraph,
   MAX_ROUTE_HOPS,
   rankExecutionRoutesOnGraph,
@@ -44,6 +43,8 @@ export type TargetPortfolio = {
   targets: TargetAsset[];
   totalTargetUsd: number;
   walletUsd: number;
+  /** Non-treasure value the engine may deploy toward the mix. */
+  workingCapitalUsd: number;
 };
 
 export type GrowthKind = "convert" | "cycle" | "rebalance" | "harvest";
@@ -72,6 +73,10 @@ export type GrowthOpportunity = {
 
 export type GrowthPlan = GrowthOpportunity & {
   mode: GrowthMode;
+  /** Decision-time context for the exact-quote re-check at sign time. */
+  targets: GrowthTarget[];
+  weightsPct: Record<string, number>;
+  gapPct: Record<string, number>;
 };
 
 export type GrowthHold = {
@@ -187,21 +192,25 @@ export function amountOf(balances: Record<string, number>, snap: LeefSnapshot, s
   return hit?.amount ?? 0;
 }
 
+/**
+ * Mix is WALLET-relative, not basket-relative: "LEEF 70%" means 70% of the
+ * whole portfolio, so a wallet full of USDC shows a huge LEEF gap and the
+ * engine wants to deploy that working capital. (Basket-relative share would
+ * read 100% LEEF the moment any dust LEEF exists.)
+ */
 export function snapshotTargets(
   snap: LeefSnapshot,
   balances: Record<string, number>,
   targets: GrowthTarget[],
 ): TargetAsset[] {
   const norm = normalizeTargets(targets);
-  const rows = norm.map((t) => {
+  const walletUsd = markPortfolioUsd(snap, balances).totalUsd;
+  return norm.map((t) => {
     const amount = amountOf(balances, snap, t.symbol);
     const px = usdPriceOf(t.symbol, snap);
-    return { ...t, amount, usd: amount * (px || 0), sharePct: 0, gapPct: 0 };
-  });
-  const total = rows.reduce((s, r) => s + r.usd, 0);
-  return rows.map((r) => {
-    const sharePct = total > 0 ? (r.usd / total) * 100 : 0;
-    return { ...r, sharePct, gapPct: r.weight - sharePct };
+    const usd = amount * (px || 0);
+    const sharePct = walletUsd > 0 ? (usd / walletUsd) * 100 : 0;
+    return { ...t, amount, usd, sharePct, gapPct: t.weight - sharePct };
   });
 }
 
@@ -211,10 +220,13 @@ export function buildTargetPortfolio(
   targets: GrowthTarget[],
 ): TargetPortfolio {
   const t = snapshotTargets(snap, balances, targets);
+  const totalTargetUsd = t.reduce((s, r) => s + r.usd, 0);
+  const walletUsd = markPortfolioUsd(snap, balances).totalUsd;
   return {
     targets: t,
-    totalTargetUsd: t.reduce((s, r) => s + r.usd, 0),
-    walletUsd: markPortfolioUsd(snap, balances).totalUsd,
+    totalTargetUsd,
+    walletUsd,
+    workingCapitalUsd: Math.max(0, walletUsd - totalTargetUsd),
   };
 }
 
@@ -243,6 +255,12 @@ export function targetUnitPnl(
   }));
 }
 
+/**
+ * Destination shortlist. This caps FINAL DESTINATIONS only — intermediate
+ * hops still traverse every edge in the graph, so an obscure TLM pool can
+ * still carry WAX → TLM → LEEF even when TLM isn't in this list. Pruning
+ * happens after discovery: we rank what we found, never before we looked.
+ */
 function dests(snap: LeefSnapshot, targets: GrowthTarget[]): string[] {
   const set = new Set<string>(targets.map((t) => t.symbol));
   set.add("WAX");
@@ -250,7 +268,7 @@ function dests(snap: LeefSnapshot, targets: GrowthTarget[]): string[] {
     .filter((u) => u.usdPrice > 0 && u.tvlUsd >= 20)
     .sort((a, b) => b.tvlUsd - a.tvlUsd);
   for (const u of ranked) set.add(u.symbol.toUpperCase());
-  return [...set].slice(0, 10);
+  return [...set].slice(0, 14);
 }
 
 function fmtTok(n: number): string {
@@ -273,6 +291,11 @@ function classify(
   return "convert";
 }
 
+/**
+ * Display score 0–100. This NEVER decides — the firewall is the permission
+ * layer, expectedGrowth is the ranking key. The score exists so a human can
+ * compare opportunities at a glance.
+ */
 function growthScoreOf(o: {
   expectedGrowth: number;
   usdIn: number;
@@ -544,8 +567,11 @@ export function planGrowthAction(
 
     for (const to of destinations) {
       if (to === token.symbol) continue;
-      const route = bestExecutionRouteOnGraph(graph, spend, token.symbol, to);
-      if (route) consider(token.symbol, to, spend, route);
+      // Top-2 only matters for treasure destinations — the mix tilt can flip
+      // the ranking there. Everything else ranks by raw output anyway.
+      const take = targetSet.has(to) ? 2 : 1;
+      const routes = rankExecutionRoutesOnGraph(graph, spend, token.symbol, to, hops).slice(0, take);
+      for (const route of routes) consider(token.symbol, to, spend, route);
     }
 
     // Same-asset cycles: working capital (WAX/stables) or a treasure harvest.
@@ -588,6 +614,95 @@ export function planGrowthAction(
   return {
     ...best,
     mode,
+    targets,
+    weightsPct: Object.fromEntries(targets.map((t) => [t.symbol, t.weight])),
+    gapPct: Object.fromEntries(portfolio.targets.map((t) => [t.symbol, t.gapPct])),
     explain: executeLines,
+  };
+}
+
+/**
+ * Exact-quote economics gate — the audit step between "the graph liked it"
+ * and "capital moves". The candidate's growth thesis is re-run on the
+ * venue's exact output for THIS size. If the exact quote no longer grows
+ * the treasure (or breaks a firewall rule), the trade dies here.
+ *
+ *   GRAPH → candidate → EXACT VENUE QUOTE → this gate → firewall → sign
+ */
+export function verifyGrowthExact(
+  plan: GrowthPlan,
+  amountIn: number,
+  exactOut: number,
+  snap: LeefSnapshot,
+): { pass: true; growthUnits: number; dropPct: number; reason: string } | { pass: false; reason: string } {
+  const p = policyOf(plan.mode);
+  const pxIn = usdPriceOf(plan.tokenIn, snap);
+  const pxOut = usdPriceOf(plan.tokenOut, snap);
+  if (!(pxIn > 0) || !(pxOut > 0)) {
+    return { pass: false, reason: "exact gate: lost a price mark" };
+  }
+  const usdIn = amountIn * pxIn;
+  const usdOut = exactOut * pxOut;
+  const netUsd = usdOut - usdIn;
+  const dropPct = usdIn > 0 ? Math.max(0, (-netUsd / usdIn) * 100) : 100;
+
+  const targets = normalizeTargets(plan.targets);
+  const targetSet = new Set(targets.map((t) => t.symbol));
+  const isCycle = plan.tokenIn === plan.tokenOut;
+  const acquiring = targetSet.has(plan.tokenOut) && !targetSet.has(plan.tokenIn);
+
+  let growthUnits = 0;
+  for (const t of targets) {
+    const px = usdPriceOf(t.symbol, snap);
+    if (!(px > 0)) continue;
+    const w = (plan.weightsPct[t.symbol] ?? t.weight) / 100;
+    const gap = (plan.gapPct[t.symbol] ?? 0) / 100;
+    const tilt = 1 + Math.max(-0.35, Math.min(0.45, gap));
+    const delta =
+      (t.symbol === plan.tokenIn ? -amountIn : 0) + (t.symbol === plan.tokenOut ? exactOut : 0);
+    growthUnits += delta * px * w * tilt;
+  }
+
+  const dropCap = acquiring ? p.acquireDropCapPct : p.dropCapPct;
+  if (dropPct > dropCap + 1e-9) {
+    return {
+      pass: false,
+      reason: `exact quote: portfolio would drop ${dropPct.toFixed(2)}% > ${dropCap}% cap (anti-destruction)`,
+    };
+  }
+  const need = p.minGrowthFrac * Math.max(0.01, usdIn);
+  if (growthUnits + 1e-12 < need) {
+    return {
+      pass: false,
+      reason: `exact quote: treasure growth $${growthUnits.toFixed(4)} < required $${need.toFixed(4)}`,
+    };
+  }
+  if (targetSet.has(plan.tokenIn)) {
+    if (isCycle) {
+      const gainPct = amountIn > 0 ? ((exactOut - amountIn) / amountIn) * 100 : 0;
+      if (gainPct + 1e-9 < p.harvestMinPct) {
+        return {
+          pass: false,
+          reason: `exact quote: harvest ${plan.tokenIn} +${gainPct.toFixed(2)}% < ${p.harvestMinPct}% floor`,
+        };
+      }
+    } else if (plan.kind === "rebalance") {
+      const toGap = plan.gapPct[plan.tokenOut] ?? 0;
+      const fromGap = plan.gapPct[plan.tokenIn] ?? 0;
+      if (toGap <= fromGap + 0.5) {
+        return { pass: false, reason: "exact quote: rebalance no longer repairs the mix" };
+      }
+    } else if (plan.kind !== "harvest") {
+      return {
+        pass: false,
+        reason: `exact quote: won't spend treasure ${plan.tokenIn} into ${plan.tokenOut}`,
+      };
+    }
+  }
+  return {
+    pass: true,
+    growthUnits,
+    dropPct,
+    reason: `exact quote verified · treasure +$${growthUnits.toFixed(4)} · drop ${dropPct.toFixed(2)}%`,
   };
 }

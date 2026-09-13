@@ -834,7 +834,9 @@ function TreasureCard({ snap }: { snap: LeefSnapshot }) {
     setTargets(targets.filter((_, j) => j !== i));
   }
 
-  const totalUsd = now.reduce((s, n) => s + n.usd, 0);
+  const walletUsd = markPortfolioUsd(snap, balances).totalUsd;
+  const targetUsd = now.reduce((s, n) => s + n.usd, 0);
+  const workingUsd = Math.max(0, walletUsd - targetUsd);
 
   return (
     <Card className="p-4 sm:p-5">
@@ -872,7 +874,7 @@ function TreasureCard({ snap }: { snap: LeefSnapshot }) {
           const live = now.find((n) => n.symbol === t.symbol);
           const opened = start[t.symbol];
           const delta = live && opened != null ? live.amount - opened : null;
-          const share = live && totalUsd > 0 ? (live.usd / totalUsd) * 100 : 0;
+          const share = live ? live.sharePct : 0;
           return (
             <div key={`${t.symbol}-${i}`} className="rounded-md border border-border p-2">
               <div className="flex items-center gap-2">
@@ -921,7 +923,7 @@ function TreasureCard({ snap }: { snap: LeefSnapshot }) {
                 {live && (
                   <span className="text-subtle">
                     {" "}
-                    · bag {share.toFixed(0)}% vs {t.weight.toFixed(0)}%
+                    · wallet {share.toFixed(0)}% vs {t.weight.toFixed(0)}%
                     {live.gapPct > 1 ? " under" : live.gapPct < -1 ? " over" : ""}
                   </span>
                 )}
@@ -941,6 +943,9 @@ function TreasureCard({ snap }: { snap: LeefSnapshot }) {
           Add treasure
         </Button>
       )}
+      <p className="mt-3 border-t border-border pt-2 font-mono text-xs text-subtle">
+        Working capital {fmtUsd(workingUsd)} (everything not in the mix) · wallet {fmtUsd(walletUsd)}
+      </p>
     </Card>
   );
 }

@@ -358,6 +358,7 @@ export function InfraStatus() {
           <TimingRow label="net edge" ms={timings.netEdgeMs} />
           <TimingRow label="risk / governor" ms={timings.riskMs} />
           <TimingRow label="quote" ms={timings.quoteMs} />
+          <TimingRow label="exact-quote gate" ms={timings.quoteVerifyMs} />
           <TimingRow label="sign" ms={timings.signMs} />
           <TimingRow label="confirmation" ms={timings.confirmationMs} />
           <TimingRow label="total trade" ms={timings.totalTradeCycleMs} />

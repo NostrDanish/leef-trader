@@ -34,6 +34,8 @@ export type CycleTimings = {
   sizeOptimizationMs: number;
   netEdgeMs: number;
   quoteMs: number;
+  /** Exact venue-quote re-verification (growth firewall) before sign. */
+  quoteVerifyMs: number;
   riskMs: number;
   policyMs: number;
   signMs: number;
@@ -59,6 +61,7 @@ export const emptyTimings = (): CycleTimings => ({
   sizeOptimizationMs: 0,
   netEdgeMs: 0,
   quoteMs: 0,
+  quoteVerifyMs: 0,
   riskMs: 0,
   policyMs: 0,
   signMs: 0,

@@ -2,6 +2,26 @@
 
 All notable changes to LEEF Trader. Dates are commit-era, not release tags.
 
+## Unreleased — Growth V2: exact-quote gate + wallet-relative mix
+
+Audit-driven fixes to the Treasure growth engine:
+
+- **Exact-quote economics gate.** The graph proposes; the venue decides.
+  Before any signer is touched, the growth thesis is re-run on the exact
+  executable quote for that size (`verifyExecutableRoute` →
+  `verifyGrowthExact`). If the fresh quote no longer grows the treasure
+  inside the firewall caps, the trade dies as HOLD. Paper fills now settle
+  from the exact venue output too.
+- **Wallet-relative mix.** "LEEF 70%" now means 70% of the whole wallet,
+  not 70% of the treasure basket. A USDC stack shows up as working capital
+  and creates real deploy pressure. Treasure card shows working capital.
+- **Wider discovery.** Destination shortlist raised (10 → 14) — note it
+  only caps final destinations; intermediate hops traverse every pool edge.
+  Top-2 routes are considered for treasure destinations (mix tilt can flip
+  the ranking); hops budget now applies to paths as well as cycles.
+- GrowthScore is explicitly display-only: the firewall is the permission
+  layer, expectedGrowth is the ranking key.
+
 ## Unreleased — Treasure growth: grow 1–3 assets, HOLD with a why
 
 Don't trade pairs. Grow assets.

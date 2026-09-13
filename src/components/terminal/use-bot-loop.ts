@@ -9,7 +9,8 @@ import { realizedVolPerSec, usdPriceOf } from "@/lib/leef/cost-model";
 import { optimizeEntrySize } from "@/lib/leef/net-edge";
 import { markDeadOpportunity, opportunityFingerprint } from "@/lib/leef/opportunity";
 import { fmtNum } from "@/lib/leef/format";
-import { fetchAlcorRouteCached } from "@/lib/leef/quote-verify";
+import { fetchAlcorRouteCached, verifyExecutableRoute } from "@/lib/leef/quote-verify";
+import { verifyGrowthExact } from "@/lib/leef/growth-engine";
 import { exceedsMaxPositionUsd, usdToTokenBounds } from "@/lib/leef/risk-usd";
 import { lastSnapshotTimings } from "@/lib/leef/snapshot";
 import { bestExecutionRoute } from "@/lib/leef/route-optimizer";
@@ -421,7 +422,56 @@ async function runBotOnceInner(
         reason: `${decision.reason} · ${governed.reason}`,
       };
     }
-  }
+
+    // Treasure growth: the graph proposed, now the EXACT venue quote must
+    // approve. Re-run the growth thesis on the real executable output for
+    // this size — if the fresh quote no longer grows the treasure, HOLD
+    // before any signer is touched.
+    if (decision.growthPlan) {
+      const tQuote = Date.now();
+      try {
+        const verified = await verifyExecutableRoute({
+          route: decision.route,
+          amountIn: decision.amountIn,
+          slippagePct: b.risk.slippage,
+          account: live ? w.account : "paper.leef",
+          snap: book,
+          deadlineMs: 4_000,
+        });
+        timings.quoteVerifyMs = Date.now() - tQuote;
+        if (verified.trust !== "executable") {
+          const reason = "Growth exact-quote gate: venue quote is not executable";
+          b.pushDecision({ kind: "hold", mode, reason, priceUsd: book.leefUsd });
+          b.setLastReason(reason);
+          return { kind: "hold", reason };
+        }
+        const verdict = verifyGrowthExact(
+          decision.growthPlan,
+          decision.amountIn,
+          verified.expectedOut,
+          book,
+        );
+          if (!verdict.pass) {
+            const reason = `Growth exact-quote gate: ${verdict.reason}`;
+            b.pushDecision({ kind: "hold", mode, reason, priceUsd: book.leefUsd });
+            b.setLastReason(reason);
+            return { kind: "hold", reason };
+          }
+          decision = {
+            ...decision,
+            // Paper fills and P&L settle from the exact venue quote too.
+            route: { ...decision.route, amountOut: verified.expectedOut },
+            reason: `${decision.reason} · ${verdict.reason}`,
+          };
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : "exact quote failed";
+        const reason = `Growth exact-quote gate: ${msg}`;
+        b.pushDecision({ kind: "hold", mode, reason, priceUsd: book.leefUsd });
+        b.setLastReason(reason);
+        return { kind: "hold", reason };
+      }
+    }
+    }
 
   if (decision.kind === "buy") {
     const tRisk = Date.now();
