@@ -2,6 +2,24 @@
 
 All notable changes to LEEF Trader. Dates are commit-era, not release tags.
 
+## Unreleased — surgical brain fixes (no rewrite)
+
+ChatGPT audit vs code:
+
+- Pool-ID collision: **false**. Defibox/Taco ids are already namespaced
+  (`1_000_000` / `2_000_000`). Tests already prove `alcor:217` ≠ `defibox:12`.
+- Split hops: **true**. `routeHops(split)` returned 1. Now hops=1,
+  actions=leg count; exec probability penalizes extra actions.
+- Signal confidence used twice: **true**. Vote already gates entry
+  (`minConfidence`); it no longer also scales expected gross AND EV.
+- Fake VWAP: **true** for the bot series (volume=1). VWAP stays on the
+  chart, off the bot vote.
+
+Not rebuilt: market engine, RPC, firewall, CLMM live quote at sign,
+capital lock, Auto as orchestrator.
+
+---
+
 ## Unreleased — LEEF price is not $0: quote per 10M + enough USD digits
 
 1 LEEF ≈ $0.00000019 / 0.00000004 WAX, so 6–8 decimal USD printers

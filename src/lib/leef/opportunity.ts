@@ -56,29 +56,43 @@ export type ScoredOpportunity = {
 
 const clamp01 = (n: number) => Math.min(1, Math.max(0, n));
 
+/** Sequential hops vs on-chain actions. A 3-way split is 1 hop, 3 actions. */
+export function routeComplexity(route: SwapRoute | null | undefined): {
+  hops: number;
+  actions: number;
+  split: boolean;
+} {
+  if (!route) return { hops: 1, actions: 1, split: false };
+  if (route.kind === "direct") return { hops: 1, actions: 1, split: false };
+  if (route.kind === "split") {
+    const n = Math.max(1, route.legs.length);
+    return { hops: 1, actions: n, split: true };
+  }
+  const n = Math.max(1, route.legs.length);
+  return { hops: n, actions: n, split: false };
+}
+
 export function routeHops(route: SwapRoute | null | undefined): number {
-  if (!route) return 1;
-  if (route.kind === "direct") return 1;
-  if (route.kind === "split") return Math.max(1, ...route.legs.map(() => 1));
-  return Math.max(1, route.legs.length);
+  return routeComplexity(route).hops;
 }
 
 /**
- * Probability the live venue will fill near the local model. Not a crystal
- * ball — a structural prior from hops, impact and depth, updated later by
- * calibrationHaircut from realized fills.
+ * Probability the live venue will fill near the local model. Sequential hops
+ * and extra split actions both cost — a 3-way split is not a direct swap.
  */
 export function executionProbability(opts: {
   hops: number;
   impactPct: number;
   tvlUsd: number;
   split?: boolean;
+  actions?: number;
 }): number {
   const hopPenalty = Math.max(0.35, 1 - 0.12 * Math.max(0, opts.hops - 1));
+  const extraActions = Math.max(0, (opts.actions ?? opts.hops) - opts.hops);
+  const actionPenalty = opts.split ? Math.max(0.7, 1 - 0.06 * extraActions) : 1;
   const impactPenalty = clamp01(1 - opts.impactPct / 8);
   const depth = clamp01(Math.log10(Math.max(10, opts.tvlUsd)) / 5);
-  const splitPenalty = opts.split ? 0.92 : 1;
-  return clamp01(hopPenalty * impactPenalty * (0.55 + 0.45 * depth) * splitPenalty);
+  return clamp01(hopPenalty * actionPenalty * impactPenalty * (0.55 + 0.45 * depth));
 }
 
 export function freshnessFactor(quoteAgeMs: number, maxQuoteAgeMs: number): number {
@@ -184,6 +198,7 @@ export function buildScoredOpportunity(opts: {
   liquidityUsd: number;
   impactPct: number;
   split?: boolean;
+  actions?: number;
   quoteAgeMs: number;
   maxQuoteAgeMs: number;
   inventoryFactor: number;
@@ -195,6 +210,7 @@ export function buildScoredOpportunity(opts: {
     impactPct: opts.impactPct,
     tvlUsd: opts.liquidityUsd,
     split: opts.split,
+    actions: opts.actions,
   });
   const fresh = freshnessFactor(opts.quoteAgeMs, opts.maxQuoteAgeMs);
   const expectedValueUsd = scoreExpectedValue({

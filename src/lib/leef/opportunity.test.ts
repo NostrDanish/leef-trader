@@ -53,6 +53,11 @@ describe("executionProbability", () => {
     expect(deepDirect).toBeGreaterThan(0.8);
     expect(thinHop).toBeLessThan(0.6);
   });
+  it("does not treat a 3-way split as a direct hop", () => {
+    const direct = executionProbability({ hops: 1, actions: 1, impactPct: 0.3, tvlUsd: 20_000 });
+    const split3 = executionProbability({ hops: 1, actions: 3, split: true, impactPct: 0.3, tvlUsd: 20_000 });
+    expect(split3).toBeLessThan(direct);
+  });
 });
 
 describe("calibrationHaircut", () => {

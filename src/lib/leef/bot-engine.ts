@@ -23,6 +23,7 @@ import {
   inventoryFactor,
   opportunityFingerprint,
   rejectOpportunity,
+  routeComplexity,
   routeHops,
   selectBestOpportunity,
   type CalibrationMemory,
@@ -114,7 +115,9 @@ const BOT_TICK_PARAMS: TickParams = {
   stochK: 14,
   stochD: 3,
   sensitivity: 1,
-  engines: { bb: true, macd: true, rsi: true, ema: true, sma: false, stoch: true, vwap: true },
+  // VWAP off: the bot series has volume=1, so "VWAP" is a TWAP of the print
+  // window — not traded volume. Keep it on the chart, not in the vote.
+  engines: { bb: true, macd: true, rsi: true, ema: true, sma: false, stoch: true, vwap: false },
 };
 
 /** Minimum real prints before the engines' vote is trusted. */
@@ -550,10 +553,11 @@ function scoreBuyOpportunity(opts: {
     notionalUsd: opts.notionalUsd,
     expectedNetProfitUsd: opts.netProfitUsd,
     expectedNetEdgePct: opts.netEdgePct,
-    hops: routeHops(opts.route),
+    hops: routeComplexity(opts.route).hops,
     liquidityUsd: opts.route.tvlUsd,
     impactPct: opts.route.priceImpact * 100,
     split: opts.route.kind === "split",
+    actions: routeComplexity(opts.route).actions,
     quoteAgeMs: opts.quoteAgeMs,
     maxQuoteAgeMs: opts.maxQuoteAgeMs,
     inventoryFactor: inventoryFactor({
@@ -583,6 +587,8 @@ function scoreArbOpportunity(opts: {
     opts.plan.buyLegs?.reduce((m, l) => Math.max(m, l.route.length), 1) ?? 1,
     opts.plan.sellLegs?.reduce((m, l) => Math.max(m, l.route.length), 1) ?? 1,
   );
+  const actions =
+    (opts.plan.buyLegs?.length ?? 1) + (opts.plan.sellLegs?.length ?? 1);
   const tvl = Math.min(opts.plan.buyPool.tvlUsd, opts.plan.sellPool.tvlUsd);
   return buildScoredOpportunity({
     fingerprint: opportunityFingerprint({
@@ -600,6 +606,8 @@ function scoreArbOpportunity(opts: {
     expectedNetProfitUsd: netUsd,
     expectedNetEdgePct: opts.plan.profitPct * 100,
     hops,
+    actions,
+    split: actions > 2,
     liquidityUsd: tvl,
     impactPct: opts.plan.impactPct * 100,
     quoteAgeMs: opts.quoteAgeMs,
@@ -1052,13 +1060,14 @@ export function evaluateBot(input: BotInput): Decision {
           .filter((r) => r.score > 0.12)
           .map((r) => r.id.toUpperCase())
           .join("+");
-        // Anchor: the engine vote aims for the take-profit target, scaled by
-        // how strongly the indicators agree. Fade a collapsing tape.
-        const expected = signal.confidence * goals.takeProfitPct * (mom < 0 ? 0.6 : 1);
+        // Thesis size = TP faded by momentum, NOT by vote confidence.
+        // Confidence already gated entry (minConfidence). Multiplying it into
+        // expected gross AND again into EV double-counted the same number.
+        const expected = goals.takeProfitPct * (mom < 0 ? 0.6 : 1);
         return tryBuy(
           `Engine vote BUY ${conf}% conf (${votes || "blend"}) · momentum ${(mom * 100).toFixed(2)}%`,
           expected,
-          signal.confidence,
+          1,
         );
       }
       return hold(`Vote ${signal.bias} · ${conf}% conf (need ≥ ${risk.minConfidence}% buy)`);
@@ -1176,8 +1185,8 @@ export function evaluateBot(input: BotInput): Decision {
         const mom = momentumPct(input.series);
         theses.push({
           reason: `Auto: engine vote BUY ${Math.round(signal.confidence * 100)}% conf`,
-          expected: signal.confidence * goals.takeProfitPct * (mom < 0 ? 0.6 : 1),
-          confidence: signal.confidence,
+          expected: goals.takeProfitPct * (mom < 0 ? 0.6 : 1),
+          confidence: 1,
         });
       } else if (!signal.warmed) {
         considered.push(`engines warming up ${input.series.length}/${BOT_WARMUP_POINTS}`);
@@ -1188,7 +1197,7 @@ export function evaluateBot(input: BotInput): Decision {
           theses.push({
             reason: `Auto: oversold RSI ${rsi.toFixed(0)} / %B ${pctB.toFixed(2)}`,
             expected: Math.max(0, (distToMidPct ?? 0) * 0.7),
-            confidence: signal.confidence,
+            confidence: 1,
           });
         }
       }
@@ -1199,7 +1208,7 @@ export function evaluateBot(input: BotInput): Decision {
           theses.push({
             reason: `Auto: grid step −${step.toFixed(2)}% zone`,
             expected: step * 0.8,
-            confidence: signal.confidence,
+            confidence: 1,
           });
         }
       }
