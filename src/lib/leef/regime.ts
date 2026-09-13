@@ -46,6 +46,84 @@ export type RegimeInput = {
   poolPricesUsd?: number[];
 };
 
+/* ------------------------------------------------------------------ */
+/* Danger score — one unified defensive number                         */
+/* ------------------------------------------------------------------ */
+
+export type DangerBand = "normal" | "cautious" | "reduced" | "selective" | "hold";
+
+export type DangerVerdict = {
+  /** 0–100. */
+  score: number;
+  band: DangerBand;
+  /** Size multiplier for entries (1 = full size). Never blocks exits. */
+  sizeFactor: number;
+  explain: string[];
+};
+
+/**
+ * One defensive number every strategy shares, instead of each inventing its
+ * own. Inputs are whatever this evaluation already knows — no extra I/O.
+ *
+ *   0–20 normal · 20–40 cautious · 40–60 reduced · 60–80 selective · 80+ HOLD
+ *
+ * Danger is an ENTRY gate only. Exits and risk actions always fire.
+ */
+export function dangerScore(opts: {
+  /** Age of the book this decision would act on. */
+  quoteAgeMs: number;
+  maxQuoteAgeMs: number;
+  /** Per-print realized volatility, percent (from classifyRegime). */
+  volPct: number;
+  /** Cross-pool price disagreement, percent (from classifyRegime). */
+  dislocationPct: number;
+  /** Deepest pool TVL — thin books are dangerous. */
+  liquidityUsd?: number;
+  /** Execution errors in the recent window (RPC/quote/venue failures). */
+  recentFailures?: number;
+}): DangerVerdict {
+  const explain: string[] = [];
+  let score = 0;
+
+  // Stale book — the single biggest silent killer.
+  const ageFrac = Math.min(1.5, opts.quoteAgeMs / Math.max(1, opts.maxQuoteAgeMs));
+  const freshPts = Math.round(Math.min(1, ageFrac) * 25);
+  if (freshPts > 0) explain.push(`book ${Math.round(opts.quoteAgeMs / 1000)}s old +${freshPts}`);
+  score += freshPts;
+
+  // Volatility.
+  const volPts = Math.round(Math.min(1, opts.volPct / 1.5) * 25);
+  if (volPts >= 8) explain.push(`vol ${opts.volPct.toFixed(2)}%/print +${volPts}`);
+  score += volPts;
+
+  // Pool disagreement.
+  const disPts = Math.round(Math.min(1, opts.dislocationPct / 1.5) * 20);
+  if (disPts >= 6) explain.push(`pools disagree ${opts.dislocationPct.toFixed(2)}% +${disPts}`);
+  score += disPts;
+
+  // Liquidity.
+  if (opts.liquidityUsd != null) {
+    const liqPts =
+      opts.liquidityUsd >= 5_000 ? 0 : Math.round(Math.min(1, 5_000 / Math.max(50, opts.liquidityUsd) - 1) * 15);
+    if (liqPts >= 5) explain.push(`thin book $${Math.round(opts.liquidityUsd)} +${liqPts}`);
+    score += liqPts;
+  }
+
+  // Recent execution failures (infrastructure stress, not alpha).
+  const fails = opts.recentFailures ?? 0;
+  const failPts = Math.min(15, fails * 5);
+  if (failPts > 0) explain.push(`${fails} recent error${fails === 1 ? "" : "s"} +${failPts}`);
+  score += failPts;
+
+  score = Math.min(100, score);
+  const band: DangerBand =
+    score >= 80 ? "hold" : score >= 60 ? "selective" : score >= 40 ? "reduced" : score >= 20 ? "cautious" : "normal";
+  const sizeFactor =
+    band === "hold" ? 0 : band === "selective" ? 0.5 : band === "reduced" ? 0.8 : band === "cautious" ? 0.9 : 1;
+  if (explain.length === 0) explain.push("book fresh · calm tape · no recent errors");
+  return { score, band, sizeFactor, explain };
+}
+
 const MIN_PRINTS = 34;
 const EMA_FAST = 8;
 const EMA_SLOW = 21;

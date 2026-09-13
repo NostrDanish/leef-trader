@@ -47,7 +47,7 @@ import {
   snapshotTargets,
   targetUnitPnl,
 } from "@/lib/leef/growth-engine";
-import { classifyRegime } from "@/lib/leef/regime";
+import { classifyRegime, dangerScore } from "@/lib/leef/regime";
 
 const KIND_VARIANT: Record<
   BotDecisionLog["kind"],
@@ -538,23 +538,50 @@ export function BotDesk({ snap }: { snap: LeefSnapshot }) {
 
 function RegimeBadge({ snap }: { snap: LeefSnapshot }) {
   const series = useBot((s) => s.series);
+  const decisions = useBot((s) => s.decisions);
+  const risk = useBot((s) => s.risk);
   const r = classifyRegime({
     series,
     poolPricesUsd: snap.pools.map((p) => p.usdPerLeef ?? 0).filter((v) => v > 0),
   });
-  if (r.regime === "unknown") return null;
+  const danger = dangerScore({
+    quoteAgeMs: Math.max(0, Date.now() - Date.parse(snap.fetchedAt)),
+    maxQuoteAgeMs: Math.max(15, risk.maxQuoteAgeSec) * 1000,
+    volPct: r.volPct,
+    dislocationPct: r.dislocationPct,
+    liquidityUsd: Math.max(0, ...snap.pools.map((p) => p.tvlUsd)),
+    recentFailures: decisions.filter(
+      (d) => d.kind === "error" && Date.now() - Date.parse(d.t) < 600_000,
+    ).length,
+  });
   const tone =
     r.regime === "trend_down" || r.regime === "high_vol"
       ? "border-sell/40 text-sell"
       : r.regime === "dislocation"
         ? "border-warn/40 text-warn"
         : "border-leef/40 text-leef";
+  const dangerTone =
+    danger.band === "hold" || danger.band === "selective"
+      ? "border-sell/40 text-sell"
+      : danger.band === "reduced" || danger.band === "cautious"
+        ? "border-warn/40 text-warn"
+        : "border-border text-subtle";
   return (
-    <span
-      className={cn("rounded-full border px-2 py-0.5 font-mono normal-case tracking-normal", tone)}
-      title={r.explain.join("\n")}
-    >
-      {r.regime}
+    <span className="flex items-center gap-1.5">
+      {r.regime !== "unknown" && (
+        <span
+          className={cn("rounded-full border px-2 py-0.5 font-mono normal-case tracking-normal", tone)}
+          title={r.explain.join("\n")}
+        >
+          {r.regime}
+        </span>
+      )}
+      <span
+        className={cn("rounded-full border px-2 py-0.5 font-mono normal-case tracking-normal", dangerTone)}
+        title={danger.explain.join("\n")}
+      >
+        danger {danger.score}
+      </span>
     </span>
   );
 }

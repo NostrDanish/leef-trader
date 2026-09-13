@@ -105,7 +105,13 @@ export async function verifyExecutableRoute(opts: {
   account: string;
   snap: LeefSnapshot;
   deadlineMs: number;
-}): Promise<{ expectedOut: number; trust: QuoteTrust; verified: VerifiedLeg[] }> {
+}): Promise<{
+  expectedOut: number;
+  /** Chain-guaranteed worst case: sum of leg min-outs (split) or the final leg's min-out (hops). */
+  guaranteedOut: number;
+  trust: QuoteTrust;
+  verified: VerifiedLeg[];
+}> {
   const t0 = Date.now();
   const remaining = () => opts.deadlineMs - (Date.now() - t0);
   if (remaining() < 50) throw new TradeError("QUOTE_STALE", "Execution deadline already expired");
@@ -125,8 +131,10 @@ export async function verifyExecutableRoute(opts: {
       });
       const expectedOut = parseAssetAmount(quote.output);
       if (!(expectedOut > 0)) throw new TradeError("ROUTE_DISAPPEARED", "Alcor returned no output");
+      const minOut = parseAssetAmount(quote.minReceived) || expectedOut * (1 - opts.slippagePct / 100);
       return {
         expectedOut,
+        guaranteedOut: minOut,
         trust: "executable",
         verified: [
           {
@@ -134,7 +142,7 @@ export async function verifyExecutableRoute(opts: {
             trust: "executable",
             amountIn: opts.amountIn,
             amountOut: expectedOut,
-            minOut: parseAssetAmount(quote.minReceived) || expectedOut * (1 - opts.slippagePct / 100),
+            minOut,
             alcor: quote,
           },
         ],
@@ -234,5 +242,10 @@ export async function verifyExecutableRoute(opts: {
     if (split) expectedOut += amountOut;
     else expectedOut = amountOut;
   }
-  return { expectedOut, trust: "executable", verified };
+  // Guaranteed worst case: splits sum their independent min-outs; a hop chain
+  // ends at the final leg's min-out (each leg already chained on min-outs).
+  const guaranteedOut = split
+    ? verified.reduce((s, v) => s + v.minOut, 0)
+    : (verified[verified.length - 1]?.minOut ?? 0);
+  return { expectedOut, guaranteedOut, trust: "executable", verified };
 }

@@ -28,6 +28,13 @@ reads the same verdict:
   the ensemble favors the engine that fits the market. **Vetoes only ever
   suppress entries — exits always fire.**
 
+**Danger score** (`dangerScore` in `regime.ts`): one unified 0–100 defensive
+number every strategy shares — book staleness, per-print volatility,
+cross-pool disagreement, thin liquidity, and recent execution errors.
+Bands: 0–20 normal · 20–40 cautious (0.9× size) · 40–60 reduced (0.8×) ·
+60–80 selective (0.5×) · 80+ HOLD (entries only; stop-loss, take-profit,
+trailing and manual sells still fire). No strategy may override it.
+
 **Universal exact-quote gate** (`src/lib/leef/exact-gate.ts` +
 `verifyExecutableRoute` in the loop): the route graph prices with
 constant-product math, but Alcor is a CLMM — the local quote is never the

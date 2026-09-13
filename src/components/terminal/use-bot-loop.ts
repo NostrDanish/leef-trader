@@ -217,6 +217,10 @@ async function runBotOnceInner(
     base: b.base,
     growthTargets: b.growthTargets,
     growthMode: b.growthMode,
+    // Danger input: infrastructure errors in the last 10 minutes.
+    recentFailures: b.decisions.filter(
+      (d) => d.kind === "error" && Date.now() - Date.parse(d.t) < 600_000,
+    ).length,
     force: opts?.force ?? null,
   });
 
@@ -549,13 +553,12 @@ async function runBotOnceInner(
             b.setLastReason(reason);
             return { kind: "hold", reason };
           }
-          const guaranteedOut = verified.verified[verified.verified.length - 1]?.minOut;
           const verdict = exactSwapVerdict({
             snap: book,
             route: decision.route,
             amountIn: decision.amountIn,
             expectedOut: verified.expectedOut,
-            guaranteedOut,
+            guaranteedOut: verified.guaranteedOut,
             minNetPct: decision.minNetPct,
           });
           if (!verdict.pass) {

@@ -11,7 +11,7 @@ import {
   type GrowthTarget,
 } from "./growth-engine";
 import { realizedVolPerSec, usdPriceOf } from "./cost-model";
-import { classifyRegime, regimeWeight } from "./regime";
+import { classifyRegime, dangerScore, regimeWeight } from "./regime";
 import { balanceForIdentifier, markPortfolioUsd } from "@/lib/wallet/balances";
 import {
   decorate,
@@ -358,6 +358,8 @@ export type BotInput = {
   /** Treasure mix for the growth strategy (1–3 assets). */
   growthTargets?: GrowthTarget[];
   growthMode?: GrowthMode;
+  /** Execution errors in the recent window — feeds the danger score. */
+  recentFailures?: number;
 };
 
 /* ------------------------------------------------------------------ */
@@ -782,6 +784,25 @@ export function evaluateBot(input: BotInput): Decision {
   const regTag = regime.regime !== "unknown" ? ` [${regime.regime}]` : "";
   const regW = (source: string) => regimeWeight(regime.regime, source);
 
+  // Unified danger score — one defensive number shared by every strategy.
+  // 80+ = HOLD all entries (exits above already ran). Below that, entries
+  // are sized down, never up. Strategies may not override this.
+  const danger = dangerScore({
+    quoteAgeMs: Math.max(0, quoteAgeSec * 1000),
+    maxQuoteAgeMs: risk.maxQuoteAgeSec * 1000,
+    volPct: regime.volPct,
+    dislocationPct: regime.dislocationPct,
+    liquidityUsd: Math.max(0, ...snap.pools.map((p) => p.tvlUsd)),
+    recentFailures: input.recentFailures ?? 0,
+  });
+  // Hard veto lives at the ENTRY points below — never before the exit block,
+  // so stop-losses and take-profits fire even in a danger market.
+  const dangerHold =
+    !input.force && danger.band === "hold"
+      ? `Danger ${danger.score}/100 — ${danger.explain.join(" · ")} · entries suspended (exits still fire)`
+      : null;
+  const sizeF = danger.sizeFactor;
+
   /* ------------------------- manual overrides ---------------------- */
 
   const bounds = usdToTokenBounds({
@@ -796,7 +817,8 @@ export function evaluateBot(input: BotInput): Decision {
   // block converting TLM/USDC/… into the named treasures.
   if ("error" in bounds && strategy !== "growth") return hold(bounds.error);
   const minWax = "error" in bounds ? 0 : bounds.minIn;
-  const maxWax = "error" in bounds ? 0 : bounds.maxIn;
+  // Danger score sizes entries down (never up). Manual force keeps full size.
+  const maxWax = ("error" in bounds ? 0 : bounds.maxIn) * (input.force ? 1 : sizeF);
 
   if (input.force === "buy") {
     if (maxWax + 1e-12 < minWax) {
@@ -845,6 +867,7 @@ export function evaluateBot(input: BotInput): Decision {
   const calOf = (id: string) => input.calibration?.[id];
 
   if (strategy === "volume-x") {
+    if (dangerHold) return hold(dangerHold);
     const hops = hopsForStrategy("volume-x", risk.maxHops, now);
     const tape = planLeefTape(snap, input.balances, {
       minUsd: risk.minTradeUsd,
@@ -892,7 +915,9 @@ export function evaluateBot(input: BotInput): Decision {
     let arbDecision: Decision | null = null;
     let scanReason: string;
 
-    if (waxAvail + 1e-12 < minWax) {
+    if (dangerHold) {
+      scanReason = dangerHold;
+    } else if (waxAvail + 1e-12 < minWax) {
       scanReason = `Not enough ${quote} for the $${risk.minTradeUsd.toFixed(2)} min trade`;
     } else if (isVolume) {
       const clip = pickClipInBand(minWax, waxAvail, now);
@@ -984,6 +1009,8 @@ export function evaluateBot(input: BotInput): Decision {
     confidence: number,
     maxWaxArg: number,
   ): Decision => {
+    // Danger veto on entries — every buy path in every strategy funnels here.
+    if (dangerHold) return hold(dangerHold);
     if (!(maxWaxArg > 0) || maxWaxArg + 1e-12 < minWax) {
       return hold(
         `Position cap reached ($${bounds.positionUsd.toFixed(2)} / $${risk.maxPositionUsd.toFixed(0)}), remaining room under min trade, or no ${quote}`,
@@ -1146,7 +1173,7 @@ export function evaluateBot(input: BotInput): Decision {
     if (strategy === "auto") {
       // With a position open, the only position-independent action worth
       // considering is atomic arbitrage — it doesn't touch the held bag.
-      if (maxWax + 1e-12 >= minWax) {
+      if (!dangerHold && maxWax + 1e-12 >= minWax) {
         const gatePct =
           ((1 + risk.minEdgePct / 100) / Math.max(0.9, 1 - risk.slippage / 100) - 1) * 100;
         const arb = findBestArb(snap, maxWax, gatePct, false, minWax);
@@ -1305,7 +1332,8 @@ export function evaluateBot(input: BotInput): Decision {
         }
       };
 
-      if (maxWax + 1e-12 >= minWax) {
+      if (dangerHold) considered.push(dangerHold);
+      if (!dangerHold && maxWax + 1e-12 >= minWax) {
         const gatePct =
           ((1 + risk.minEdgePct / 100) / Math.max(0.9, 1 - risk.slippage / 100) - 1) * 100;
         const arb = findBestArb(snap, maxWax, gatePct, false, minWax);
@@ -1404,7 +1432,7 @@ export function evaluateBot(input: BotInput): Decision {
 
       // Holdings-based next hop: whatever we actually hold → best one-shot
       // swap or cycle. HOLD if nothing clears. Never continues a stale path.
-      {
+      if (!dangerHold) {
         const next = planNextAction(snap, input.balances, {
           minUsd: risk.minTradeUsd,
           minNetPct: Math.max(0, risk.minNetEdgePct),
@@ -1458,7 +1486,7 @@ export function evaluateBot(input: BotInput): Decision {
 
       // Controlled volume ONLY when nothing profitable exists. Same common
       // gate — never "there is a trade, therefore trade."
-      if (risk.maxEchoLossPct > 0 && maxWax + 1e-12 >= minWax) {
+      if (!dangerHold && risk.maxEchoLossPct > 0 && maxWax + 1e-12 >= minWax) {
         const echo = findBestArb(snap, maxWax, -risk.maxEchoLossPct, true, minWax);
         if (echo) {
           const opp = scoreArbOpportunity({
@@ -1495,6 +1523,7 @@ export function evaluateBot(input: BotInput): Decision {
     case "unleashed": {
       const hops = hopsForStrategy("unleashed", risk.maxHops, now);
       const mix: Decision[] = [];
+      if (dangerHold) return hold(dangerHold);
       if (maxWax + 1e-12 >= minWax) {
         const clip = pickClipInBand(minWax, maxWax, now);
         const gatePct =
@@ -1574,6 +1603,7 @@ export function evaluateBot(input: BotInput): Decision {
       return pick;
     }
     case "growth": {
+      if (dangerHold) return hold(dangerHold);
       const mode = input.growthMode ?? "balanced";
       const hops = hopsForGrowth(mode, risk.maxHops);
       const ageMs = now - Date.parse(snap.fetchedAt);

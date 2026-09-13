@@ -2,6 +2,19 @@
 
 All notable changes to LEEF Trader. Dates are commit-era, not release tags.
 
+## Unreleased — Danger score + expected vs guaranteed output
+
+- **Unified danger score** (0–100): staleness, volatility, pool
+  disagreement, thin liquidity, recent errors. Bands shrink entries
+  (cautious 0.9× → selective 0.5×) and at 80+ suspend entries entirely.
+  Exits are never gated. Shown on the desk next to the regime badge.
+- **Expected vs guaranteed output** are now first-class and separate:
+  `verifyExecutableRoute` returns `guaranteedOut` (chain min-out worst
+  case) alongside `expectedOut` (venue economics). The exact-quote swap
+  gate checks BOTH against the decision's floor.
+- Opportunity explain lines now carry EV density (¢ per $ deployed), so
+  percent-edge never outranks expected dollars without it being visible.
+
 ## Unreleased — Strategy V2 layer: regime engine + universal exact-quote gate
 
 Audit-driven. Infrastructure untouched (signer, policy firewall, no

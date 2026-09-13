@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { classifyRegime, regimeWeight, type MarketRegime } from "./regime";
+import { classifyRegime, dangerScore, regimeWeight, type MarketRegime } from "./regime";
 
 function seriesFrom(prices: number[], stepMs = 30_000): { t: number; usd: number }[] {
   return prices.map((usd, i) => ({ t: i * stepMs, usd }));
@@ -68,5 +68,51 @@ describe("classifyRegime", () => {
       poolPricesUsd: [1.0],
     });
     expect(r.regime).not.toBe("dislocation");
+  });
+});
+
+describe("dangerScore", () => {
+  const calm = {
+    quoteAgeMs: 2_000,
+    maxQuoteAgeMs: 45_000,
+    volPct: 0.2,
+    dislocationPct: 0.05,
+    liquidityUsd: 20_000,
+    recentFailures: 0,
+  };
+
+  it("fresh calm book is normal with full size", () => {
+    const d = dangerScore(calm);
+    expect(d.band).toBe("normal");
+    expect(d.sizeFactor).toBe(1);
+    expect(d.score).toBeLessThan(20);
+  });
+
+  it("a nearly-stale book alone escalates the band and shrinks size", () => {
+    const d = dangerScore({ ...calm, quoteAgeMs: 40_000 });
+    expect(d.score).toBeGreaterThanOrEqual(20);
+    expect(d.sizeFactor).toBeLessThan(1);
+  });
+
+  it("extreme stress forces HOLD", () => {
+    const d = dangerScore({
+      quoteAgeMs: 44_000,
+      maxQuoteAgeMs: 45_000,
+      volPct: 1.6,
+      dislocationPct: 1.8,
+      liquidityUsd: 60,
+      recentFailures: 3,
+    });
+    expect(d.band).toBe("hold");
+    expect(d.sizeFactor).toBe(0);
+    expect(d.explain.length).toBeGreaterThan(2);
+  });
+
+  it("score is capped at 100 and monotone in stress", () => {
+    const mild = dangerScore({ ...calm, recentFailures: 1 });
+    const bad = dangerScore({ ...calm, recentFailures: 3 });
+    const worst = dangerScore({ ...calm, recentFailures: 30, volPct: 2 });
+    expect(bad.score).toBeGreaterThan(mild.score);
+    expect(worst.score).toBeLessThanOrEqual(100);
   });
 });

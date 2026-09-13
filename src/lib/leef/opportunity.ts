@@ -221,10 +221,11 @@ export function buildScoredOpportunity(opts: {
     calibrationHaircut: opts.calibrationHaircut,
     strategyConfidence: opts.strategyConfidence,
   });
+  const evPerDollar = opts.notionalUsd > 0 ? expectedValueUsd / opts.notionalUsd : 0;
   const explain = [
     `EV $${expectedValueUsd.toFixed(4)} = net $${opts.expectedNetProfitUsd.toFixed(4)} × exec ${(exec * 100).toFixed(0)}% × fresh ${(fresh * 100).toFixed(0)}% × inv ${opts.inventoryFactor.toFixed(2)} × cal ${opts.calibrationHaircut.toFixed(2)}`,
     `${opts.hops} hop${opts.hops === 1 ? "" : "s"} · impact ${opts.impactPct.toFixed(2)}% · TVL $${opts.liquidityUsd.toFixed(0)}`,
-    `edge ${opts.expectedNetEdgePct.toFixed(2)}% on $${opts.notionalUsd.toFixed(2)}`,
+    `edge ${opts.expectedNetEdgePct.toFixed(2)}% on $${opts.notionalUsd.toFixed(2)} · EV density ${(evPerDollar * 100).toFixed(2)}¢/$`,
   ];
   return {
     fingerprint: opts.fingerprint,
