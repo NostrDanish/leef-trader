@@ -11,7 +11,7 @@ import {
 } from "@/lib/leef/bot-engine";
 import { migrateRiskToUsd } from "@/lib/leef/risk-usd";
 
-export type BotDecisionKind = "buy" | "sell" | "arb" | "hold" | "skip" | "stop" | "error";
+export type BotDecisionKind = "buy" | "sell" | "arb" | "swap" | "hold" | "skip" | "stop" | "error";
 
 export type BotDecisionLog = {
   id: string;

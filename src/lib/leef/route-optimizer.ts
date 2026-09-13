@@ -555,7 +555,6 @@ export function rankExecutionRoutes(
   maxHops = MAX_ROUTE_HOPS,
 ): SwapRoute[] {
   if (!(amountIn > 0)) return [];
-  if (tokenIn.toUpperCase() === tokenOut.toUpperCase()) return [];
   const graph = buildRouteGraph(pools, aux);
   const from = resolveTokenId(tokenIn, graph);
   const to = resolveTokenId(tokenOut, graph);
@@ -580,10 +579,12 @@ export function rankExecutionRoutes(
     routes.push(route);
   }
 
-  const split = splitDirect(graph, from, to, amountIn, bestDirectOut);
-  if (split && !seen.has(split.id)) {
-    seen.add(split.id);
-    routes.push(split);
+  if (from !== to) {
+    const split = splitDirect(graph, from, to, amountIn, bestDirectOut);
+    if (split && !seen.has(split.id)) {
+      seen.add(split.id);
+      routes.push(split);
+    }
   }
 
   // Winner = highest destination amount. Extra hops win only if they pay.

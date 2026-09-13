@@ -1,5 +1,6 @@
 import { backedPools, isLeefToken, isWaxToken, quoteConstantProduct } from "./amm";
 import { bestExecutionRoute } from "./route-optimizer";
+import { planNextAction } from "./next-action";
 import { realizedVolPerSec, usdPriceOf } from "./cost-model";
 import { balanceForIdentifier, markPortfolioUsd } from "@/lib/wallet/balances";
 import {
@@ -49,7 +50,7 @@ export const STRATEGIES: {
     name: "Auto",
     tagline: "Orchestrator — strategies compete on expected value",
     detail:
-      "Auto does not invent a private economist. Every strategy (arb, signal, mean-reversion, grid, volume) produces the same scored opportunity: expected net USD × execution probability × freshness × inventory tilt × calibration. Auto ranks those and takes ONE action — or none. Volume is last and never runs just to print tape.",
+      "Auto ranks scored opportunities AND a holdings-based next hop (WAX/LEEF/TLM/USDC/… → best one-shot swap or cycle). After every fill the graph is rebuilt. HOLD is a successful outcome. Volume is last and never runs just to print tape.",
     bestFor: "Default — one mode that adapts",
   },
   {
@@ -254,6 +255,15 @@ export type Decision =
       expectedGrossPct?: number;
       /** Net-edge verdict that approved the entry (journal/calibration). */
       edge?: { netEdgePct: number; netProfitUsd: number; score: number };
+      opportunity?: ScoredOpportunity;
+    }
+  | {
+      kind: "swap";
+      tokenIn: string;
+      tokenOut: string;
+      amountIn: number;
+      route: SwapRoute;
+      reason: string;
       opportunity?: ScoredOpportunity;
     }
   | { kind: "sell"; amountLeef: number; route: SwapRoute; reason: string; confidence: number }
@@ -1123,11 +1133,7 @@ export function evaluateBot(input: BotInput): Decision {
       const byFp = new Map<string, Decision>();
 
       const pushScored = (d: Decision) => {
-        if (d.kind === "buy" && d.opportunity) {
-          scored.push(d.opportunity);
-          byFp.set(d.opportunity.fingerprint, d);
-          considered.push(`${d.opportunity.source} EV $${d.opportunity.expectedValueUsd.toFixed(4)}`);
-        } else if (d.kind === "arb" && d.opportunity) {
+        if ((d.kind === "buy" || d.kind === "arb" || d.kind === "swap") && d.opportunity) {
           scored.push(d.opportunity);
           byFp.set(d.opportunity.fingerprint, d);
           considered.push(`${d.opportunity.source} EV $${d.opportunity.expectedValueUsd.toFixed(4)}`);
@@ -1213,6 +1219,52 @@ export function evaluateBot(input: BotInput): Decision {
         }
       }
       for (const t of theses) pushScored(tryBuyWith(t.reason, t.expected, t.confidence, maxWax));
+
+      // Holdings-based next hop: whatever we actually hold → best one-shot
+      // swap or cycle. HOLD if nothing clears. Never continues a stale path.
+      {
+        const next = planNextAction(snap, input.balances, {
+          minUsd: risk.minTradeUsd,
+          minNetPct: Math.max(0, risk.minNetEdgePct),
+          maxHops: 4,
+        });
+        if (next) {
+          const scoredNext = scoreBuyOpportunity({
+            source: next.kind === "cycle" ? "cycle" : "path",
+            tokenIn: next.tokenIn,
+            tokenOut: next.tokenOut,
+            amountIn: next.amountIn,
+            notionalUsd: next.usdIn,
+            netProfitUsd: next.netUsd,
+            netEdgePct: next.netPct,
+            route: next.route,
+            quoteAgeMs,
+            maxQuoteAgeMs,
+            snap,
+            balances: input.balances,
+            calibration: calOf("auto"),
+            strategyConfidence: 1,
+          });
+          const why = rejectOpportunity(scoredNext, oppGate);
+          if (why) {
+            considered.push(`next-action ${why}`);
+          } else {
+            scored.push(scoredNext);
+            byFp.set(scoredNext.fingerprint, {
+              kind: "swap",
+              tokenIn: next.tokenIn,
+              tokenOut: next.tokenOut,
+              amountIn: next.amountIn,
+              route: next.route,
+              opportunity: scoredNext,
+              reason: `Auto: ${next.kind} ${next.tokenIn}→${next.tokenOut} · EV $${scoredNext.expectedValueUsd.toFixed(4)} · net ${next.netPct.toFixed(2)}%`,
+            });
+            considered.push(`${next.kind} ${next.tokenIn}→${next.tokenOut} EV $${scoredNext.expectedValueUsd.toFixed(4)}`);
+          }
+        } else {
+          considered.push("no profitable next hop from holdings — HOLD is valid");
+        }
+      }
 
       const { winner, rejected } = selectBestOpportunity(scored, oppGate, now);
       if (winner && winner.intent === "profit" && winner.expectedValueUsd > 0) {

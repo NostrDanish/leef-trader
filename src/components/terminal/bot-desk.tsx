@@ -49,6 +49,7 @@ const KIND_VARIANT: Record<
   buy: "leef",
   sell: "accent",
   arb: "wax",
+  swap: "accent",
   hold: "plain",
   skip: "plain",
   stop: "warn",

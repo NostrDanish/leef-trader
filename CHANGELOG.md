@@ -2,6 +2,20 @@
 
 All notable changes to LEEF Trader. Dates are commit-era, not release tags.
 
+## Unreleased — holdings-based next hop; HOLD is a trade
+
+The route graph already had WAX/LEEF/TLM/USDC/TACO as nodes. Auto only
+asked "buy LEEF with WAX?". `planNextAction` now asks: given what I
+actually hold, what ONE atomic swap or cycle is worth doing?
+
+After that fill the engine rebuilds. There is no predetermined
+WAX→LEEF→WAX continuation. If LEEF→TLM is worse than the floor: HOLD.
+
+Same-asset cycles (WAX→…→WAX) are allowed when they print net USD.
+Live Alcor quote still required before sign.
+
+---
+
 ## Unreleased — surgical brain fixes (no rewrite)
 
 ChatGPT audit vs code:

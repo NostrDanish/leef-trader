@@ -382,6 +382,45 @@ async function runBotOnceInner(
   // profitable strategy cannot consume operational inventory or create an
   // unusable concentration. It may resize a buy to the actually deployable
   // amount; strategy decides WHAT, governor decides HOW MUCH.
+  if (decision.kind === "swap") {
+    const governed = governTrade(book, balances, {
+      tokenIn: decision.tokenIn,
+      tokenOut: decision.tokenOut,
+      amountIn: decision.amountIn,
+      expectedOut: decision.route.amountOut,
+      expectedNetProfitUsd: decision.opportunity?.expectedNetProfitUsd ?? 0,
+      kind: "profit",
+      route: decision.route,
+    });
+    if (!governed.allowed) {
+      const reason = `Portfolio governor: ${governed.reason}`;
+      b.pushDecision({ kind: "hold", mode, reason, priceUsd: book.leefUsd });
+      b.setLastReason(reason);
+      return { kind: "hold", reason };
+    }
+    if (governed.allowedAmountIn + 1e-12 < decision.amountIn) {
+      const resized = bestExecutionRoute(
+        book.pools,
+        book.aux,
+        governed.allowedAmountIn,
+        decision.tokenIn,
+        decision.tokenOut,
+      );
+      if (!resized) {
+        const reason = "Portfolio governor reserve leaves no viable next hop";
+        b.pushDecision({ kind: "hold", mode, reason, priceUsd: book.leefUsd });
+        b.setLastReason(reason);
+        return { kind: "hold", reason };
+      }
+      decision = {
+        ...decision,
+        amountIn: governed.allowedAmountIn,
+        route: resized,
+        reason: `${decision.reason} · ${governed.reason}`,
+      };
+    }
+  }
+
   if (decision.kind === "buy") {
     const tRisk = Date.now();
     const governed = governTrade(book, balances, {
@@ -426,7 +465,7 @@ async function runBotOnceInner(
   // WAX resource preflight: never sign a live trade on an exhausted account.
   if (
     live &&
-    (decision.kind === "buy" || decision.kind === "sell" || decision.kind === "arb")
+    (decision.kind === "buy" || decision.kind === "sell" || decision.kind === "arb" || decision.kind === "swap")
   ) {
     const block = waxResourceBlock(w.cpuPct, w.netPct, w.ramPct);
     if (block) {
@@ -627,6 +666,60 @@ async function runBotOnceInner(
         }$${pnlUsd.toFixed(2)}`,
         description: decision.reason + note + (txid ? ` · tx ${txid.slice(0, 10)}…` : ""),
         variant: pnlUsd < 0 ? "destructive" : "default",
+      });
+      return decision;
+    }
+
+    if (decision.kind === "swap") {
+      let txid: string | undefined;
+      let note = "";
+      let outAmt = decision.route.amountOut;
+      if (live) {
+        if (!beginSigning()) return decision;
+        try {
+          const exec = await signAndPushSwap({
+            account: w.account,
+            permission: w.permission,
+            route: decision.route,
+            amountIn: decision.amountIn,
+            slippagePct: b.risk.slippage,
+            snap: book,
+          });
+          txid = exec.txid;
+          markBroadcast(txid);
+          if (exec.expectedOut > 0) outAmt = exec.expectedOut;
+          const rec = await waitForTransaction(txid, { budgetMs: 1_200, attempts: 3, delayMs: 200 });
+          if (rec.status === "failed") {
+            markFailed();
+            throw new Error(rec.error);
+          }
+          if (rec.status === "confirmed") {
+            markConfirmed();
+            note = rec.transfers.length ? " · confirmed on-chain" : " · included";
+            if (rec.transfers.length === 0) void reconcileTransfersLater(txid);
+          } else {
+            markUnknown(txid);
+            note = " · broadcast, confirmation pending — not retrying";
+            void pollUnknown(txid);
+          }
+        } catch (err) {
+          abortSigning();
+          throw err;
+        }
+      } else {
+        w.applyPaperFill(decision.tokenIn, decision.amountIn, decision.tokenOut, outAmt);
+      }
+      b.markTrade(adaptiveCooldownSec(b.risk.cooldownSec, b.strategy, 0));
+      b.pushDecision({
+        kind: "swap",
+        mode,
+        reason: decision.reason + note,
+        priceUsd: snap.leefUsd,
+        txid,
+      });
+      toast({
+        title: `${live ? "Live" : "Unsigned"} ${decision.tokenIn}→${decision.tokenOut}`,
+        description: decision.reason + note + (txid ? ` · tx ${txid.slice(0, 10)}…` : ""),
       });
       return decision;
     }

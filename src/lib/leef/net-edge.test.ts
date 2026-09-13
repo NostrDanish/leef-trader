@@ -309,7 +309,7 @@ describe("bot edge gate (evaluateBot)", () => {
         balances: { WAX: 50, "LEEF@leefmaincorp": 1_000_000 },
       }),
     );
-    expect(["hold", "sell", "buy", "arb", "stop"]).toContain(d.kind);
+    expect(["hold", "sell", "buy", "arb", "swap", "stop"]).toContain(d.kind);
   });
 
   it("caps a sell at the actual wallet base balance, never above it", () => {
