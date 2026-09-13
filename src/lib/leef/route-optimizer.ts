@@ -613,8 +613,9 @@ export function bestExecutionRoute(
   amountIn: number,
   tokenIn: string,
   tokenOut: string,
+  maxHops = MAX_ROUTE_HOPS,
 ): SwapRoute | null {
-  return rankExecutionRoutes(pools, aux, amountIn, tokenIn, tokenOut)[0] ?? null;
+  return rankExecutionRoutes(pools, aux, amountIn, tokenIn, tokenOut, maxHops)[0] ?? null;
 }
 
 export function bestExecutionRouteOnGraph(

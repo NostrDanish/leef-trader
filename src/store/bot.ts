@@ -277,7 +277,7 @@ export const useBot = create<BotState>()(
       // Versioned + merging migrate: fields added to the schema after a user
       // saved state (e.g. risk.minNetEdgePct, stats.byStrategy) get filled
       // from defaults instead of crashing selectors with undefined.
-      version: 8,
+      version: 9,
       migrate: (persisted) => {
         const p = (
           persisted && typeof persisted === "object" ? persisted : {}
@@ -310,6 +310,10 @@ export const useBot = create<BotState>()(
             minTradeUsd: usd.minTradeUsd,
             maxPositionUsd: usd.maxPositionUsd,
             operationalReserveUsd: usd.operationalReserveUsd,
+            maxHops:
+              typeof (restRisk as { maxHops?: unknown }).maxHops === "number"
+                ? Math.min(10, Math.max(1, (restRisk as { maxHops: number }).maxHops))
+                : DEFAULT_RISK.maxHops,
           },
           position: p.position ?? null,
           gridAnchor: p.gridAnchor ?? null,

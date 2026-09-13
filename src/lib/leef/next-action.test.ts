@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { planNextAction } from "./next-action";
+import { planLeefTape, planNextAction } from "./next-action";
 import type { AuxPool, LeefPool, LeefSnapshot } from "./types";
 
 const WAX_USD = 0.02;
@@ -90,6 +90,21 @@ describe("planNextAction", () => {
       expect(plan.amountIn).toBeGreaterThan(0);
       expect(plan.tokenIn).toBe("WAX");
       expect(plan.route.legs.length).toBeGreaterThan(0);
+    }
+  });
+});
+
+describe("planLeefTape", () => {
+  it("returns null on an empty wallet", () => {
+    expect(planLeefTape(snap([mkPool(50_000, 500_000_000)]), {}, { minUsd: 0, maxUsd: 1 })).toBeNull();
+  });
+  it("sizes a WAX→LEEF clip inside the USD band", () => {
+    const s = snap([mkPool(50_000, 500_000_000)]);
+    const clip = planLeefTape(s, { WAX: 50 }, { minUsd: 0.01, maxUsd: 0.5, maxLossPct: 50, seed: 1 });
+    if (clip) {
+      expect(clip.tokenOut === "LEEF" || clip.tokenIn === "LEEF").toBe(true);
+      expect(clip.usdIn).toBeGreaterThan(0);
+      expect(clip.usdIn).toBeLessThanOrEqual(0.5 + 1e-6);
     }
   });
 });

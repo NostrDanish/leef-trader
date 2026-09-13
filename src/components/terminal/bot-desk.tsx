@@ -294,8 +294,8 @@ export function BotDesk({ snap }: { snap: LeefSnapshot }) {
             </div>
           </Card>
 
-          <GoalsCard />
-          <AdvisorCard snap={snap} />
+          {b.strategy !== "unleashed" && <GoalsCard />}
+          {b.strategy !== "unleashed" && <AdvisorCard snap={snap} />}
           <RiskCard strategy={b.strategy} snap={snap} />
         </div>
 
@@ -326,6 +326,13 @@ export function BotDesk({ snap }: { snap: LeefSnapshot }) {
                   <Crosshair className="mr-1 inline size-3.5 text-wax" />
                   Would arb #{preview.plan.buyPool.id} → #{preview.plan.sellPool.id} ·{" "}
                   {fmtNum(preview.plan.waxIn)} WAX in, est {fmtNum(preview.plan.waxOut, { digits: 3 })} out
+                </>
+              )}
+              {preview.kind === "swap" && (
+                <>
+                  <Crosshair className="mr-1 inline size-3.5 text-accent" />
+                  Would swap {fmtNum(preview.amountIn, { compact: true })} {preview.tokenIn} →{" "}
+                  {preview.tokenOut} on {preview.route.label}
                 </>
               )}
               {(preview.kind === "hold" || preview.kind === "stop") && (
@@ -820,6 +827,8 @@ function RiskCard({ strategy, snap }: { strategy: BotStrategy; snap: LeefSnapsho
               : ""}
           </p>
         )}
+        {strategy !== "unleashed" && (
+          <>
         <Knob
           ready={slidersOn}
           label="Max price impact"
@@ -862,6 +871,8 @@ function RiskCard({ strategy, snap }: { strategy: BotStrategy; snap: LeefSnapsho
           format={(v) => `${v.toFixed(1)}%`}
           onChange={(slippage) => setRisk({ slippage })}
         />
+          </>
+        )}
         {(strategy === "signal" || strategy === "auto") && (
           <Knob
             ready={slidersOn}
@@ -898,7 +909,7 @@ function RiskCard({ strategy, snap }: { strategy: BotStrategy; snap: LeefSnapsho
             onChange={(gridStepPct) => setRisk({ gridStepPct })}
           />
         )}
-        {(strategy === "volume" || strategy === "auto") && (
+        {(strategy === "volume" || strategy === "volume-x" || strategy === "auto" || strategy === "unleashed") && (
           <Knob
             ready={slidersOn}
             label="Max echo loss per round trip"
@@ -910,6 +921,20 @@ function RiskCard({ strategy, snap }: { strategy: BotStrategy; snap: LeefSnapsho
             onChange={(maxEchoLossPct) => setRisk({ maxEchoLossPct })}
           />
         )}
+        <Knob
+          ready={slidersOn}
+          label="Max hops"
+          value={risk.maxHops ?? 4}
+          min={1}
+          max={10}
+          step={1}
+          format={(v) => `${Math.round(v)} hop${Math.round(v) === 1 ? "" : "s"}`}
+          onChange={(maxHops) => setRisk({ maxHops: Math.round(maxHops) })}
+        />
+        <p className="text-xs text-muted-foreground">
+          Min/max are a band, not an order size. Each clip is picked inside
+          that band from the wallet and the route — $2 here, $0.001 there.
+        </p>
       </div>
     </Card>
   );

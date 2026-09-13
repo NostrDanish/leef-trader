@@ -1,6 +1,6 @@
 import { backedPools, isLeefToken, isWaxToken, quoteConstantProduct } from "./amm";
 import { bestExecutionRoute } from "./route-optimizer";
-import { planNextAction } from "./next-action";
+import { planLeefTape, planNextAction } from "./next-action";
 import { realizedVolPerSec, usdPriceOf } from "./cost-model";
 import { balanceForIdentifier, markPortfolioUsd } from "@/lib/wallet/balances";
 import {
@@ -36,7 +36,16 @@ import {
 /* Strategy catalog                                                    */
 /* ------------------------------------------------------------------ */
 
-export type BotStrategy = "auto" | "signal" | "meanrev" | "spread" | "grid" | "dca" | "volume";
+export type BotStrategy =
+  | "auto"
+  | "unleashed"
+  | "signal"
+  | "meanrev"
+  | "spread"
+  | "grid"
+  | "dca"
+  | "volume"
+  | "volume-x";
 
 export const STRATEGIES: {
   id: BotStrategy;
@@ -52,6 +61,14 @@ export const STRATEGIES: {
     detail:
       "Auto ranks scored opportunities AND a holdings-based next hop (WAX/LEEF/TLM/USDC/… → best one-shot swap or cycle). After every fill the graph is rebuilt. HOLD is a successful outcome. Volume is last and never runs just to print tape.",
     bestFor: "Default — one mode that adapts",
+  },
+  {
+    id: "unleashed",
+    name: "Unleashed",
+    tagline: "Trade — mix everything, no knobs",
+    detail:
+      "One button. Mixes signal, mean-reversion, grid, arb, next-hop and volume. Clip size is picked inside min–max from the wallet and the route — never always the max. Hops vary up to your cap. HOLD only when the wallet or the book cannot trade.",
+    bestFor: "Just trade",
   },
   {
     id: "signal",
@@ -98,8 +115,16 @@ export const STRATEGIES: {
     name: "Volume maker",
     tagline: "Boost book volume at bounded cost",
     detail:
-      "Echoes WAX → LEEF → WAX in ONE atomic transaction every cycle — the chain sees real volume, you keep the spread minus a hard loss floor you set. If the round trip would cost more than your budget, the transaction reverts and nothing moves. Runs cheapest-book first; when a cross-pool spread appears it can even come out ahead.",
+      "Echoes WAX → LEEF → WAX in ONE atomic transaction every cycle — the chain sees real volume, you keep the spread minus a hard loss floor you set. If the round trip would cost more than your budget, the transaction reverts and nothing moves. Clip size is chosen inside min–max from wallet + route, not always the max.",
     bestFor: "Warming the tape",
+  },
+  {
+    id: "volume-x",
+    name: "Volume extreme",
+    tagline: "Any token → LEEF tape, mixed sizes",
+    detail:
+      "Prints LEEF volume through whatever you hold: TLM, USDC, WAX, TACO, …. Each clip is a different size between min and max. Prefers profit, accepts zero-loss after LP fees. Still won't spend more than the wallet or sign a stale quote.",
+    bestFor: "LEEF tape, any pair",
   },
 ];
 
@@ -173,6 +198,8 @@ export type BotRisk = {
    * so a Live/10s book is never treated as stale.
    */
   maxQuoteAgeSec: number;
+  /** Graph depth cap for routing (1–10). Strategies pick ≤ this, not always 10. */
+  maxHops: number;
 };
 
 export const DEFAULT_GOALS: BotGoals = {
@@ -200,6 +227,7 @@ export const DEFAULT_RISK: BotRisk = {
   maxEchoLossPct: 1.5,
   minNetEdgePct: 0,
   maxQuoteAgeSec: 45,
+  maxHops: 4,
 };
 
 export type Position = {
@@ -378,10 +406,36 @@ export function adaptiveCooldownSec(
   lastPnlUsd: number,
 ): number {
   let factor = 1;
-  if (strategy === "spread" || strategy === "volume") factor = 0.5;
+  if (
+    strategy === "spread" ||
+    strategy === "volume" ||
+    strategy === "volume-x" ||
+    strategy === "unleashed"
+  )
+    factor = 0.5;
   else if (strategy === "dca") factor = 2;
   if (lastPnlUsd < 0) factor *= 1.5;
   return Math.max(10, Math.round(baseSec * factor));
+}
+
+/** Pick a clip inside [min, max] — never always the max. Mix dust / mid / fat. */
+export function pickClipInBand(minIn: number, maxIn: number, seed = Date.now()): number {
+  if (!(maxIn > 0) || maxIn + 1e-12 < minIn) return 0;
+  if (maxIn - minIn < minIn * 0.02) return maxIn;
+  const r = ((seed * 1_103_515_245 + 12_345) >>> 0) / 4_294_967_296;
+  const ladder = [0, 0.08, 0.18, 0.35, 0.55, 0.8, 1];
+  const f = ladder[Math.floor(r * ladder.length) % ladder.length]!;
+  return minIn + (maxIn - minIn) * f;
+}
+
+/** Strategy-aware hop budget: never above the user cap, not always 10. */
+export function hopsForStrategy(strategy: BotStrategy, cap: number, seed = Date.now()): number {
+  const c = Math.min(10, Math.max(1, Math.floor(cap || 4)));
+  const r = ((seed >>> 0) % 3) + 1;
+  if (strategy === "spread" || strategy === "volume") return Math.min(c, 2);
+  if (strategy === "volume-x" || strategy === "unleashed") return Math.min(c, Math.max(2, r + 1));
+  if (strategy === "signal" || strategy === "meanrev") return Math.min(c, 3);
+  return Math.min(c, 4);
 }
 
 function bestBuyRoute(
@@ -744,6 +798,47 @@ export function evaluateBot(input: BotInput): Decision {
   const oppGate = gateFromRisk(risk);
   const calOf = (id: string) => input.calibration?.[id];
 
+  if (strategy === "volume-x") {
+    const hops = hopsForStrategy("volume-x", risk.maxHops, now);
+    const tape = planLeefTape(snap, input.balances, {
+      minUsd: risk.minTradeUsd,
+      maxUsd: Math.max(risk.minTradeUsd, bounds.effectiveMaxUsd || risk.maxPositionUsd),
+      maxHops: hops,
+      seed: now,
+      maxLossPct: risk.maxEchoLossPct,
+    });
+    if (tape) {
+      const scored = scoreBuyOpportunity({
+        source: "volume-x",
+        tokenIn: tape.tokenIn,
+        tokenOut: tape.tokenOut,
+        amountIn: tape.amountIn,
+        notionalUsd: tape.usdIn,
+        netProfitUsd: tape.netUsd,
+        netEdgePct: tape.netPct,
+        route: tape.route,
+        quoteAgeMs,
+        maxQuoteAgeMs,
+        snap,
+        balances: input.balances,
+        calibration: calOf("volume-x"),
+        strategyConfidence: 1,
+      });
+      return {
+        kind: "swap",
+        tokenIn: tape.tokenIn,
+        tokenOut: tape.tokenOut,
+        amountIn: tape.amountIn,
+        route: tape.route,
+        opportunity: scored,
+        reason: `Volume-X ${tape.tokenIn}→${tape.tokenOut} · $${tape.usdIn.toFixed(4)} · net ${tape.netPct.toFixed(2)}% · ${tape.route.label}`,
+      };
+    }
+    if (!position || position.amountLeef <= 0) {
+      return hold("Volume-X: no LEEF-tape clip inside min–max from this wallet");
+    }
+  }
+
   if (strategy === "spread" || strategy === "volume") {
     const waxAvail = maxWax;
     const isVolume = strategy === "volume";
@@ -753,7 +848,8 @@ export function evaluateBot(input: BotInput): Decision {
     if (waxAvail + 1e-12 < minWax) {
       scanReason = `Not enough ${quote} for the $${risk.minTradeUsd.toFixed(2)} min trade`;
     } else if (isVolume) {
-      const plan = findBestArb(snap, waxAvail, -risk.maxEchoLossPct, true, minWax);
+      const clip = pickClipInBand(minWax, waxAvail, now);
+      const plan = findBestArb(snap, clip > 0 ? clip : waxAvail, -risk.maxEchoLossPct, true, minWax);
       if (plan) {
         const scored = scoreArbOpportunity({
           source: "volume",
@@ -1308,8 +1404,88 @@ export function evaluateBot(input: BotInput): Decision {
       }
       return hold(`Auto scan: ${considered.join(" · ") || "nothing in range"} — waiting`);
     }
+    case "unleashed": {
+      const hops = hopsForStrategy("unleashed", risk.maxHops, now);
+      const mix: Decision[] = [];
+      if (maxWax + 1e-12 >= minWax) {
+        const clip = pickClipInBand(minWax, maxWax, now);
+        const gatePct =
+          ((1 + Math.max(0, risk.minEdgePct) / 100) / Math.max(0.9, 1 - risk.slippage / 100) - 1) * 100;
+        const arb = findBestArb(snap, clip > 0 ? clip : maxWax, Math.min(gatePct, 0), false, minWax);
+        if (arb) {
+          mix.push({
+            kind: "arb",
+            arbKind: "spread",
+            plan: arb,
+            reason: `Unleashed arb #${arb.buyPool.id}→#${arb.sellPool.id} · ${(arb.profitPct * 100).toFixed(2)}%`,
+          });
+        }
+        const echo = findBestArb(snap, clip > 0 ? clip : maxWax, -risk.maxEchoLossPct, true, minWax);
+        if (echo) {
+          mix.push({
+            kind: "arb",
+            arbKind: "volume",
+            plan: echo,
+            reason: `Unleashed echo #${echo.buyPool.id} · clip ${clip.toFixed(4)} ${quote}`,
+          });
+        }
+      }
+      const tape = planLeefTape(snap, input.balances, {
+        minUsd: risk.minTradeUsd,
+        maxUsd: Math.max(risk.minTradeUsd, bounds.effectiveMaxUsd),
+        maxHops: hops,
+        seed: now + 17,
+        maxLossPct: risk.maxEchoLossPct,
+      });
+      if (tape) {
+        mix.push({
+          kind: "swap",
+          tokenIn: tape.tokenIn,
+          tokenOut: tape.tokenOut,
+          amountIn: tape.amountIn,
+          route: tape.route,
+          reason: `Unleashed tape ${tape.tokenIn}→${tape.tokenOut} · $${tape.usdIn.toFixed(4)}`,
+        });
+      }
+      const next = planNextAction(snap, input.balances, {
+        minUsd: risk.minTradeUsd,
+        minNetPct: -risk.maxEchoLossPct,
+        maxHops: hops,
+      });
+      if (next) {
+        mix.push({
+          kind: "swap",
+          tokenIn: next.tokenIn,
+          tokenOut: next.tokenOut,
+          amountIn: next.amountIn,
+          route: next.route,
+          reason: `Unleashed ${next.kind} ${next.tokenIn}→${next.tokenOut} · ${next.netPct.toFixed(2)}%`,
+        });
+      }
+      if (signal.warmed && signal.bias === "buy") {
+        mix.push(tryBuyWith("Unleashed signal", goals.takeProfitPct, 1, maxWax));
+      }
+      const { rsi, pctB, distToMidPct } = reversionRead(input.series);
+      if (rsi != null && pctB != null && rsi <= 40) {
+        mix.push(
+          tryBuyWith(
+            "Unleashed meanrev",
+            Math.max(0.2, (distToMidPct ?? 1) * 0.5),
+            1,
+            maxWax,
+          ),
+        );
+      }
+      const actionable = mix.filter((d) => d.kind !== "hold");
+      if (actionable.length === 0) {
+        return hold("Unleashed: wallet or book cannot trade this cycle");
+      }
+      const pick = actionable[(now >>> 0) % actionable.length]!;
+      return pick;
+    }
     case "spread":
     case "volume":
+    case "volume-x":
       return hold("Scan only");
   }
 }

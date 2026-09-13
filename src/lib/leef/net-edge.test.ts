@@ -8,6 +8,8 @@ import {
   DEFAULT_GOALS,
   DEFAULT_RISK,
   evaluateBot,
+  hopsForStrategy,
+  pickClipInBand,
   type BotInput,
 } from "./bot-engine";
 import { executionCostPct, realizedVolPerSec, usdPriceOf } from "./cost-model";
@@ -104,6 +106,24 @@ function botInput(over: Partial<BotInput>): BotInput {
     ...over,
   };
 }
+
+describe("clip band + hops", () => {
+  it("never always picks the max — mixes sizes inside [min, max]", () => {
+    const sizes = new Set<number>();
+    for (let i = 0; i < 40; i++) sizes.add(Number(pickClipInBand(1, 10, i * 997).toFixed(6)));
+    expect(sizes.size).toBeGreaterThan(2);
+    for (const s of sizes) {
+      expect(s).toBeGreaterThanOrEqual(1 - 1e-9);
+      expect(s).toBeLessThanOrEqual(10 + 1e-9);
+    }
+  });
+  it("caps hops at the user setting and stays below 10 unless asked", () => {
+    expect(hopsForStrategy("volume", 4)).toBeLessThanOrEqual(4);
+    expect(hopsForStrategy("signal", 3)).toBeLessThanOrEqual(3);
+    expect(hopsForStrategy("unleashed", 10)).toBeLessThanOrEqual(10);
+    expect(hopsForStrategy("volume-x", 2)).toBeLessThanOrEqual(2);
+  });
+});
 
 describe("cost model", () => {
   it("prices WAX and LEEF from the snapshot; unknown tokens are unpriceable", () => {

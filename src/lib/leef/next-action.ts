@@ -126,3 +126,96 @@ export function planNextAction(
   }
   return best;
 }
+
+export type TapeClip = {
+  tokenIn: string;
+  tokenOut: string;
+  amountIn: number;
+  route: SwapRoute;
+  usdIn: number;
+  usdOut: number;
+  netUsd: number;
+  netPct: number;
+};
+
+/**
+ * Volume-for-LEEF: any held token → LEEF (or LEEF → quote) at a mixed size
+ * inside [minUsd, maxUsd]. Prefers profit; accepts zero-loss after LP fees.
+ */
+export function planLeefTape(
+  snap: LeefSnapshot,
+  balances: Record<string, number>,
+  opts: {
+    minUsd: number;
+    maxUsd: number;
+    maxHops?: number;
+    seed?: number;
+    maxLossPct?: number;
+  },
+): TapeClip | null {
+  const graph = buildRouteGraph(snap.pools, snap.aux);
+  const hops = Math.min(MAX_ROUTE_HOPS, Math.max(1, opts.maxHops ?? 4));
+  const maxLoss = Math.max(0, opts.maxLossPct ?? 1.5);
+  const seed = opts.seed ?? Date.now();
+  const entries = canonicalBalanceEntries(balances, snap.universe)
+    .map((e) => ({ ...e, usd: e.amount * (usdPriceOf(e.token.symbol, snap) || 0) }))
+    .filter((e) => e.usd > 0)
+    .sort((a, b) => b.usd - a.usd)
+    .slice(0, 8);
+
+  const clips: TapeClip[] = [];
+  let i = 0;
+  for (const { token, amount, usd } of entries) {
+    const px = usdPriceOf(token.symbol, snap);
+    if (!(px > 0)) continue;
+    const capUsd = Math.min(usd, Math.max(opts.minUsd, opts.maxUsd));
+    const loUsd = Math.min(opts.minUsd, capUsd);
+    const hiUsd = capUsd;
+    if (hiUsd <= 0) continue;
+    const r = ((seed + i * 97_331) >>> 0) / 4_294_967_296;
+    const ladder = [0, 0.05, 0.12, 0.28, 0.5, 0.75, 1];
+    const f = ladder[Math.floor(r * ladder.length) % ladder.length]!;
+    const spendUsd = loUsd + (hiUsd - loUsd) * f;
+    const spend = Math.min(amount, spendUsd / px);
+    if (!(spend > 0)) continue;
+    i += 1;
+
+    const tryPair = (from: string, to: string, amt: number) => {
+      const route = bestExecutionRouteOnGraph(graph, amt, from, to);
+      if (!route) return;
+      const pxOut = usdPriceOf(to, snap);
+      if (!(pxOut > 0)) return;
+      const usdIn = amt * (usdPriceOf(from, snap) || 0);
+      const usdOut = route.amountOut * pxOut;
+      const netUsd = usdOut - usdIn;
+      const netPct = usdIn > 0 ? (netUsd / usdIn) * 100 : 0;
+      if (netPct < -maxLoss) return;
+      clips.push({
+        tokenIn: from,
+        tokenOut: to,
+        amountIn: amt,
+        route,
+        usdIn,
+        usdOut,
+        netUsd,
+        netPct,
+      });
+    };
+
+    if (token.symbol !== "LEEF") tryPair(token.symbol, "LEEF", spend);
+    if (token.symbol === "LEEF") {
+      for (const q of ["WAX", "WAXUSDC", "USDT", "PARAUSD"]) {
+        tryPair("LEEF", q, spend);
+      }
+    }
+  }
+
+  if (clips.length === 0) return null;
+  clips.sort((a, b) => {
+    const ap = a.netUsd >= 0 ? 1 : 0;
+    const bp = b.netUsd >= 0 ? 1 : 0;
+    if (ap !== bp) return bp - ap;
+    return b.usdIn - a.usdIn;
+  });
+  return clips[0] ?? null;
+}

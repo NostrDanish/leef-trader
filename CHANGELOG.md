@@ -2,6 +2,19 @@
 
 All notable changes to LEEF Trader. Dates are commit-era, not release tags.
 
+## Unreleased — Volume extreme + Unleashed + hops cap + mixed clip sizes
+
+- **Volume extreme**: any held token → LEEF tape (or LEEF → quote). Prefers
+  profit, accepts zero-loss after LP fees. Mixed clip sizes inside min–max.
+- **Unleashed**: trade-only mix of arb, echo, tape, next-hop, signal,
+  mean-reversion. No extra knobs. HOLD only if the wallet/book cannot trade.
+- Min/max is a **band**, not an order size: each clip is picked inside it
+  from wallet + route ($2 here, $0.001 there).
+- **Max hops** user setting (1–10). Strategies pick ≤ that cap, not always 10.
+- Still: wallet check, fresh Alcor quote before sign, no rebroadcast.
+
+---
+
 ## Unreleased — next-action: one graph per tick, cycles only on stables/WAX
 
 planNextAction rebuilt the full route graph once per holding×destination
