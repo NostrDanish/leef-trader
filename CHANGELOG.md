@@ -2,6 +2,17 @@
 
 All notable changes to LEEF Trader. Dates are commit-era, not release tags.
 
+## Unreleased — Treasure growth: grow 1–3 assets, HOLD with a why
+
+New strategy: pick 1–3 treasures (LEEF / WAX / TLM / …) and a mode
+(Max / Balanced / Compound). The bot maximizes those token counts
+without destroying portfolio value. After every fill the graph rebuilds.
+HOLD is a successful outcome and the reason is shown.
+
+Uses the existing swap path (fresh Alcor quote, governor, no rebroadcast).
+
+---
+
 ## Unreleased — Volume extreme + Unleashed + hops cap + mixed clip sizes
 
 - **Volume extreme**: any held token → LEEF tape (or LEEF → quote). Prefers

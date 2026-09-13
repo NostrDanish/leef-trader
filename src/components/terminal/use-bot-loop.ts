@@ -213,6 +213,8 @@ async function runBotOnceInner(
     calibration: b.stats.byStrategy,
     quote: b.quote,
     base: b.base,
+    growthTargets: b.growthTargets,
+    growthMode: b.growthMode,
     force: opts?.force ?? null,
   });
 

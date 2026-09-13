@@ -1,6 +1,13 @@
 import { backedPools, isLeefToken, isWaxToken, quoteConstantProduct } from "./amm";
 import { bestExecutionRoute } from "./route-optimizer";
 import { planLeefTape, planNextAction } from "./next-action";
+import {
+  DEFAULT_GROWTH_TARGETS,
+  normalizeTargets,
+  planGrowthAction,
+  type GrowthMode,
+  type GrowthTarget,
+} from "./growth-engine";
 import { realizedVolPerSec, usdPriceOf } from "./cost-model";
 import { balanceForIdentifier, markPortfolioUsd } from "@/lib/wallet/balances";
 import {
@@ -45,7 +52,8 @@ export type BotStrategy =
   | "grid"
   | "dca"
   | "volume"
-  | "volume-x";
+  | "volume-x"
+  | "growth";
 
 export const STRATEGIES: {
   id: BotStrategy;
@@ -125,6 +133,14 @@ export const STRATEGIES: {
     detail:
       "Prints LEEF volume through whatever you hold: TLM, USDC, WAX, TACO, …. Each clip is a different size between min and max. Prefers profit, accepts zero-loss after LP fees. Still won't spend more than the wallet or sign a stale quote.",
     bestFor: "LEEF tape, any pair",
+  },
+  {
+    id: "growth",
+    name: "Treasure growth",
+    tagline: "Don't trade pairs. Grow assets.",
+    detail:
+      "You name 1–3 treasures (e.g. LEEF 60 / WAX 30 / TLM 10). The bot's job is to increase those token counts over time without destroying portfolio value. HOLD when the market doesn't offer a strong enough opportunity — and it will tell you why.",
+    bestFor: "Accumulate a bag",
   },
 ];
 
@@ -329,6 +345,9 @@ export type BotInput = {
   force?: "buy" | "sell" | null;
   /** Predicted-vs-realized memory per strategy — haircuts over-optimistic theses. */
   calibration?: Record<string, CalibrationMemory>;
+  /** Treasure mix for the growth strategy (1–3 assets). */
+  growthTargets?: GrowthTarget[];
+  growthMode?: GrowthMode;
 };
 
 /* ------------------------------------------------------------------ */
@@ -433,7 +452,8 @@ export function hopsForStrategy(strategy: BotStrategy, cap: number, seed = Date.
   const c = Math.min(10, Math.max(1, Math.floor(cap || 4)));
   const r = ((seed >>> 0) % 3) + 1;
   if (strategy === "spread" || strategy === "volume") return Math.min(c, 2);
-  if (strategy === "volume-x" || strategy === "unleashed") return Math.min(c, Math.max(2, r + 1));
+  if (strategy === "volume-x" || strategy === "unleashed" || strategy === "growth")
+    return Math.min(c, Math.max(2, r + 1));
   if (strategy === "signal" || strategy === "meanrev") return Math.min(c, 3);
   return Math.min(c, 4);
 }
@@ -1482,6 +1502,26 @@ export function evaluateBot(input: BotInput): Decision {
       }
       const pick = actionable[(now >>> 0) % actionable.length]!;
       return pick;
+    }
+    case "growth": {
+      const hops = hopsForStrategy("growth", risk.maxHops, now);
+      const planned = planGrowthAction(snap, input.balances, {
+        targets: normalizeTargets(input.growthTargets ?? DEFAULT_GROWTH_TARGETS),
+        mode: input.growthMode ?? "balanced",
+        minUsd: risk.minTradeUsd,
+        maxUsd: Math.max(risk.minTradeUsd, bounds.effectiveMaxUsd || risk.maxPositionUsd),
+        maxHops: hops,
+        seed: now,
+      });
+      if ("hold" in planned) return hold(planned.hold);
+      return {
+        kind: "swap",
+        tokenIn: planned.tokenIn,
+        tokenOut: planned.tokenOut,
+        amountIn: planned.amountIn,
+        route: planned.route,
+        reason: `Growth ${planned.explain[0]} · ${planned.explain[1]}`,
+      };
     }
     case "spread":
     case "volume":

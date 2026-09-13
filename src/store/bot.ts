@@ -10,6 +10,12 @@ import {
   type PricePoint,
 } from "@/lib/leef/bot-engine";
 import { migrateRiskToUsd } from "@/lib/leef/risk-usd";
+import {
+  DEFAULT_GROWTH_TARGETS,
+  normalizeTargets,
+  type GrowthMode,
+  type GrowthTarget,
+} from "@/lib/leef/growth-engine";
 
 export type BotDecisionKind = "buy" | "sell" | "arb" | "swap" | "hold" | "skip" | "stop" | "error";
 
@@ -66,6 +72,11 @@ type BotState = {
   quote: string;
   /** Tokens to bias the scan toward. Empty = no extra bias. */
   focus: string[];
+  /** 1–3 treasures the growth strategy tries to increase. */
+  growthTargets: GrowthTarget[];
+  growthMode: GrowthMode;
+  /** Snapshot of target amounts at session start (for growth P&L). */
+  growthStart: Record<string, number>;
   goals: BotGoals;
   risk: BotRisk;
   position: Position | null;
@@ -86,6 +97,9 @@ type BotState = {
   setBase: (q: string) => void;
   setQuote: (q: string) => void;
   setFocus: (tokens: string[]) => void;
+  setGrowthTargets: (t: GrowthTarget[]) => void;
+  setGrowthMode: (m: GrowthMode) => void;
+  snapshotGrowthStart: (amounts: Record<string, number>) => void;
   setGoals: (p: Partial<BotGoals>) => void;
   setRisk: (p: Partial<BotRisk>) => void;
   pushSeries: (p: PricePoint) => void;
@@ -127,6 +141,9 @@ export const useBot = create<BotState>()(
       base: "LEEF",
       quote: "WAX",
       focus: ["LEEF", "WAX"],
+      growthTargets: [...DEFAULT_GROWTH_TARGETS],
+      growthMode: "balanced",
+      growthStart: {},
       goals: { ...DEFAULT_GOALS },
       risk: { ...DEFAULT_RISK },
       position: null,
@@ -176,6 +193,9 @@ export const useBot = create<BotState>()(
         set({
           focus: [...new Set(focus.map((s) => s.toUpperCase()))].slice(0, 8),
         }),
+      setGrowthTargets: (t) => set({ growthTargets: normalizeTargets(t) }),
+      setGrowthMode: (growthMode) => set({ growthMode }),
+      snapshotGrowthStart: (growthStart) => set({ growthStart }),
       setGoals: (p) => set((s) => ({ goals: { ...s.goals, ...p } })),
       setRisk: (p) => set((s) => ({ risk: { ...s.risk, ...p } })),
       pushSeries: (p) =>
@@ -277,7 +297,7 @@ export const useBot = create<BotState>()(
       // Versioned + merging migrate: fields added to the schema after a user
       // saved state (e.g. risk.minNetEdgePct, stats.byStrategy) get filled
       // from defaults instead of crashing selectors with undefined.
-      version: 9,
+      version: 10,
       migrate: (persisted) => {
         const p = (
           persisted && typeof persisted === "object" ? persisted : {}
@@ -286,6 +306,9 @@ export const useBot = create<BotState>()(
           base: string;
           quote: string;
           focus: string[];
+          growthTargets?: GrowthTarget[];
+          growthMode?: GrowthMode;
+          growthStart?: Record<string, number>;
           goals: Partial<BotGoals>;
           risk: Partial<BotRisk> & { clipWax?: number; maxPositionWax?: number };
           position: Position | null;
@@ -303,6 +326,11 @@ export const useBot = create<BotState>()(
           base: typeof p.base === "string" && p.base ? p.base.toUpperCase() : "LEEF",
           quote: typeof p.quote === "string" && p.quote ? p.quote.toUpperCase() : "WAX",
           focus: Array.isArray(p.focus) ? p.focus.map((s) => String(s).toUpperCase()) : ["LEEF", "WAX"],
+          growthTargets: Array.isArray(p.growthTargets)
+            ? normalizeTargets(p.growthTargets)
+            : [...DEFAULT_GROWTH_TARGETS],
+          growthMode: p.growthMode === "max" || p.growthMode === "compound" ? p.growthMode : "balanced",
+          growthStart: p.growthStart && typeof p.growthStart === "object" ? p.growthStart : {},
           goals: { ...DEFAULT_GOALS, ...(p.goals ?? {}) },
           risk: {
             ...DEFAULT_RISK,
@@ -333,6 +361,9 @@ export const useBot = create<BotState>()(
         base: s.base,
         quote: s.quote,
         focus: s.focus,
+        growthTargets: s.growthTargets,
+        growthMode: s.growthMode,
+        growthStart: s.growthStart,
         goals: s.goals,
         risk: s.risk,
         position: s.position,

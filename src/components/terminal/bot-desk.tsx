@@ -41,6 +41,8 @@ import {
   type AdvisorSuggestion,
 } from "@/lib/leef/advisor";
 import { runBotOnce } from "./use-bot-loop";
+import { snapshotTargets, type GrowthMode } from "@/lib/leef/growth-engine";
+import { listBaseTokens as listTreasureTokens } from "@/lib/leef/advisor";
 
 const KIND_VARIANT: Record<
   BotDecisionLog["kind"],
@@ -96,6 +98,8 @@ export function BotDesk({ snap }: { snap: LeefSnapshot }) {
     sessionStartEquityUsd: b.stats.startEquityUsd,
     quote: b.quote,
     base: b.base,
+    growthTargets: b.growthTargets,
+    growthMode: b.growthMode,
   });
 
   function onStart() {
@@ -104,6 +108,9 @@ export function BotDesk({ snap }: { snap: LeefSnapshot }) {
       return;
     }
     setConfirmLive(false);
+    const start: Record<string, number> = {};
+    for (const t of snapshotTargets(snap, balances, b.growthTargets)) start[t.symbol] = t.amount;
+    b.snapshotGrowthStart(start);
     b.start(equityUsd);
     void runBotOnce(snap);
   }
@@ -295,7 +302,8 @@ export function BotDesk({ snap }: { snap: LeefSnapshot }) {
           </Card>
 
           {b.strategy !== "unleashed" && <GoalsCard />}
-          {b.strategy !== "unleashed" && <AdvisorCard snap={snap} />}
+          {b.strategy !== "unleashed" && b.strategy !== "growth" && <AdvisorCard snap={snap} />}
+          {b.strategy === "growth" && <TreasureCard snap={snap} />}
           <RiskCard strategy={b.strategy} snap={snap} />
         </div>
 
@@ -720,6 +728,137 @@ function GoalsCard() {
           onChange={(maxDrawdownPct) => setGoals({ maxDrawdownPct })}
         />
       </div>
+    </Card>
+  );
+}
+
+function TreasureCard({ snap }: { snap: LeefSnapshot }) {
+  const targets = useBot((s) => s.growthTargets);
+  const mode = useBot((s) => s.growthMode);
+  const start = useBot((s) => s.growthStart);
+  const setTargets = useBot((s) => s.setGrowthTargets);
+  const setMode = useBot((s) => s.setGrowthMode);
+  const running = useBot((s) => s.running);
+  const balances = useWallet((s) => s.balances());
+  const now = snapshotTargets(snap, balances, targets);
+  const choices = listTreasureTokens(snap);
+  if (!choices.includes("WAX")) choices.unshift("WAX");
+
+  function setSlot(i: number, symbol: string) {
+    const next = targets.map((t, j) => (j === i ? { ...t, symbol } : t));
+    setTargets(next);
+  }
+  function setWeight(i: number, weight: number) {
+    const next = targets.map((t, j) => (j === i ? { ...t, weight } : t));
+    setTargets(next);
+  }
+  function addSlot() {
+    if (targets.length >= 3) return;
+    const used = new Set(targets.map((t) => t.symbol));
+    const extra = choices.find((c) => !used.has(c)) ?? "LEEF";
+    setTargets([...targets, { symbol: extra, weight: 10 }]);
+  }
+  function removeSlot(i: number) {
+    if (targets.length <= 1) return;
+    setTargets(targets.filter((_, j) => j !== i));
+  }
+
+  const modes: { id: GrowthMode; label: string; hint: string }[] = [
+    { id: "max", label: "Max", hint: "Aggressive" },
+    { id: "balanced", label: "Balanced", hint: "Recommended" },
+    { id: "compound", label: "Compound", hint: "Small edges" },
+  ];
+
+  return (
+    <Card className="p-4 sm:p-5">
+      <h3 className="mb-1 flex items-center gap-2 text-sm font-medium">
+        <BrainCircuit className="size-4 text-leef" />
+        Treasure
+      </h3>
+      <p className="mb-3 text-xs text-muted-foreground">
+        Name 1–3 assets to grow. The bot maximizes those token counts without
+        destroying portfolio value. HOLD when nothing is strong enough — and
+        it will say why.
+      </p>
+      <div className="mb-3 flex flex-wrap gap-1.5">
+        {modes.map((m) => (
+          <button
+            key={m.id}
+            type="button"
+            disabled={running}
+            onClick={() => setMode(m.id)}
+            className={cn(
+              "rounded-full border px-2.5 py-1 text-xs",
+              mode === m.id
+                ? "border-accent/50 bg-accent/15 text-foreground"
+                : "border-border text-muted-foreground",
+            )}
+          >
+            {m.label}
+            <span className="ml-1 text-subtle">{m.hint}</span>
+          </button>
+        ))}
+      </div>
+      <div className="space-y-2">
+        {targets.map((t, i) => {
+          const live = now.find((n) => n.symbol === t.symbol);
+          const opened = start[t.symbol];
+          const delta = live && opened != null ? live.amount - opened : null;
+          return (
+            <div key={`${t.symbol}-${i}`} className="rounded-md border border-border p-2">
+              <div className="flex items-center gap-2">
+                <select
+                  className="h-8 flex-1 rounded-md border border-border bg-background px-2 font-mono text-xs"
+                  value={t.symbol}
+                  disabled={running}
+                  onChange={(e) => setSlot(i, e.target.value)}
+                >
+                  {choices.map((c) => (
+                    <option key={c} value={c}>
+                      {c}
+                    </option>
+                  ))}
+                </select>
+                <Input
+                  type="number"
+                  className="h-8 w-16 font-mono text-xs"
+                  value={Math.round(t.weight)}
+                  min={1}
+                  max={100}
+                  disabled={running}
+                  onChange={(e) => setWeight(i, Number(e.target.value) || 0)}
+                />
+                <span className="text-xs text-subtle">%</span>
+                {targets.length > 1 && (
+                  <button
+                    type="button"
+                    disabled={running}
+                    className="text-xs text-muted-foreground hover:text-sell"
+                    onClick={() => removeSlot(i)}
+                  >
+                    ×
+                  </button>
+                )}
+              </div>
+              <div className="mt-1 font-mono text-xs text-muted-foreground">
+                {live ? `${fmtNum(live.amount, { compact: true })} · ${fmtUsd(live.usd)}` : "—"}
+                {delta != null && (
+                  <span className={delta >= 0 ? " text-leef" : " text-sell"}>
+                    {" "}
+                    {delta >= 0 ? "+" : ""}
+                    {fmtNum(delta, { compact: true })}
+                  </span>
+                )}
+              </div>
+            </div>
+          );
+        })}
+      </div>
+      {targets.length < 3 && (
+        <Button variant="outline" size="sm" className="mt-2" disabled={running} onClick={addSlot}>
+          Add treasure
+        </Button>
+      )}
     </Card>
   );
 }
