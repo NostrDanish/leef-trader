@@ -124,6 +124,8 @@ export function dangerScore(opts: {
   return { score, band, sizeFactor, explain };
 }
 
+import { realizedVolPerSec } from "./cost-model";
+
 const MIN_PRINTS = 34;
 const EMA_FAST = 8;
 const EMA_SLOW = 21;
@@ -141,27 +143,22 @@ function emaLast(values: number[], period: number): number | null {
   return ema;
 }
 
-function volPerPrintPct(series: { t: number; usd: number }[], maxPoints = 40): number {
-  const pts = series.slice(-maxPoints);
-  if (pts.length < 3) return 0;
-  const rets: number[] = [];
+/**
+ * One volatility source for the whole app: the cost model's per-second
+ * realized vol, scaled to the observed print cadence. Regime, grid and the
+ * cost model can no longer disagree about the same tape.
+ */
+function volPerPrintPct(series: { t: number; usd: number }[]): number {
+  const perSec = realizedVolPerSec(series);
+  if (!(perSec > 0)) return 0;
+  const pts = series.slice(-40);
   let dtSum = 0;
-  for (let i = 1; i < pts.length; i++) {
-    const a = pts[i - 1]!;
-    const b = pts[i]!;
-    if (a.usd > 0 && b.usd > 0 && b.t > a.t) {
-      rets.push(b.usd / a.usd - 1);
-      dtSum += (b.t - a.t) / 1000;
-    }
-  }
-  const n = rets.length;
-  if (n < 2 || dtSum <= 0) return 0;
-  const m = rets.reduce((s, r) => s + r, 0) / n;
-  const variance = rets.reduce((s, r) => s + (r - m) * (r - m), 0) / (n - 1);
-  const secPerTick = dtSum / n;
-  const perSec = secPerTick > 0 ? Math.sqrt(variance) / Math.sqrt(secPerTick) : Math.sqrt(variance);
-  return perSec * Math.sqrt(secPerTick) * 100;
+  for (let i = 1; i < pts.length; i++) dtSum += (pts[i]!.t - pts[i - 1]!.t) / 1000;
+  const secPerTick = pts.length > 1 ? dtSum / (pts.length - 1) : 30;
+  return perSec * Math.sqrt(secPerTick > 0 ? secPerTick : 30) * 100;
 }
+
+const clamp01 = (n: number) => Math.min(1, Math.max(0, n));
 
 export function classifyRegime(input: RegimeInput): RegimeVerdict {
   const { series } = input;
@@ -191,16 +188,28 @@ export function classifyRegime(input: RegimeInput): RegimeVerdict {
     if (lo > 0) dislocationPct = (hi / lo - 1) * 100;
   }
 
-  const confidence = Math.min(1, (series.length - MIN_PRINTS + 1) / 60 + 0.5);
+  /**
+   * Confidence = agreement, not age. Sample count sets the ceiling; the
+   * classification's decisiveness (how far past the threshold we are) and
+   * cross-pool agreement scale it. An ambiguous tape with 200 prints is NOT
+   * a confident regime.
+   */
+  const sampleCeiling = Math.min(1, (series.length - MIN_PRINTS + 1) / 60 + 0.5);
+  const sigma = Math.max(0.05, volPct);
+  const poolAgreement = prices.length >= 2 ? clamp01(1 - dislocationPct / DISLOCATION_PCT) : 0.5;
+
+  const decisive = (distance: number, threshold: number) =>
+    clamp01(distance / Math.max(1e-9, threshold) - 1);
 
   // Dislocation wins: when pools disagree, directional signals are noise.
   if (dislocationPct >= DISLOCATION_PCT) {
+    const strength = decisive(dislocationPct, DISLOCATION_PCT);
     return {
       regime: "dislocation",
       trendSepPct,
       volPct,
       dislocationPct,
-      confidence,
+      confidence: clamp01(sampleCeiling * (0.6 + 0.4 * strength)),
       explain: [
         `pools disagree ${dislocationPct.toFixed(2)}% — cross-book arb territory`,
         `trend ${trendSepPct >= 0 ? "+" : ""}${trendSepPct.toFixed(2)}% · vol ${volPct.toFixed(2)}%/print`,
@@ -208,24 +217,25 @@ export function classifyRegime(input: RegimeInput): RegimeVerdict {
     };
   }
   if (volPct >= HIGH_VOL_PCT) {
+    const strength = decisive(volPct, HIGH_VOL_PCT);
     return {
       regime: "high_vol",
       trendSepPct,
       volPct,
       dislocationPct,
-      confidence,
+      confidence: clamp01(sampleCeiling * (0.6 + 0.4 * strength) * (0.7 + 0.3 * poolAgreement)),
       explain: [`vol ${volPct.toFixed(2)}%/print ≥ ${HIGH_VOL_PCT}% — size down, arb up`],
     };
   }
-  const sigma = Math.max(0.05, volPct);
   if (Math.abs(trendSepPct) >= TREND_SIGMA * sigma && Math.abs(trendSepPct) >= 0.08) {
     const up = trendSepPct > 0;
+    const strength = decisive(Math.abs(trendSepPct), TREND_SIGMA * sigma);
     return {
       regime: up ? "trend_up" : "trend_down",
       trendSepPct,
       volPct,
       dislocationPct,
-      confidence,
+      confidence: clamp01(sampleCeiling * (0.55 + 0.45 * strength) * (0.7 + 0.3 * poolAgreement)),
       explain: [
         `EMA${EMA_FAST} ${up ? "above" : "below"} EMA${EMA_SLOW} by ${Math.abs(trendSepPct).toFixed(2)}% (${(Math.abs(trendSepPct) / sigma).toFixed(1)}σ of print vol)`,
       ],
@@ -237,16 +247,19 @@ export function classifyRegime(input: RegimeInput): RegimeVerdict {
       trendSepPct,
       volPct,
       dislocationPct,
-      confidence,
+      confidence: clamp01(sampleCeiling * 0.8 * (0.7 + 0.3 * poolAgreement)),
       explain: [`vol ${volPct.toFixed(2)}%/print ≤ ${LOW_VOL_PCT}% — tight spreads viable`],
     };
   }
+  // Range: confidence is the DISTANCE FROM a trend — a tape hugging the
+  // trend threshold is not confidently a range.
+  const rangeHeadroom = clamp01(1 - Math.abs(trendSepPct) / (TREND_SIGMA * sigma));
   return {
     regime: "range",
     trendSepPct,
     volPct,
     dislocationPct,
-    confidence,
+    confidence: clamp01(sampleCeiling * (0.5 + 0.5 * rangeHeadroom) * (0.7 + 0.3 * poolAgreement)),
     explain: [
       `no trend (${Math.abs(trendSepPct).toFixed(2)}% < ${(TREND_SIGMA * sigma).toFixed(2)}% band) — mean reversion / grid territory`,
     ],

@@ -2,6 +2,26 @@
 
 All notable changes to LEEF Trader. Dates are commit-era, not release tags.
 
+## Unreleased — Venue truth labels + unified volatility + real regime confidence
+
+Audit pass against 5e89343 (pre-danger-score). Triaged, not blindly applied:
+
+- **Stale claim**: "caller ignores guaranteedOut" — fixed in the previous
+  commit; added `combineGuaranteedOut` regression tests (split sums,
+  hops take final leg) so it can't regress.
+- **Quote exactness**: `exact` (Alcor router) vs `fresh_model` (Defibox/
+  Taco fresh reserves + the venue's own CP formula). NOT made exact-only —
+  those venues have no public router; the min-out memo is the hard guard.
+  Mixed-venue routes are labeled fresh-model in the decision log.
+- **Unified volatility**: regime now consumes the cost model's
+  `realizedVolPerSec` scaled to print cadence — one tape, one number.
+- **Regime confidence** is agreement (sample ceiling × threshold
+  decisiveness × cross-pool agreement), not "more prints = more sure".
+
+Deferred on purpose: rolling percentile regime thresholds (needs history
+the 30s series doesn't retain), Auto top-N exact re-ranking (N venue calls
+per tick — the single exact gate on the winner is the right cost tradeoff).
+
 ## Unreleased — Danger score + expected vs guaranteed output
 
 - **Unified danger score** (0–100): staleness, volatility, pool

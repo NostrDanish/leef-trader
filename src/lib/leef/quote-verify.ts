@@ -18,15 +18,41 @@ import { metaOf } from "@/lib/wallet/tokens";
 
 export type QuoteTrust = "executable" | "model_only" | "stale";
 
+/**
+ * How close the quote is to the venue's own execution math:
+ *   exact       — Alcor swapRouter: the venue's CLMM engine computed this.
+ *   fresh_model — Defibox/Taco: fresh on-chain reserves + the venue's CP
+ *                 formula. The contract's own math, but reserve drift between
+ *                 read and execution is unpriced. Min-out memo is the hard guard.
+ */
+export type QuoteExactness = "exact" | "fresh_model";
+
 export type VerifiedLeg = {
   venue: VenueId;
   trust: QuoteTrust;
+  exactness: QuoteExactness;
   amountIn: number;
   amountOut: number;
   minOut: number;
   memo?: string;
   alcor?: AlcorRouteQuote;
 };
+
+/**
+ * Combine per-leg min-outs into the route-level guaranteed worst case.
+ * Split legs are independent slices → sum. Sequential hops chain on each
+ * other's guaranteed output → the final leg's min-out is the guarantee.
+ * Exported pure for regression tests (the Strategy V2 gate consumes this,
+ * never a hand-rolled re-derivation).
+ */
+export function combineGuaranteedOut(
+  legs: Pick<VerifiedLeg, "minOut">[],
+  split: boolean,
+): number {
+  if (legs.length === 0) return 0;
+  if (split) return legs.reduce((s, l) => s + l.minOut, 0);
+  return legs[legs.length - 1]!.minOut;
+}
 
 const QUOTE_TTL_MS = 1_200;
 const quoteCache = new Map<string, { at: number; quote: AlcorRouteQuote }>();
@@ -110,6 +136,8 @@ export async function verifyExecutableRoute(opts: {
   /** Chain-guaranteed worst case: sum of leg min-outs (split) or the final leg's min-out (hops). */
   guaranteedOut: number;
   trust: QuoteTrust;
+  /** "exact" only when EVERY leg came from the venue's own engine (Alcor router). */
+  exactness: QuoteExactness;
   verified: VerifiedLeg[];
 }> {
   const t0 = Date.now();
@@ -136,10 +164,12 @@ export async function verifyExecutableRoute(opts: {
         expectedOut,
         guaranteedOut: minOut,
         trust: "executable",
+        exactness: "exact",
         verified: [
           {
             venue: "alcor",
             trust: "executable",
+            exactness: "exact",
             amountIn: opts.amountIn,
             amountOut: expectedOut,
             minOut,
@@ -188,6 +218,7 @@ export async function verifyExecutableRoute(opts: {
       verified.push({
         venue: "alcor",
         trust: "executable",
+        exactness: "exact",
         amountIn,
         amountOut,
         minOut: parseAssetAmount(quote.minReceived) || amountOut * (1 - slip),
@@ -230,6 +261,7 @@ export async function verifyExecutableRoute(opts: {
       verified.push({
         venue,
         trust: "executable",
+        exactness: "fresh_model",
         amountIn,
         amountOut,
         minOut,
@@ -242,10 +274,9 @@ export async function verifyExecutableRoute(opts: {
     if (split) expectedOut += amountOut;
     else expectedOut = amountOut;
   }
-  // Guaranteed worst case: splits sum their independent min-outs; a hop chain
-  // ends at the final leg's min-out (each leg already chained on min-outs).
-  const guaranteedOut = split
-    ? verified.reduce((s, v) => s + v.minOut, 0)
-    : (verified[verified.length - 1]?.minOut ?? 0);
-  return { expectedOut, guaranteedOut, trust: "executable", verified };
+  const guaranteedOut = combineGuaranteedOut(verified, split);
+  const exactness: QuoteExactness = verified.every((v) => v.exactness === "exact")
+    ? "exact"
+    : "fresh_model";
+  return { expectedOut, guaranteedOut, trust: "executable", exactness, verified };
 }

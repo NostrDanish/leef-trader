@@ -512,18 +512,19 @@ async function runBotOnceInner(
           verified.expectedOut,
           book,
         );
+        const exactTag = verified.exactness === "exact" ? "" : " · fresh-model venue (min-out is the hard guard)";
           if (!verdict.pass) {
             const reason = `Growth exact-quote gate: ${verdict.reason}`;
             b.pushDecision({ kind: "hold", mode, reason, priceUsd: book.leefUsd });
             b.setLastReason(reason);
             return { kind: "hold", reason };
           }
-        decision = {
-          ...decision,
-          // Paper fills and P&L settle from the exact venue quote too.
-          route: { ...decision.route, amountOut: verified.expectedOut },
-          reason: `${decision.reason} · ${verdict.reason}`,
-        };
+          decision = {
+            ...decision,
+            // Paper fills and P&L settle from the exact venue quote too.
+            route: { ...decision.route, amountOut: verified.expectedOut },
+            reason: `${decision.reason} · ${verdict.reason}${exactTag}`,
+          };
         } catch (err) {
           const msg = err instanceof Error ? err.message : "exact quote failed";
           const reason = `Growth exact-quote gate: ${msg}`;
@@ -561,6 +562,7 @@ async function runBotOnceInner(
             guaranteedOut: verified.guaranteedOut,
             minNetPct: decision.minNetPct,
           });
+          const venueTag = verified.exactness === "exact" ? "" : " · fresh-model venue";
           if (!verdict.pass) {
             const reason = `Exact-quote gate: ${verdict.reason}`;
             b.pushDecision({ kind: "hold", mode, reason, priceUsd: book.leefUsd });
@@ -570,7 +572,7 @@ async function runBotOnceInner(
           decision = {
             ...decision,
             route: { ...decision.route, amountOut: verified.expectedOut },
-            reason: `${decision.reason} · ${verdict.reason}`,
+            reason: `${decision.reason} · ${verdict.reason}${venueTag}`,
           };
         } catch (err) {
           const msg = err instanceof Error ? err.message : "exact quote failed";

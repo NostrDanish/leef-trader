@@ -35,6 +35,24 @@ Bands: 0–20 normal · 20–40 cautious (0.9× size) · 40–60 reduced (0.8×)
 60–80 selective (0.5×) · 80+ HOLD (entries only; stop-loss, take-profit,
 trailing and manual sells still fire). No strategy may override it.
 
+**One volatility source.** Regime, grid and the cost model all derive from
+`realizedVolPerSec` (cost-model.ts) scaled to the observed print cadence —
+they cannot disagree about the same tape.
+
+**Regime confidence = agreement, not age.** Sample count only sets the
+ceiling. Decisiveness (distance past the classification threshold) and
+cross-pool agreement scale it; a 200-print ambiguous tape is not a
+confident regime.
+
+**Quote exactness** (`QuoteExactness` in `quote-verify.ts`): `exact` =
+Alcor's swapRouter computed the quote (CLMM truth). `fresh_model` =
+Defibox/Taco fresh on-chain reserves through the venue's own CP formula —
+the contract's math, but reserve drift between read and execution is
+unpriced, and the min-out memo is the hard guard. Routes mixing venues are
+`fresh_model`. The decision log labels non-exact executions. Route-level
+`guaranteedOut` comes only from `combineGuaranteedOut` (splits SUM leg
+min-outs; hops take the final leg's) — regression-tested.
+
 **Universal exact-quote gate** (`src/lib/leef/exact-gate.ts` +
 `verifyExecutableRoute` in the loop): the route graph prices with
 constant-product math, but Alcor is a CLMM — the local quote is never the
