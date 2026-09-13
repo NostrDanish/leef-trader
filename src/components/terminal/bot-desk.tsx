@@ -41,8 +41,12 @@ import {
   type AdvisorSuggestion,
 } from "@/lib/leef/advisor";
 import { runBotOnce } from "./use-bot-loop";
-import { snapshotTargets, type GrowthMode } from "@/lib/leef/growth-engine";
-import { listBaseTokens as listTreasureTokens } from "@/lib/leef/advisor";
+import {
+  GROWTH_MODES,
+  listTreasureTokens,
+  snapshotTargets,
+  targetUnitPnl,
+} from "@/lib/leef/growth-engine";
 
 const KIND_VARIANT: Record<
   BotDecisionLog["kind"],
@@ -343,13 +347,27 @@ export function BotDesk({ snap }: { snap: LeefSnapshot }) {
                   {preview.tokenOut} on {preview.route.label}
                 </>
               )}
-              {(preview.kind === "hold" || preview.kind === "stop") && (
+              {(preview.kind === "hold" || preview.kind === "stop") && b.strategy !== "growth" && (
                 <span className="text-muted-foreground">{preview.reason}</span>
               )}
+              {(preview.kind === "hold" || preview.kind === "stop") && b.strategy === "growth" && (
+                <span className="text-muted-foreground">HOLD — market is not offering enough target growth.</span>
+              )}
             </p>
-            <p className="mt-1 text-xs text-subtle">{preview.reason}</p>
+            {b.strategy === "growth" ? (
+              <ul className="mt-2 space-y-0.5 text-xs text-subtle">
+                {preview.reason.split(" · ").map((line, i) => (
+                  <li key={i}>{line}</li>
+                ))}
+              </ul>
+            ) : (
+              <p className="mt-1 text-xs text-subtle">{preview.reason}</p>
+            )}
           </Card>
 
+          {b.strategy === "growth" && <GrowthPnlCards snap={snap} />}
+
+          {b.strategy !== "growth" && (
           <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
             <Card className="border-l-2 border-l-leef p-4">
               <div className="text-xs uppercase tracking-wider text-subtle">Position</div>
@@ -384,15 +402,22 @@ export function BotDesk({ snap }: { snap: LeefSnapshot }) {
             </Card>
             <Card className="p-4">
               <div className="text-xs uppercase tracking-wider text-subtle">
-                {b.strategy === "volume" ? "Volume made" : "Equity"}
+                {b.strategy === "volume" || b.strategy === "volume-x" || (b.strategy === "unleashed" && b.stats.volumeUsd > 0)
+                  ? "Volume made"
+                  : "Equity"}
               </div>
-              {b.strategy === "volume" ? (
+              {b.strategy === "volume" || b.strategy === "volume-x" || (b.strategy === "unleashed" && b.stats.volumeUsd > 0) ? (
                 <>
                   <div className="mt-1 font-mono text-lg tabular-nums text-wax">
                     {fmtUsd(b.stats.volumeUsd, 2)}
                   </div>
                   <div className="text-xs text-muted-foreground">
-                    echo cost {fmtUsd(b.stats.echoCostUsd, 2)} · equity {fmtUsd(equityUsd, 2)}
+                    {b.strategy === "volume" ? "echo" : "tape"} cost {fmtUsd(b.stats.echoCostUsd, 2)}
+                    {b.stats.volumeUsd > 0
+                      ? ` · ${((b.stats.echoCostUsd / b.stats.volumeUsd) * 100).toFixed(2)}¢/$`
+                      : ""}
+                    {" · "}
+                    {b.stats.trades} clips · {fmtUsd(equityUsd, 2)}
                   </div>
                 </>
               ) : (
@@ -405,8 +430,9 @@ export function BotDesk({ snap }: { snap: LeefSnapshot }) {
               )}
             </Card>
           </div>
+          )}
 
-          {b.stats.equity.length > 1 && (
+          {b.strategy !== "growth" && b.stats.equity.length > 1 && (
             <Card className="p-4 sm:p-5">
               <h3 className="mb-3 text-sm font-medium">Session equity</h3>
               <ChartFrame className="h-28">
@@ -732,6 +758,51 @@ function GoalsCard() {
   );
 }
 
+function GrowthPnlCards({ snap }: { snap: LeefSnapshot }) {
+  const targets = useBot((s) => s.growthTargets);
+  const start = useBot((s) => s.growthStart);
+  const balances = useWallet((s) => s.balances());
+  const rows = targetUnitPnl(snap, balances, targets, start);
+  const equityUsd = markPortfolioUsd(snap, balances).totalUsd;
+  const startEq = useBot((s) => s.stats.startEquityUsd);
+  const trades = useBot((s) => s.stats.trades);
+  const wins = useBot((s) => s.stats.wins);
+  const winRate = trades > 0 ? wins / trades : 0;
+  const valueDelta = equityUsd - startEq;
+  return (
+    <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+      {rows.map((r) => (
+        <Card key={r.symbol} className="border-l-2 border-l-leef p-4">
+          <div className="text-xs uppercase tracking-wider text-subtle">{r.symbol} growth</div>
+          <div className={cn("mt-1 font-mono text-lg tabular-nums", r.delta >= 0 ? "text-leef" : "text-sell")}>
+            {r.delta >= 0 ? "+" : ""}
+            {fmtNum(r.delta, { compact: true })}
+          </div>
+          <div className="text-xs text-muted-foreground">
+            {fmtNum(r.now, { compact: true })} now · {fmtUsd(r.usdNow)} · {r.weight.toFixed(0)}% mix
+          </div>
+          <div className="mt-2 h-1.5 overflow-hidden rounded-full bg-muted">
+            <div
+              className="h-full rounded-full bg-leef"
+              style={{ width: `${Math.min(100, Math.max(4, r.weight))}%` }}
+            />
+          </div>
+        </Card>
+      ))}
+      <Card className="p-4">
+        <div className="text-xs uppercase tracking-wider text-subtle">Portfolio value</div>
+        <div className={cn("mt-1 font-mono text-lg tabular-nums", valueDelta >= 0 ? "text-buy" : "text-sell")}>
+          {valueDelta >= 0 ? "+" : ""}
+          {fmtUsd(valueDelta, 2)}
+        </div>
+        <div className="text-xs text-muted-foreground">
+          {fmtUsd(equityUsd, 2)} · {trades} trades · {(winRate * 100).toFixed(0)}% win
+        </div>
+      </Card>
+    </div>
+  );
+}
+
 function TreasureCard({ snap }: { snap: LeefSnapshot }) {
   const targets = useBot((s) => s.growthTargets);
   const mode = useBot((s) => s.growthMode);
@@ -742,7 +813,7 @@ function TreasureCard({ snap }: { snap: LeefSnapshot }) {
   const balances = useWallet((s) => s.balances());
   const now = snapshotTargets(snap, balances, targets);
   const choices = listTreasureTokens(snap);
-  if (!choices.includes("WAX")) choices.unshift("WAX");
+  const activeMode = GROWTH_MODES.find((m) => m.id === mode) ?? GROWTH_MODES[1]!;
 
   function setSlot(i: number, symbol: string) {
     const next = targets.map((t, j) => (j === i ? { ...t, symbol } : t));
@@ -763,11 +834,7 @@ function TreasureCard({ snap }: { snap: LeefSnapshot }) {
     setTargets(targets.filter((_, j) => j !== i));
   }
 
-  const modes: { id: GrowthMode; label: string; hint: string }[] = [
-    { id: "max", label: "Max", hint: "Aggressive" },
-    { id: "balanced", label: "Balanced", hint: "Recommended" },
-    { id: "compound", label: "Compound", hint: "Small edges" },
-  ];
+  const totalUsd = now.reduce((s, n) => s + n.usd, 0);
 
   return (
     <Card className="p-4 sm:p-5">
@@ -776,12 +843,12 @@ function TreasureCard({ snap }: { snap: LeefSnapshot }) {
         Treasure
       </h3>
       <p className="mb-3 text-xs text-muted-foreground">
-        Name 1–3 assets to grow. The bot maximizes those token counts without
-        destroying portfolio value. HOLD when nothing is strong enough — and
-        it will say why.
+        Name 1–3 assets to grow. Token count is the objective; economic value
+        is a constraint. The bot never promises growth — it seeks positive
+        expected target growth and HOLDs when the book does not offer it.
       </p>
       <div className="mb-3 flex flex-wrap gap-1.5">
-        {modes.map((m) => (
+        {GROWTH_MODES.map((m) => (
           <button
             key={m.id}
             type="button"
@@ -799,11 +866,13 @@ function TreasureCard({ snap }: { snap: LeefSnapshot }) {
           </button>
         ))}
       </div>
+      <p className="mb-3 text-xs text-subtle">{activeMode.detail}</p>
       <div className="space-y-2">
         {targets.map((t, i) => {
           const live = now.find((n) => n.symbol === t.symbol);
           const opened = start[t.symbol];
           const delta = live && opened != null ? live.amount - opened : null;
+          const share = live && totalUsd > 0 ? (live.usd / totalUsd) * 100 : 0;
           return (
             <div key={`${t.symbol}-${i}`} className="rounded-md border border-border p-2">
               <div className="flex items-center gap-2">
@@ -849,6 +918,19 @@ function TreasureCard({ snap }: { snap: LeefSnapshot }) {
                     {fmtNum(delta, { compact: true })}
                   </span>
                 )}
+                {live && (
+                  <span className="text-subtle">
+                    {" "}
+                    · bag {share.toFixed(0)}% vs {t.weight.toFixed(0)}%
+                    {live.gapPct > 1 ? " under" : live.gapPct < -1 ? " over" : ""}
+                  </span>
+                )}
+              </div>
+              <div className="mt-1.5 h-1 overflow-hidden rounded-full bg-muted">
+                <div
+                  className="h-full rounded-full bg-accent/80"
+                  style={{ width: `${Math.min(100, Math.max(2, share))}%` }}
+                />
               </div>
             </div>
           );

@@ -1,12 +1,15 @@
 # Strategies
 
-All six strategies live in `src/lib/leef/bot-engine.ts` (`evaluateBot`).
+Strategies live in `src/lib/leef/bot-engine.ts` (`evaluateBot`).
 Entries are sized by the [NetEdgeEngine](./NET_EDGE.md) and then scored by
 the common Opportunity engine (`src/lib/leef/opportunity.ts`). Strategies
 propose intent; they never skip the shared gate. Auto is the orchestrator
 that ranks already-scored opportunities by expected value
 (`net × execProb × freshness × inventory × calibration`) — not by headline
 percent. Exits are never edge-gated (risk actions must always fire).
+
+**Treasure growth** is different: it does not trade a pair. It grows 1–3
+named assets. See [below](#treasure-growth--dont-trade-pairs-grow-assets).
 
 ## Strategy matrix
 
@@ -18,6 +21,7 @@ percent. Exits are never edge-gated (risk actions must always fire).
 | Grid stepper | price drops one `gridStepPct` below the anchor | price rises one step above the anchor sell | ✅ expected = 80% of one step vs round-trip costs | ✅ same | KEEP |
 | DCA accumulator | every cycle until position cap | TP / SL / trailing | ✅ entries still must clear net edge | ✅ same | KEEP |
 | Volume maker | atomic WAX→LEEF→WAX echo whenever round-trip cost ≤ `maxEchoLossPct` | atomic — same transaction | ✅ exact quote + on-chain loss-budget floor | ✅ router legs | KEEP (budget-bounded; not wash trading — see below) |
+| Treasure growth | maximize 1–3 target token counts from whatever you hold (direct, multi-hop, cycle) | HOLD unless expected target growth clears the firewall | ✅ fees, impact, value-drop cap, harvest floor | ✅ exec probability + impact cap | KEEP (objective = target units, not USD) |
 
 ## Notes on hard thresholds (and why they exist)
 
@@ -53,6 +57,46 @@ realized edge at exit, P&L, win/loss, and execution latency
 haircuts that strategy's expected value so a thesis that promised +0.8% and
 delivered +0.1% no longer wins the Auto ranking. This is adaptive
 calibration, not an LLM in the loop.
+
+## Treasure growth — don't trade pairs. Grow assets.
+
+`src/lib/leef/growth-engine.ts` (`planGrowthAction`). The user names 1–3
+treasures and a mix (e.g. LEEF 60 / WAX 30 / TLM 10) plus a mode:
+
+| Mode | Clip | Acquire drop cap | Harvest floor | Idea |
+|---|---|---|---|---|
+| Max | ~85% of a holding | 2.4% | 0.35% | Deploy working capital when a strong opportunity appears |
+| Balanced (default) | ~55% | 1.2% | 0.75% | Protect a reserve; seek edge, don't chase it |
+| Compound | ~22% | 0.85% | 1.1% | Tiny conversions and cycles. Small edges, rebuilt every fill |
+
+**Objective:** weighted target-token growth (target units), haircut by
+execution probability, quote freshness and impact. Underweight treasures
+in a multi-asset mix score higher.
+
+**Constraint (anti-destruction):** never execute just because the token
+count goes up. A fair AMM convert into treasure may pay the LP fee
+(`acquireDropCapPct`); dumping treasure, harvesting, or thin-book impact
+must still clear a tighter value-drop cap, impact cap, exec floor and
+minimum expected growth. Harvesting a target (LEEF → … → more LEEF)
+requires a cycle gain above the mode's harvest floor — directional risk
+is explicit.
+
+**HOLD is a successful decision.** The desk prints a why:
+
+```
+HOLD
+Best opportunity: WAX → LEEF (convert)
+Expected growth units $0.0012
+Blocked: execution probability 41% < required 55%
+No trade.
+```
+
+Execution still uses the existing swap path (fresh Alcor quote, governor,
+policy, no rebroadcast). After every fill the market graph is rebuilt.
+
+The engine never promises that the token will grow. It continuously seeks
+positive expected target growth and chooses HOLD when the book does not
+offer a sufficiently strong opportunity.
 
 ## Adaptive cooldown
 

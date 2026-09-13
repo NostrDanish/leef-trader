@@ -4,12 +4,21 @@ All notable changes to LEEF Trader. Dates are commit-era, not release tags.
 
 ## Unreleased — Treasure growth: grow 1–3 assets, HOLD with a why
 
-New strategy: pick 1–3 treasures (LEEF / WAX / TLM / …) and a mode
-(Max / Balanced / Compound). The bot maximizes those token counts
-without destroying portfolio value. After every fill the graph rebuilds.
-HOLD is a successful outcome and the reason is shown.
+Don't trade pairs. Grow assets.
+
+Pick 1–3 treasures (LEEF 60 / WAX 30 / TLM 10) and a mode (Max /
+Balanced / Compound). The Growth Brain maps holdings onto the book and
+asks which one atomic swap or cycle increases those token counts.
+
+- **Objective:** weighted target-unit growth (not USD P&L).
+- **Constraint:** anti-destruction firewall (value drop, impact, exec
+  probability, harvest floor). Paying an AMM fee to *acquire* treasure is
+  allowed; dumping treasure to print a larger bag is not.
+- **HOLD** is a successful decision and the desk always shows why.
+- Target-unit P&L on the desk: LEEF +3,842 · portfolio value · mix bars.
 
 Uses the existing swap path (fresh Alcor quote, governor, no rebroadcast).
+Never promises growth — seeks positive expected target growth, else HOLD.
 
 ---
 

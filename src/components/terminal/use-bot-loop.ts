@@ -711,13 +711,21 @@ async function runBotOnceInner(
       } else {
         w.applyPaperFill(decision.tokenIn, decision.amountIn, decision.tokenOut, outAmt);
       }
-      b.markTrade(adaptiveCooldownSec(b.risk.cooldownSec, b.strategy, 0));
+      const inUsd = decision.amountIn * (usdPriceOf(decision.tokenIn, book) || 0);
+      const outUsd = outAmt * (usdPriceOf(decision.tokenOut, book) || 0);
+      const tapePnl = outUsd - inUsd;
+      b.markTrade(adaptiveCooldownSec(b.risk.cooldownSec, b.strategy, tapePnl));
+      if (b.strategy === "volume-x" || /Volume-X|Unleashed tape/i.test(decision.reason)) {
+        b.recordVolume(inUsd + outUsd, -tapePnl);
+        b.recordResult(tapePnl, equityUsd + tapePnl);
+      }
       b.pushDecision({
         kind: "swap",
         mode,
         reason: decision.reason + note,
         priceUsd: snap.leefUsd,
         txid,
+        pnlUsd: tapePnl,
       });
       toast({
         title: `${live ? "Live" : "Unsigned"} ${decision.tokenIn}→${decision.tokenOut}`,

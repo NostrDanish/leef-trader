@@ -3,6 +3,7 @@ import { bestExecutionRoute } from "./route-optimizer";
 import { planLeefTape, planNextAction } from "./next-action";
 import {
   DEFAULT_GROWTH_TARGETS,
+  hopsForGrowth,
   normalizeTargets,
   planGrowthAction,
   type GrowthMode,
@@ -139,7 +140,7 @@ export const STRATEGIES: {
     name: "Treasure growth",
     tagline: "Don't trade pairs. Grow assets.",
     detail:
-      "You name 1–3 treasures (e.g. LEEF 60 / WAX 30 / TLM 10). The bot's job is to increase those token counts over time without destroying portfolio value. HOLD when the market doesn't offer a strong enough opportunity — and it will tell you why.",
+      "You name 1–3 treasures (e.g. LEEF 60 / WAX 30 / TLM 10). The Growth Brain maps every holding onto the book and asks what sequence increases those token counts. Token count is the objective; economic value, liquidity, fees and execution risk are hard constraints. HOLD is a successful decision — and it always says why.",
     bestFor: "Accumulate a bag",
   },
 ];
@@ -432,6 +433,7 @@ export function adaptiveCooldownSec(
     strategy === "unleashed"
   )
     factor = 0.5;
+  else if (strategy === "growth") factor = 0.75;
   else if (strategy === "dca") factor = 2;
   if (lastPnlUsd < 0) factor *= 1.5;
   return Math.max(10, Math.round(baseSec * factor));
@@ -452,8 +454,9 @@ export function hopsForStrategy(strategy: BotStrategy, cap: number, seed = Date.
   const c = Math.min(10, Math.max(1, Math.floor(cap || 4)));
   const r = ((seed >>> 0) % 3) + 1;
   if (strategy === "spread" || strategy === "volume") return Math.min(c, 2);
-  if (strategy === "volume-x" || strategy === "unleashed" || strategy === "growth")
+  if (strategy === "volume-x" || strategy === "unleashed")
     return Math.min(c, Math.max(2, r + 1));
+  if (strategy === "growth") return hopsForGrowth("balanced", c);
   if (strategy === "signal" || strategy === "meanrev") return Math.min(c, 3);
   return Math.min(c, 4);
 }
@@ -768,9 +771,11 @@ export function evaluateBot(input: BotInput): Decision {
     position: input.position,
     balances: input.balances,
   });
-  if ("error" in bounds) return hold(bounds.error);
-  const minWax = bounds.minIn;
-  const maxWax = bounds.maxIn;
+  // Treasure growth is inventory-agnostic — a missing quote mark must not
+  // block converting TLM/USDC/… into the named treasures.
+  if ("error" in bounds && strategy !== "growth") return hold(bounds.error);
+  const minWax = "error" in bounds ? 0 : bounds.minIn;
+  const maxWax = "error" in bounds ? 0 : bounds.maxIn;
 
   if (input.force === "buy") {
     if (maxWax + 1e-12 < minWax) {
@@ -1030,9 +1035,9 @@ export function evaluateBot(input: BotInput): Decision {
   const tryBuy = (reason: string, expectedGrossPct: number, confidence: number): Decision =>
     tryBuyWith(reason, expectedGrossPct, confidence, maxWax);
 
-  /* ---------------- position management (all strategies) ---------- */
+  /* ---------------- position management (pair strategies) ---------- */
 
-  if (position && position.amountLeef > 0) {
+  if (position && position.amountLeef > 0 && strategy !== "growth") {
     const pnlPct = (baseUsd / position.entryUsd - 1) * 100;
     // Chain truth beats local tracking: never build a transfer for more base
     // than the wallet actually holds — that tx reverts with overdrawn balance.
@@ -1504,23 +1509,30 @@ export function evaluateBot(input: BotInput): Decision {
       return pick;
     }
     case "growth": {
-      const hops = hopsForStrategy("growth", risk.maxHops, now);
+      const mode = input.growthMode ?? "balanced";
+      const hops = hopsForGrowth(mode, risk.maxHops);
+      const ageMs = now - Date.parse(snap.fetchedAt);
+      // Cap per holding inside the growth engine — do not bind to the quote-token
+      // wallet (the treasure might be bought with TLM/USDC while WAX is empty).
+      const maxUsd = Math.max(risk.minTradeUsd, risk.maxPositionUsd);
       const planned = planGrowthAction(snap, input.balances, {
         targets: normalizeTargets(input.growthTargets ?? DEFAULT_GROWTH_TARGETS),
-        mode: input.growthMode ?? "balanced",
+        mode,
         minUsd: risk.minTradeUsd,
-        maxUsd: Math.max(risk.minTradeUsd, bounds.effectiveMaxUsd || risk.maxPositionUsd),
+        maxUsd,
         maxHops: hops,
         seed: now,
+        quoteAgeMs: Number.isFinite(ageMs) ? Math.max(0, ageMs) : 0,
+        maxQuoteAgeMs: risk.maxQuoteAgeSec * 1000,
       });
-      if ("hold" in planned) return hold(planned.hold);
+      if ("hold" in planned) return hold(planned.explain.join(" · "));
       return {
         kind: "swap",
         tokenIn: planned.tokenIn,
         tokenOut: planned.tokenOut,
         amountIn: planned.amountIn,
         route: planned.route,
-        reason: `Growth ${planned.explain[0]} · ${planned.explain[1]}`,
+        reason: planned.explain.join(" · "),
       };
     }
     case "spread":
