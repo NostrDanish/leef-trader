@@ -47,6 +47,7 @@ import {
   snapshotTargets,
   targetUnitPnl,
 } from "@/lib/leef/growth-engine";
+import { classifyRegime } from "@/lib/leef/regime";
 
 const KIND_VARIANT: Record<
   BotDecisionLog["kind"],
@@ -314,8 +315,9 @@ export function BotDesk({ snap }: { snap: LeefSnapshot }) {
         {/* ------------------------------ right rail ------------------------------ */}
         <div className="flex min-w-0 flex-col gap-5 lg:col-span-3">
           <Card className="border-accent/30 bg-accent/5 p-4 sm:p-5">
-            <div className="text-xs font-medium uppercase tracking-wider text-accent">
-              Next evaluation · {strat.name}
+            <div className="flex items-center justify-between gap-2 text-xs font-medium uppercase tracking-wider text-accent">
+              <span>Next evaluation · {strat.name}</span>
+              <RegimeBadge snap={snap} />
             </div>
             <p className="mt-1 text-sm">
               {preview.kind === "buy" && (
@@ -533,6 +535,29 @@ export function BotDesk({ snap }: { snap: LeefSnapshot }) {
 }
 
 /* ------------------------------------------------------------------ */
+
+function RegimeBadge({ snap }: { snap: LeefSnapshot }) {
+  const series = useBot((s) => s.series);
+  const r = classifyRegime({
+    series,
+    poolPricesUsd: snap.pools.map((p) => p.usdPerLeef ?? 0).filter((v) => v > 0),
+  });
+  if (r.regime === "unknown") return null;
+  const tone =
+    r.regime === "trend_down" || r.regime === "high_vol"
+      ? "border-sell/40 text-sell"
+      : r.regime === "dislocation"
+        ? "border-warn/40 text-warn"
+        : "border-leef/40 text-leef";
+  return (
+    <span
+      className={cn("rounded-full border px-2 py-0.5 font-mono normal-case tracking-normal", tone)}
+      title={r.explain.join("\n")}
+    >
+      {r.regime}
+    </span>
+  );
+}
 
 function PositionPnl({ snap }: { snap: LeefSnapshot }) {
   const position = useBot((s) => s.position);

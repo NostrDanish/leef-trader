@@ -8,6 +8,46 @@ that ranks already-scored opportunities by expected value
 (`net × execProb × freshness × inventory × calibration`) — not by headline
 percent. Exits are never edge-gated (risk actions must always fire).
 
+## Regime engine + exact-quote gate (Strategy V2 layer)
+
+**Regime engine** (`src/lib/leef/regime.ts`): one deterministic
+classification per evaluation from the bot's 30s print series plus the
+cross-pool book — `dislocation` (pools disagree ≥ 0.35% — arb territory,
+directional entries damped), `trend_up` / `trend_down` (EMA8 vs EMA21
+separation measured in units of per-print volatility), `high_vol` /
+`low_vol`, `range`, `unknown` (warming up — no vetoes). Every strategy
+reads the same verdict:
+
+- **trend_down**: signal buys off, DCA vetoed (never average into a
+  downtrend), mean-reversion needs a 3-print hook (falling-knife filter),
+  grid damped, spread arb boosted.
+- **range**: mean-reversion and grid boosted, signal damped.
+- **high_vol**: arb boosted, DCA and growth clips damped.
+- **dislocation**: arb boosted most; everything directional damped.
+- Regime weights feed Auto's candidate ranking via strategy confidence, so
+  the ensemble favors the engine that fits the market. **Vetoes only ever
+  suppress entries — exits always fire.**
+
+**Universal exact-quote gate** (`src/lib/leef/exact-gate.ts` +
+`verifyExecutableRoute` in the loop): the route graph prices with
+constant-product math, but Alcor is a CLMM — the local quote is never the
+execution truth. Before any signer is touched, every entry re-runs its own
+thesis on the fresh executable venue quote for the exact size:
+
+- **buy** → `exactEntryVerdict`: exact entry execution cost + modeled exit
+  vs the strategy's expected gross and `minNetEdgePct`.
+- **swap (growth)** → `verifyGrowthExact`: the treasure-growth firewall on
+  exact target deltas.
+- **swap (tape / next-hop / volume-x)** → `exactSwapVerdict`: exact net %
+  vs the decision's floor (profit ≥ 0, tape ≥ −loss budget), including the
+  chain-guaranteed min-out worst case.
+- **arb** → already exact: `quoteArbPlan` re-quotes both legs through the
+  Alcor router and enforces the profit floor on-chain in the memos.
+
+If the exact quote fails the thesis, the trade dies as HOLD. The four
+quantities are modeled separately: expected output, guaranteed (min-out)
+output, execution input, and the on-chain protected floor.
+
 **Treasure growth** is different: it does not trade a pair. It grows 1–3
 named assets. See [below](#treasure-growth--dont-trade-pairs-grow-assets).
 

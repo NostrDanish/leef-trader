@@ -11,6 +11,7 @@ import {
   type GrowthTarget,
 } from "./growth-engine";
 import { realizedVolPerSec, usdPriceOf } from "./cost-model";
+import { classifyRegime, regimeWeight } from "./regime";
 import { balanceForIdentifier, markPortfolioUsd } from "@/lib/wallet/balances";
 import {
   decorate,
@@ -313,6 +314,11 @@ export type Decision =
       opportunity?: ScoredOpportunity;
       /** Treasure-growth plan — re-verified against the exact venue quote before sign. */
       growthPlan?: GrowthPlan;
+      /**
+       * Exact-gate floor for non-growth swaps: minimum acceptable net percent
+       * on the venue-quoted output (profit paths ≥ 0; tape ≥ −loss budget).
+       */
+      minNetPct?: number;
     }
   | { kind: "sell"; amountLeef: number; route: SwapRoute; reason: string; confidence: number }
   | {
@@ -670,6 +676,8 @@ function scoreArbOpportunity(opts: {
   snap: LeefSnapshot;
   balances: Record<string, number>;
   calibration?: CalibrationMemory;
+  /** Regime multiplier — dislocation boosts arb, trend regimes don't care. */
+  regimeFactor?: number;
 }): ScoredOpportunity {
   const netUsd = (opts.plan.waxOut - opts.plan.waxIn) * opts.waxUsd;
   // Atomic two-leg in ONE transaction — hop count is the worse leg, not the sum.
@@ -704,7 +712,7 @@ function scoreArbOpportunity(opts: {
     maxQuoteAgeMs: opts.maxQuoteAgeMs,
     inventoryFactor: 1, // round-trip: inventory-neutral
     calibrationHaircut: calibrationHaircut(opts.calibration),
-    strategyConfidence: 0.85,
+    strategyConfidence: 0.85 * (opts.regimeFactor ?? 1),
   });
 }
 
@@ -763,6 +771,16 @@ export function evaluateBot(input: BotInput): Decision {
   }
 
   const signal = botSignal(input.series);
+
+  /* ------------------------- market regime ------------------------- */
+  // One classification per evaluation, shared by every strategy. Vetoes only
+  // ever suppress ENTRIES — exits above already ran.
+  const regime = classifyRegime({
+    series: input.series,
+    poolPricesUsd: snap.pools.map((p) => p.usdPerLeef ?? 0).filter((v) => v > 0),
+  });
+  const regTag = regime.regime !== "unknown" ? ` [${regime.regime}]` : "";
+  const regW = (source: string) => regimeWeight(regime.regime, source);
 
   /* ------------------------- manual overrides ---------------------- */
 
@@ -859,6 +877,7 @@ export function evaluateBot(input: BotInput): Decision {
         amountIn: tape.amountIn,
         route: tape.route,
         opportunity: scored,
+        minNetPct: -risk.maxEchoLossPct,
         reason: `Volume-X ${tape.tokenIn}→${tape.tokenOut} · $${tape.usdIn.toFixed(4)} · net ${tape.netPct.toFixed(2)}% · ${tape.route.label}`,
       };
     }
@@ -1190,6 +1209,9 @@ export function evaluateBot(input: BotInput): Decision {
       const conf = Math.round(signal.confidence * 100);
       const mom = momentumPct(input.series);
       if (signal.bias === "buy" && conf >= risk.minConfidence) {
+        if (regime.regime === "trend_down") {
+          return hold(`Engine vote BUY ${conf}% but regime is trend_down — not buying a downtrend`);
+        }
         const votes = signal.readings
           .filter((r) => r.score > 0.12)
           .map((r) => r.id.toUpperCase())
@@ -1217,9 +1239,17 @@ export function evaluateBot(input: BotInput): Decision {
         return hold(`Mean-reversion blocked — 12-print momentum ${(mom * 100).toFixed(1)}% (trend, not a dip)`);
       }
       if (rsi <= 30 && pctB <= 0.1) {
-        const expected = Math.max(0, (distToMidPct ?? 0) * 0.7);
+        // Falling-knife filter: in a down regime "oversold" can stay oversold.
+        // Require a 3-print hook (short-term momentum turned up) before buying.
+        if (regime.regime === "trend_down") {
+          const hook = momentumPct(input.series, 3);
+          if (hook <= 0) {
+            return hold(`Oversold in a downtrend but no 3-print hook yet${regTag} — falling-knife filter`);
+          }
+        }
+        const expected = Math.max(0, (distToMidPct ?? 0) * 0.7) * regW("meanrev");
         return tryBuy(
-          `Oversold · RSI ${rsi.toFixed(0)} ≤ 30, %B ${pctB.toFixed(2)} at the lower band`,
+          `Oversold · RSI ${rsi.toFixed(0)} ≤ 30, %B ${pctB.toFixed(2)} at the lower band${regTag}`,
           expected,
           signal.confidence,
         );
@@ -1241,12 +1271,21 @@ export function evaluateBot(input: BotInput): Decision {
       return hold(`Grid armed · next buy ${distDown.toFixed(1)}% below, next sell +${step.toFixed(2)}% above last fill`);
     }
     case "dca": {
+      // Trend protection: DCA never interprets a falling price as bullish.
+      if (regime.regime === "trend_down") {
+        return hold(`Regime trend_down${regTag} — DCA paused (never average into a downtrend)`);
+      }
       const mom = momentumPct(input.series, 8);
       // Skip a clip when the tape is ripping against us; size stays risk-capped.
       if (mom > 0.05) {
         return hold(`DCA waiting — 8-print momentum +${(mom * 100).toFixed(1)}% (not averaging into a spike)`);
       }
-      return tryBuy("Scheduled accumulation clip", goals.takeProfitPct, signal.confidence);
+      // trend_down already vetoed above — regW("dca") is always > 0 here.
+      return tryBuy(
+        `Scheduled accumulation clip${regTag}`,
+        goals.takeProfitPct * regW("dca"),
+        signal.confidence,
+      );
     }
     case "auto": {
       /* Auto is the orchestrator, not a private economist. Each strategy
@@ -1281,6 +1320,7 @@ export function evaluateBot(input: BotInput): Decision {
             snap,
             balances: input.balances,
             calibration: calOf("spread"),
+            regimeFactor: regW("spread"),
           });
           const why = rejectOpportunity(opp, oppGate);
           if (why) {
@@ -1311,34 +1351,52 @@ export function evaluateBot(input: BotInput): Decision {
       }
 
       const theses: { reason: string; expected: number; confidence: number }[] = [];
-      if (signal.warmed && signal.bias === "buy" && Math.round(signal.confidence * 100) >= risk.minConfidence) {
+      if (
+        signal.warmed &&
+        signal.bias === "buy" &&
+        Math.round(signal.confidence * 100) >= risk.minConfidence &&
+        regW("signal") > 0.4
+      ) {
         const mom = momentumPct(input.series);
         theses.push({
-          reason: `Auto: engine vote BUY ${Math.round(signal.confidence * 100)}% conf`,
-          expected: goals.takeProfitPct * (mom < 0 ? 0.6 : 1),
-          confidence: 1,
+          reason: `Auto: engine vote BUY ${Math.round(signal.confidence * 100)}% conf${regTag}`,
+          expected: goals.takeProfitPct * (mom < 0 ? 0.6 : 1) * regW("signal"),
+          confidence: regW("signal"),
         });
       } else if (!signal.warmed) {
         considered.push(`engines warming up ${input.series.length}/${BOT_WARMUP_POINTS}`);
+      } else if (signal.bias === "buy" && regW("signal") <= 0.4) {
+        considered.push(`signal vetoed by regime${regTag}`);
       }
       {
         const { rsi, pctB, distToMidPct } = reversionRead(input.series);
-        if (rsi != null && pctB != null && momentumPct(input.series, 12) >= -0.04 && rsi <= 30 && pctB <= 0.1) {
+        const hooked = regime.regime !== "trend_down" || momentumPct(input.series, 3) > 0;
+        if (
+          rsi != null &&
+          pctB != null &&
+          momentumPct(input.series, 12) >= -0.04 &&
+          rsi <= 30 &&
+          pctB <= 0.1 &&
+          hooked &&
+          regW("meanrev") > 0
+        ) {
           theses.push({
-            reason: `Auto: oversold RSI ${rsi.toFixed(0)} / %B ${pctB.toFixed(2)}`,
-            expected: Math.max(0, (distToMidPct ?? 0) * 0.7),
-            confidence: 1,
+            reason: `Auto: oversold RSI ${rsi.toFixed(0)} / %B ${pctB.toFixed(2)}${regTag}`,
+            expected: Math.max(0, (distToMidPct ?? 0) * 0.7) * regW("meanrev"),
+            confidence: regW("meanrev"),
           });
+        } else if (rsi != null && rsi <= 30 && !hooked) {
+          considered.push(`meanrev held — oversold but no hook${regTag}`);
         }
       }
       {
         const step = adaptiveGridStepPct(risk.gridStepPct, realizedVolPerSec(input.series));
         const anchor = input.gridAnchor;
-        if (anchor == null || baseUsd <= anchor * (1 - step / 100)) {
+        if ((anchor == null || baseUsd <= anchor * (1 - step / 100)) && regW("grid") > 0) {
           theses.push({
-            reason: `Auto: grid step −${step.toFixed(2)}% zone`,
-            expected: step * 0.8,
-            confidence: 1,
+            reason: `Auto: grid step −${step.toFixed(2)}% zone${regTag}`,
+            expected: step * 0.8 * regW("grid"),
+            confidence: regW("grid"),
           });
         }
       }
@@ -1381,6 +1439,7 @@ export function evaluateBot(input: BotInput): Decision {
               amountIn: next.amountIn,
               route: next.route,
               opportunity: scoredNext,
+              minNetPct: Math.max(0, risk.minNetEdgePct),
               reason: `Auto: ${next.kind} ${next.tokenIn}→${next.tokenOut} · EV $${scoredNext.expectedValueUsd.toFixed(4)} · net ${next.netPct.toFixed(2)}%`,
             });
             considered.push(`${next.kind} ${next.tokenIn}→${next.tokenOut} EV $${scoredNext.expectedValueUsd.toFixed(4)}`);
@@ -1412,6 +1471,7 @@ export function evaluateBot(input: BotInput): Decision {
             snap,
             balances: input.balances,
             calibration: calOf("volume"),
+            regimeFactor: regW("volume"),
           });
           const why = rejectOpportunity(opp, oppGate);
           if (why) {
@@ -1430,7 +1490,7 @@ export function evaluateBot(input: BotInput): Decision {
           }
         }
       }
-      return hold(`Auto scan: ${considered.join(" · ") || "nothing in range"} — waiting`);
+      return hold(`Auto scan${regTag}: ${considered.join(" · ") || "nothing in range"} — waiting`);
     }
     case "unleashed": {
       const hops = hopsForStrategy("unleashed", risk.maxHops, now);
@@ -1472,6 +1532,7 @@ export function evaluateBot(input: BotInput): Decision {
           tokenOut: tape.tokenOut,
           amountIn: tape.amountIn,
           route: tape.route,
+          minNetPct: -risk.maxEchoLossPct,
           reason: `Unleashed tape ${tape.tokenIn}→${tape.tokenOut} · $${tape.usdIn.toFixed(4)}`,
         });
       }
@@ -1487,6 +1548,7 @@ export function evaluateBot(input: BotInput): Decision {
           tokenOut: next.tokenOut,
           amountIn: next.amountIn,
           route: next.route,
+          minNetPct: -risk.maxEchoLossPct,
           reason: `Unleashed ${next.kind} ${next.tokenIn}→${next.tokenOut} · ${next.netPct.toFixed(2)}%`,
         });
       }

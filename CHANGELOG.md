@@ -2,6 +2,28 @@
 
 All notable changes to LEEF Trader. Dates are commit-era, not release tags.
 
+## Unreleased — Strategy V2 layer: regime engine + universal exact-quote gate
+
+Audit-driven. Infrastructure untouched (signer, policy firewall, no
+rebroadcast, reconciliation all unchanged).
+
+- **Regime engine** (`regime.ts`): one deterministic classification per
+  evaluation — dislocation / trend_up / trend_down / high_vol / low_vol /
+  range / unknown. EMA8-vs-21 separation measured in units of per-print
+  volatility, plus cross-pool price disagreement. Shared by all strategies.
+- **Regime vetoes (entries only; exits always fire):** trend_down turns off
+  signal buys and DCA, and mean-reversion needs a 3-print hook
+  (falling-knife filter). Range boosts meanrev/grid. Dislocation and
+  high_vol boost spread arb. Auto's ensemble ranking consumes the same
+  weights through strategy confidence.
+- **Universal exact-quote gate** (`exact-gate.ts`): every entry re-runs its
+  thesis on the fresh executable venue quote for the exact size before any
+  signer is touched. Buys use `exactEntryVerdict` (exact entry cost +
+  modeled exit vs net-edge floor), growth swaps use `verifyGrowthExact`,
+  other swaps use `exactSwapVerdict` (exact + guaranteed min-out vs the
+  decision's floor). Arb already re-quoted both legs — unchanged.
+- Desk shows the current regime next to the strategy preview.
+
 ## Unreleased — Growth V2: exact-quote gate + wallet-relative mix
 
 Audit-driven fixes to the Treasure growth engine:

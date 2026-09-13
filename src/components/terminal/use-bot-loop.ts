@@ -11,6 +11,7 @@ import { markDeadOpportunity, opportunityFingerprint } from "@/lib/leef/opportun
 import { fmtNum } from "@/lib/leef/format";
 import { fetchAlcorRouteCached, verifyExecutableRoute } from "@/lib/leef/quote-verify";
 import { verifyGrowthExact } from "@/lib/leef/growth-engine";
+import { exactEntryVerdict, exactSwapVerdict } from "@/lib/leef/exact-gate";
 import { exceedsMaxPositionUsd, usdToTokenBounds } from "@/lib/leef/risk-usd";
 import { lastSnapshotTimings } from "@/lib/leef/snapshot";
 import { bestExecutionRoute } from "@/lib/leef/route-optimizer";
@@ -338,6 +339,62 @@ async function runBotOnceInner(
         score: decision.edge?.score ?? 0,
       },
     };
+
+    // Universal exact-quote gate for entries: the size scan priced the book
+    // with constant-product math; Alcor is CLMM. Re-run the entry thesis on
+    // the venue's exact executable output for this size before the governor.
+    {
+      const tQuote = Date.now();
+      try {
+        const verified = await verifyExecutableRoute({
+          route: decision.route,
+          amountIn: decision.amountWax,
+          slippagePct: b.risk.slippage,
+          account: live ? w.account : "paper.leef",
+          snap: book,
+          deadlineMs: 4_000,
+        });
+        timings.quoteVerifyMs = Date.now() - tQuote;
+        if (verified.trust !== "executable") {
+          const reason = "Exact-quote gate: venue quote is not executable";
+          b.pushDecision({ kind: "hold", mode, reason, priceUsd: book.leefUsd });
+          b.setLastReason(reason);
+          return { kind: "hold", reason };
+        }
+        const verdict = exactEntryVerdict({
+          snap: book,
+          route: decision.route,
+          amountIn: decision.amountWax,
+          expectedOut: verified.expectedOut,
+          exitRoute: fresh.best.exitRoute,
+          expectedGrossPct: thesis,
+          minNetEdgePct: b.risk.minNetEdgePct,
+          volPerSec: realizedVolPerSec(b.series),
+        });
+        if (!verdict.pass) {
+          const reason = `Exact-quote gate: ${verdict.reason}`;
+          b.pushDecision({ kind: "hold", mode, reason, priceUsd: book.leefUsd });
+          b.setLastReason(reason);
+          return { kind: "hold", reason };
+        }
+        decision = {
+          ...decision,
+          route: { ...decision.route, amountOut: verified.expectedOut },
+          edge: {
+            netEdgePct: verdict.netEdgePct,
+            netProfitUsd: (verdict.netEdgePct / 100) * (decision.amountWax * (bounds.quoteUsd || 1)),
+            score: decision.edge?.score ?? 0,
+          },
+          reason: `${decision.reason} · ${verdict.reason}`,
+        };
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : "exact quote failed";
+        const reason = `Exact-quote gate: ${msg}`;
+        b.pushDecision({ kind: "hold", mode, reason, priceUsd: book.leefUsd });
+        b.setLastReason(reason);
+        return { kind: "hold", reason };
+      }
+    }
   }
   if (decision.kind === "arb") {
     const maxIn = bounds.maxIn;
@@ -457,20 +514,69 @@ async function runBotOnceInner(
             b.setLastReason(reason);
             return { kind: "hold", reason };
           }
+        decision = {
+          ...decision,
+          // Paper fills and P&L settle from the exact venue quote too.
+          route: { ...decision.route, amountOut: verified.expectedOut },
+          reason: `${decision.reason} · ${verdict.reason}`,
+        };
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : "exact quote failed";
+          const reason = `Growth exact-quote gate: ${msg}`;
+          b.pushDecision({ kind: "hold", mode, reason, priceUsd: book.leefUsd });
+          b.setLastReason(reason);
+          return { kind: "hold", reason };
+        }
+      }
+
+      // Universal exact-quote gate for every other swap (tape / next-hop /
+      // volume-x): the venue must confirm the decision's own net floor.
+      if (!decision.growthPlan && decision.minNetPct != null) {
+        const tQuote = Date.now();
+        try {
+          const verified = await verifyExecutableRoute({
+            route: decision.route,
+            amountIn: decision.amountIn,
+            slippagePct: b.risk.slippage,
+            account: live ? w.account : "paper.leef",
+            snap: book,
+            deadlineMs: 4_000,
+          });
+          timings.quoteVerifyMs = Date.now() - tQuote;
+          if (verified.trust !== "executable") {
+            const reason = "Exact-quote gate: venue quote is not executable";
+            b.pushDecision({ kind: "hold", mode, reason, priceUsd: book.leefUsd });
+            b.setLastReason(reason);
+            return { kind: "hold", reason };
+          }
+          const guaranteedOut = verified.verified[verified.verified.length - 1]?.minOut;
+          const verdict = exactSwapVerdict({
+            snap: book,
+            route: decision.route,
+            amountIn: decision.amountIn,
+            expectedOut: verified.expectedOut,
+            guaranteedOut,
+            minNetPct: decision.minNetPct,
+          });
+          if (!verdict.pass) {
+            const reason = `Exact-quote gate: ${verdict.reason}`;
+            b.pushDecision({ kind: "hold", mode, reason, priceUsd: book.leefUsd });
+            b.setLastReason(reason);
+            return { kind: "hold", reason };
+          }
           decision = {
             ...decision,
-            // Paper fills and P&L settle from the exact venue quote too.
             route: { ...decision.route, amountOut: verified.expectedOut },
             reason: `${decision.reason} · ${verdict.reason}`,
           };
-      } catch (err) {
-        const msg = err instanceof Error ? err.message : "exact quote failed";
-        const reason = `Growth exact-quote gate: ${msg}`;
-        b.pushDecision({ kind: "hold", mode, reason, priceUsd: book.leefUsd });
-        b.setLastReason(reason);
-        return { kind: "hold", reason };
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : "exact quote failed";
+          const reason = `Exact-quote gate: ${msg}`;
+          b.pushDecision({ kind: "hold", mode, reason, priceUsd: book.leefUsd });
+          b.setLastReason(reason);
+          return { kind: "hold", reason };
+        }
       }
-    }
     }
 
   if (decision.kind === "buy") {

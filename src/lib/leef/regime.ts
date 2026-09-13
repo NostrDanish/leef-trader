@@ -1,0 +1,228 @@
+/**
+ * Market Regime Engine — one deterministic classification per evaluation,
+ * shared by every strategy.
+ *
+ * Strategies don't each get to decide "is this a trend?". The regime engine
+ * reads the same 30s print series and the cross-pool book once, classifies,
+ * and the strategies/ensemble consume the verdict:
+ *
+ *   dislocation  — pools disagree (arb territory; directional entries off)
+ *   trend_up     — EMA fast > slow with enough separation, vol acceptable
+ *   trend_down   — inverse. Dip-buying is suppressed, not "a dip"
+ *   high_vol     — size down, arb up
+ *   low_vol      — tighter spreads OK
+ *   range        — mean reversion / grid territory
+ *   unknown      — warming up; no vetoes
+ *
+ * Everything here is pure math on the cached series — no I/O.
+ */
+
+export type MarketRegime =
+  | "trend_up"
+  | "trend_down"
+  | "range"
+  | "high_vol"
+  | "low_vol"
+  | "dislocation"
+  | "unknown";
+
+export type RegimeVerdict = {
+  regime: MarketRegime;
+  /** EMA(fast)−EMA(slow) separation, percent of price. */
+  trendSepPct: number;
+  /** Realized vol per print, percent. */
+  volPct: number;
+  /** Cross-pool price disagreement, percent (0 when one book). */
+  dislocationPct: number;
+  /** 0–1: how much data backs this classification. */
+  confidence: number;
+  explain: string[];
+};
+
+export type RegimeInput = {
+  /** Bot USD print series (oldest → newest). */
+  series: { t: number; usd: number }[];
+  /** Pool spot prices for dislocation detection (USD per unit of base). */
+  poolPricesUsd?: number[];
+};
+
+const MIN_PRINTS = 34;
+const EMA_FAST = 8;
+const EMA_SLOW = 21;
+/** Trend needs fast/slow separation beyond this fraction of per-print vol. */
+const TREND_SIGMA = 1.1;
+const HIGH_VOL_PCT = 0.9;
+const LOW_VOL_PCT = 0.12;
+const DISLOCATION_PCT = 0.35;
+
+function emaLast(values: number[], period: number): number | null {
+  if (values.length < period) return null;
+  const k = 2 / (period + 1);
+  let ema = values.slice(0, period).reduce((s, v) => s + v, 0) / period;
+  for (let i = period; i < values.length; i++) ema = values[i]! * k + ema * (1 - k);
+  return ema;
+}
+
+function volPerPrintPct(series: { t: number; usd: number }[], maxPoints = 40): number {
+  const pts = series.slice(-maxPoints);
+  if (pts.length < 3) return 0;
+  const rets: number[] = [];
+  let dtSum = 0;
+  for (let i = 1; i < pts.length; i++) {
+    const a = pts[i - 1]!;
+    const b = pts[i]!;
+    if (a.usd > 0 && b.usd > 0 && b.t > a.t) {
+      rets.push(b.usd / a.usd - 1);
+      dtSum += (b.t - a.t) / 1000;
+    }
+  }
+  const n = rets.length;
+  if (n < 2 || dtSum <= 0) return 0;
+  const m = rets.reduce((s, r) => s + r, 0) / n;
+  const variance = rets.reduce((s, r) => s + (r - m) * (r - m), 0) / (n - 1);
+  const secPerTick = dtSum / n;
+  const perSec = secPerTick > 0 ? Math.sqrt(variance) / Math.sqrt(secPerTick) : Math.sqrt(variance);
+  return perSec * Math.sqrt(secPerTick) * 100;
+}
+
+export function classifyRegime(input: RegimeInput): RegimeVerdict {
+  const { series } = input;
+  if (series.length < MIN_PRINTS) {
+    return {
+      regime: "unknown",
+      trendSepPct: 0,
+      volPct: 0,
+      dislocationPct: 0,
+      confidence: 0,
+      explain: [`warming up — ${series.length}/${MIN_PRINTS} prints`],
+    };
+  }
+
+  const closes = series.map((p) => p.usd).filter((v) => v > 0);
+  const fast = emaLast(closes, EMA_FAST);
+  const slow = emaLast(closes, EMA_SLOW);
+  const last = closes[closes.length - 1] ?? 0;
+  const trendSepPct = fast != null && slow != null && last > 0 ? ((fast - slow) / last) * 100 : 0;
+  const volPct = volPerPrintPct(series);
+
+  const prices = (input.poolPricesUsd ?? []).filter((p) => p > 0);
+  let dislocationPct = 0;
+  if (prices.length >= 2) {
+    const lo = Math.min(...prices);
+    const hi = Math.max(...prices);
+    if (lo > 0) dislocationPct = (hi / lo - 1) * 100;
+  }
+
+  const confidence = Math.min(1, (series.length - MIN_PRINTS + 1) / 60 + 0.5);
+
+  // Dislocation wins: when pools disagree, directional signals are noise.
+  if (dislocationPct >= DISLOCATION_PCT) {
+    return {
+      regime: "dislocation",
+      trendSepPct,
+      volPct,
+      dislocationPct,
+      confidence,
+      explain: [
+        `pools disagree ${dislocationPct.toFixed(2)}% — cross-book arb territory`,
+        `trend ${trendSepPct >= 0 ? "+" : ""}${trendSepPct.toFixed(2)}% · vol ${volPct.toFixed(2)}%/print`,
+      ],
+    };
+  }
+  if (volPct >= HIGH_VOL_PCT) {
+    return {
+      regime: "high_vol",
+      trendSepPct,
+      volPct,
+      dislocationPct,
+      confidence,
+      explain: [`vol ${volPct.toFixed(2)}%/print ≥ ${HIGH_VOL_PCT}% — size down, arb up`],
+    };
+  }
+  const sigma = Math.max(0.05, volPct);
+  if (Math.abs(trendSepPct) >= TREND_SIGMA * sigma && Math.abs(trendSepPct) >= 0.08) {
+    const up = trendSepPct > 0;
+    return {
+      regime: up ? "trend_up" : "trend_down",
+      trendSepPct,
+      volPct,
+      dislocationPct,
+      confidence,
+      explain: [
+        `EMA${EMA_FAST} ${up ? "above" : "below"} EMA${EMA_SLOW} by ${Math.abs(trendSepPct).toFixed(2)}% (${(Math.abs(trendSepPct) / sigma).toFixed(1)}σ of print vol)`,
+      ],
+    };
+  }
+  if (volPct <= LOW_VOL_PCT) {
+    return {
+      regime: "low_vol",
+      trendSepPct,
+      volPct,
+      dislocationPct,
+      confidence,
+      explain: [`vol ${volPct.toFixed(2)}%/print ≤ ${LOW_VOL_PCT}% — tight spreads viable`],
+    };
+  }
+  return {
+    regime: "range",
+    trendSepPct,
+    volPct,
+    dislocationPct,
+    confidence,
+    explain: [
+      `no trend (${Math.abs(trendSepPct).toFixed(2)}% < ${(TREND_SIGMA * sigma).toFixed(2)}% band) — mean reversion / grid territory`,
+    ],
+  };
+}
+
+/**
+ * Strategy multiplier per regime. 1 = neutral, >1 = favored, <1 = damped,
+ * 0 = vetoed. Applied to strategy confidence / candidate ranking — never to
+ * exits (risk actions always fire).
+ */
+export function regimeWeight(regime: MarketRegime, source: string): number {
+  switch (regime) {
+    case "trend_up":
+      if (source === "signal") return 1.2;
+      if (source === "meanrev") return 0.5;
+      if (source === "grid") return 0.6;
+      if (source === "dca") return 0.8;
+      if (source === "growth") return 1.1;
+      return 1;
+    case "trend_down":
+      if (source === "signal") return 0.3; // buys basically off
+      if (source === "meanrev") return 0.4; // needs reversal confirmation
+      if (source === "grid") return 0.5;
+      if (source === "dca") return 0; // never average into a downtrend
+      if (source === "spread") return 1.1;
+      if (source === "growth") return 0.9;
+      return 1;
+    case "range":
+      if (source === "meanrev") return 1.25;
+      if (source === "grid") return 1.25;
+      if (source === "signal") return 0.7;
+      if (source === "spread") return 1.1;
+      return 1;
+    case "high_vol":
+      if (source === "spread") return 1.25;
+      if (source === "dca") return 0.5;
+      if (source === "grid") return 0.8;
+      if (source === "growth") return 0.7;
+      if (source === "volume" || source === "volume-x") return 0.7;
+      return 1;
+    case "low_vol":
+      if (source === "volume" || source === "volume-x") return 1.1;
+      if (source === "dca") return 1.1;
+      if (source === "spread") return 0.9;
+      return 1;
+    case "dislocation":
+      if (source === "spread") return 1.3;
+      if (source === "signal") return 0.4;
+      if (source === "meanrev") return 0.5;
+      if (source === "grid") return 0.5;
+      if (source === "dca") return 0.5;
+      return 0.9;
+    default:
+      return 1;
+  }
+}
