@@ -35,7 +35,7 @@ const BRANCH_DEPTH = 4;
 const BRANCH_ALL_BELOW = 16;
 const PARETO_PER_TOKEN = 8;
 
-type TokenId = string; // SYMBOL@contract
+export type TokenId = string; // SYMBOL@contract
 
 type Edge = {
   poolId: number;
@@ -52,6 +52,7 @@ type Edge = {
   pairName: string;
   venue: "alcor" | "defibox" | "taco";
 };
+export type RouteEdge = Edge;
 
 function tokenId(symbol: string, contract: string): TokenId {
   return `${symbol.toUpperCase()}@${contract}`;
@@ -546,16 +547,14 @@ function splitDirect(
  * Rank every executable path for this exact size. First row is the best
  * expected fill after hop/split economics. Empty = no trade.
  */
-export function rankExecutionRoutes(
-  pools: LeefPool[],
-  aux: AuxPool[],
+export function rankExecutionRoutesOnGraph(
+  graph: Map<TokenId, RouteEdge[]>,
   amountIn: number,
   tokenIn: string,
   tokenOut: string,
   maxHops = MAX_ROUTE_HOPS,
 ): SwapRoute[] {
   if (!(amountIn > 0)) return [];
-  const graph = buildRouteGraph(pools, aux);
   const from = resolveTokenId(tokenIn, graph);
   const to = resolveTokenId(tokenOut, graph);
   if (!from || !to) return [];
@@ -596,6 +595,17 @@ export function rankExecutionRoutes(
   return routes;
 }
 
+export function rankExecutionRoutes(
+  pools: LeefPool[],
+  aux: AuxPool[],
+  amountIn: number,
+  tokenIn: string,
+  tokenOut: string,
+  maxHops = MAX_ROUTE_HOPS,
+): SwapRoute[] {
+  return rankExecutionRoutesOnGraph(buildRouteGraph(pools, aux), amountIn, tokenIn, tokenOut, maxHops);
+}
+
 /** Best executable route for this exact size, or null (do nothing). */
 export function bestExecutionRoute(
   pools: LeefPool[],
@@ -605,6 +615,15 @@ export function bestExecutionRoute(
   tokenOut: string,
 ): SwapRoute | null {
   return rankExecutionRoutes(pools, aux, amountIn, tokenIn, tokenOut)[0] ?? null;
+}
+
+export function bestExecutionRouteOnGraph(
+  graph: Map<TokenId, RouteEdge[]>,
+  amountIn: number,
+  tokenIn: string,
+  tokenOut: string,
+): SwapRoute | null {
+  return rankExecutionRoutesOnGraph(graph, amountIn, tokenIn, tokenOut)[0] ?? null;
 }
 
 /** Alias used by existing desks — same function, size-specific graph search. */

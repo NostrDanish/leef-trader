@@ -12,7 +12,12 @@
  */
 import type { LeefSnapshot, SwapRoute } from "./types";
 import { usdPriceOf } from "./cost-model";
-import { bestExecutionRoute, MAX_ROUTE_HOPS, rankExecutionRoutes } from "./route-optimizer";
+import {
+  bestExecutionRouteOnGraph,
+  buildRouteGraph,
+  MAX_ROUTE_HOPS,
+  rankExecutionRoutesOnGraph,
+} from "./route-optimizer";
 import { canonicalBalanceEntries } from "@/lib/wallet/balances";
 
 export type NextActionPlan = {
@@ -28,12 +33,15 @@ export type NextActionPlan = {
   kind: "path" | "cycle";
 };
 
+const CYCLE_ASSETS = new Set(["WAX", "WAXUSDC", "WAXUSDT", "USDT", "PARAUSD"]);
+
 function destinationSymbols(snap: LeefSnapshot): string[] {
+  const ranked = [...snap.universe]
+    .filter((u) => u.usdPrice > 0 && u.tvlUsd >= 15)
+    .sort((a, b) => b.tvlUsd - a.tvlUsd);
   const set = new Set<string>(["WAX", "LEEF"]);
-  for (const u of snap.universe) {
-    if (u.usdPrice > 0 && u.tvlUsd >= 15) set.add(u.symbol.toUpperCase());
-  }
-  return [...set].slice(0, 12);
+  for (const u of ranked) set.add(u.symbol.toUpperCase());
+  return [...set].slice(0, 8);
 }
 
 export function planNextAction(
@@ -44,8 +52,13 @@ export function planNextAction(
   const minUsd = Math.max(0, opts.minUsd ?? 0);
   const minNetPct = opts.minNetPct ?? 0;
   const maxHops = Math.min(MAX_ROUTE_HOPS, Math.max(2, opts.maxHops ?? 4));
-  const entries = canonicalBalanceEntries(balances, snap.universe);
   const dests = destinationSymbols(snap);
+  const graph = buildRouteGraph(snap.pools, snap.aux);
+  const entries = canonicalBalanceEntries(balances, snap.universe)
+    .map((e) => ({ ...e, usd: e.amount * (usdPriceOf(e.token.symbol, snap) || 0) }))
+    .filter((e) => e.usd > 0)
+    .sort((a, b) => b.usd - a.usd)
+    .slice(0, 6);
   let best: NextActionPlan | null = null;
 
   for (const { token, amount } of entries) {
@@ -59,7 +72,7 @@ export function planNextAction(
 
     for (const dest of dests) {
       if (dest === token.symbol) continue;
-      const route = bestExecutionRoute(snap.pools, snap.aux, spend, token.symbol, dest);
+      const route = bestExecutionRouteOnGraph(graph, spend, token.symbol, dest);
       if (!route) continue;
       const pxOut = usdPriceOf(dest, snap);
       if (!(pxOut > 0)) continue;
@@ -83,9 +96,9 @@ export function planNextAction(
       }
     }
 
-    const cycle = rankExecutionRoutes(
-      snap.pools,
-      snap.aux,
+    if (!CYCLE_ASSETS.has(token.symbol.toUpperCase())) continue;
+    const cycle = rankExecutionRoutesOnGraph(
+      graph,
       spend,
       token.symbol,
       token.symbol,

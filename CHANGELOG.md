@@ -2,6 +2,15 @@
 
 All notable changes to LEEF Trader. Dates are commit-era, not release tags.
 
+## Unreleased — next-action: one graph per tick, cycles only on stables/WAX
+
+planNextAction rebuilt the full route graph once per holding×destination
+(~60 searches). Now: build once, rank destinations by TVL (top 8), scan
+at most 6 holdings, and only search same-asset cycles on WAX/stables.
+HOLD still wins when nothing clears.
+
+---
+
 ## Unreleased — holdings-based next hop; HOLD is a trade
 
 The route graph already had WAX/LEEF/TLM/USDC/TACO as nodes. Auto only
