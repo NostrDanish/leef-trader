@@ -6,7 +6,7 @@
  * real book said $0.00507.
  */
 import { describe, expect, it } from "vitest";
-import { attachUsdPrices, parseAllPools } from "./parse";
+import { attachUsdPrices, parseAllPools, waxUsdFromAux } from "./parse";
 import type { AuxPool } from "./types";
 
 const WAX = { symbol: "WAX", contract: "eosio.token", decimals: 8 };
@@ -63,6 +63,36 @@ describe("attachUsdPrices — CLMM WAX/stable pricing", () => {
       sqrtPriceX64: undefined,
     });
     const { waxUsd } = attachUsdPrices([], [pool]);
+    expect(waxUsd).toBeCloseTo(0.00507, 8);
+  });
+
+  it("anchors on the DEEPEST WAX/stable pool, not the first in array order", () => {
+    const junk = clmmWaxUsdcPool({ id: 1, tvlUsd: 10, priceA: 0.0093, priceB: 1 / 0.0093 });
+    const real = clmmWaxUsdcPool({ id: 2, tvlUsd: 250_000, priceA: 0.00507, priceB: 197.2 });
+    // Junk first in the array — the old .find() would anchor on it.
+    expect(waxUsdFromAux([junk, real])).toBeCloseTo(0.00507, 8);
+    expect(waxUsdFromAux([real, junk])).toBeCloseTo(0.00507, 8);
+  });
+
+  it("ignores WAX pools against untrusted stables", () => {
+    const fake = clmmWaxUsdcPool({
+      tokenB: { symbol: "WAXUSDC", contract: "fake.contract", decimals: 6, quantity: 930 },
+      priceA: 0.02,
+      priceB: 50,
+    });
+    expect(waxUsdFromAux([fake])).toBe(0);
+  });
+});
+
+describe("attachUsdPrices — hint is a fallback, never a freeze", () => {
+  it("fresh book math overrides the hint (regression: on-chain refresh froze a bad first load forever)", () => {
+    const pool = clmmWaxUsdcPool();
+    const { waxUsd } = attachUsdPrices([], [pool], 0.0093); // stale hint
+    expect(waxUsd).toBeCloseTo(0.00507, 8);
+  });
+
+  it("hint survives only when the book has no WAX/stable pool", () => {
+    const { waxUsd } = attachUsdPrices([], [], 0.00507);
     expect(waxUsd).toBeCloseTo(0.00507, 8);
   });
 });

@@ -142,42 +142,53 @@ export function parseAllPools(raw: unknown): { leef: LeefPool[]; aux: AuxPool[] 
   return { leef, aux };
 }
 
+/**
+ * WAX/USD from the aux book. Every WAX pool against a trusted stable is an
+ * observation; the DEEPEST one anchors (was: first-in-array — arbitrary
+ * after the venue merge, could anchor on a thin or depegged book).
+ *
+ * CLMM trap: raw reserve ratio ≠ spot price when liquidity is concentrated
+ * in a tick range. Trust the venue's quoted spot price (priceA = B per 1 A),
+ * then the on-chain sqrt-price; reserves are the last resort (Defibox/Taco
+ * are CP venues — there the reserve ratio IS the price).
+ */
+export function waxUsdFromAux(aux: AuxPool[]): number {
+  let best: { usd: number; tvlUsd: number } | null = null;
+  for (const p of Array.isArray(aux) ? aux : []) {
+    const aWax = isWaxToken(p.tokenA);
+    const bWax = isWaxToken(p.tokenB);
+    if (!aWax && !bWax) continue;
+    const stable = aWax ? p.tokenB : p.tokenA;
+    if (!isTrustedStable(stable.symbol.toUpperCase(), stable.contract)) continue;
+    const wax = aWax ? p.tokenA : p.tokenB;
+    const fromApi = aWax ? p.priceA : p.priceB;
+    const bPerA = q64Price(p.sqrtPriceX64, p.tokenA.decimals, p.tokenB.decimals);
+    const fromSqrt = bPerA != null && bPerA > 0 ? (aWax ? bPerA : 1 / bPerA) : 0;
+    const fromReserves = wax.quantity > 0 && stable.quantity > 0
+      ? stable.quantity / wax.quantity
+      : 0;
+    const usd = fromApi && fromApi > 0 ? fromApi : fromSqrt > 0 ? fromSqrt : fromReserves;
+    if (!(usd > 0)) continue;
+    if (!best || p.tvlUsd > best.tvlUsd) best = { usd, tvlUsd: p.tvlUsd };
+  }
+  return best?.usd ?? 0;
+}
+
 export function attachUsdPrices(
   pools: LeefPool[],
   aux: AuxPool[],
   waxUsdHint?: number,
   leefUsdHint?: number,
 ): { waxUsd: number; leefUsd: number; waxPerLeef: number } {
-  let waxUsd = waxUsdHint ?? 0;
-  const usdtPool = aux.find(
-    (p) =>
-      (isWaxToken(p.tokenA) &&
-        isTrustedStable(p.tokenB.symbol.toUpperCase(), p.tokenB.contract)) ||
-      (isWaxToken(p.tokenB) &&
-        isTrustedStable(p.tokenA.symbol.toUpperCase(), p.tokenA.contract)),
-  );
-  if (usdtPool && waxUsd <= 0) {
-    const wax = isWaxToken(usdtPool.tokenA) ? usdtPool.tokenA : usdtPool.tokenB;
-    const usdt = isWaxToken(usdtPool.tokenA) ? usdtPool.tokenB : usdtPool.tokenA;
-    // CLMM trap: raw reserve ratio ≠ spot price when liquidity is
-    // concentrated in a tick range. Trust the venue's quoted spot price
-    // (priceA = B per 1 A) or the sqrt-price; reserves are the last resort.
-    const waxIsA = isWaxToken(usdtPool.tokenA);
-    const fromApi = waxIsA ? usdtPool.priceA : usdtPool.priceB;
-    const bPerA = q64Price(usdtPool.sqrtPriceX64, usdtPool.tokenA.decimals, usdtPool.tokenB.decimals);
-    const fromSqrt = bPerA != null && bPerA > 0 ? (waxIsA ? bPerA : 1 / bPerA) : null;
-    if (fromApi && fromApi > 0) {
-      waxUsd = fromApi;
-    } else if (fromSqrt && fromSqrt > 0) {
-      waxUsd = fromSqrt;
-    } else if (wax.quantity > 0 && usdt.quantity > 0) {
-      waxUsd = usdt.quantity / wax.quantity;
-    }
-  }
+  // Fresh book math ALWAYS wins; the hint is a fallback for a book with no
+  // WAX/stable pool at all. (The on-chain refresh used to pass the old price
+  // as the hint, freezing a bad first-load value forever.)
+  let waxUsd = waxUsdFromAux(aux);
   const mainWax = [...pools]
     .filter((p) => isWaxToken(p.pair))
     .sort((a, b) => b.tvlUsd - a.tvlUsd)[0];
-  if (mainWax && waxUsd <= 0 && mainWax.tvlUsd > 0 && mainWax.pair.quantity > 0) {
+  if (!(waxUsd > 0) && waxUsdHint && waxUsdHint > 0) waxUsd = waxUsdHint;
+  if (mainWax && !(waxUsd > 0) && mainWax.tvlUsd > 0 && mainWax.pair.quantity > 0) {
     waxUsd = mainWax.tvlUsd / (mainWax.pair.quantity * 2);
   }
   if (waxUsd <= 0) waxUsd = 0.006;

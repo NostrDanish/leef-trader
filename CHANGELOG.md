@@ -2,6 +2,24 @@
 
 All notable changes to LEEF Trader. Dates are commit-era, not release tags.
 
+## Unreleased — WAX price: kill the freeze, anchor on the deepest book
+
+The first fix (venue spot over reserves) wasn't enough — two more bugs kept
+the wrong WAX price alive:
+
+- **Frozen hint**: the on-chain refresh passed the old `snap.waxUsd` back
+  into `attachUsdPrices` as the hint, and the hint short-circuited the pool
+  math. A bad first load stayed forever. Fresh book math now always wins;
+  the hint only applies when the book has no WAX/stable pool at all.
+- **Arbitrary anchor**: the WAX/stable pool was the first match in array
+  order — after the venue merge that's effectively random, including thin
+  or depegged books. Now the deepest-TVL trusted-stable pool anchors.
+- On-chain aux patches now carry the sqrt-derived spot price through
+  (they updated quantities while the price stayed at the API pull).
+
+Regression tests: stale-hint override, deepest-pool anchor both orders,
+untrusted-stable rejection.
+
 ## Unreleased — Crash-proof balance reads
 
 `walletBalanceRows` / `markPortfolioUsd` crashed the desk when a balance

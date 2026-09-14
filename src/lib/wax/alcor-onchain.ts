@@ -223,6 +223,11 @@ export function applyOnchainToAuxPool(pool: AuxPool, oc: OnchainPool): AuxPool |
     ...pool,
     tokenA: { ...pool.tokenA, quantity: oc.tokenA.quantity, decimals: oc.tokenA.decimals },
     tokenB: { ...pool.tokenB, quantity: oc.tokenB.quantity, decimals: oc.tokenB.decimals },
+    // Thread the chain-truth spot price through — otherwise the patch
+    // updates quantities while the price silently stays at the API pull.
+    priceA: priceAInB,
+    priceB: 1 / priceAInB,
+    sqrtPriceX64: oc.sqrtPriceX64,
   };
 }
 
