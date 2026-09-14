@@ -14,6 +14,7 @@ import {
   packedTransactionBody,
   packTransferData,
   signingDigest,
+  transactionHeaderFromInfo,
   transactionIdOf,
   type AddLiquidData,
   type ChainInfo,
