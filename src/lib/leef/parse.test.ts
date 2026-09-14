@@ -92,6 +92,39 @@ describe("attachUsdPrices — CLMM WAX/stable pricing", () => {
     expect(waxUsdFromAux([realB, depegged, realA])).toBeCloseTo(0.00511, 8);
   });
 
+  it("venue-native spot ALWAYS outranks a reserve-ratio book (the reload-then-flip bug)", () => {
+    // Alcor spot says 0.00507. A Defibox-style reserve book (CP math, or a
+    // misread table) implies 0.0093 and is deeper. First paint was right,
+    // then the venue merge flipped it — reserve books must never override
+    // a venue-quoted spot.
+    const alcorSpot = clmmWaxUsdcPool({ id: 2, tvlUsd: 40_000, priceA: 0.00507, priceB: 197.2 });
+    const venueReserve = clmmWaxUsdcPool({
+      id: 1_000_001,
+      tvlUsd: 900_000,
+      venue: "defibox",
+      priceA: undefined,
+      priceB: undefined,
+      sqrtPriceX64: undefined,
+      tokenA: { ...WAX, quantity: 100_000 },
+      tokenB: { symbol: "WAXUSDC", contract: "eth.token", decimals: 6, quantity: 930 },
+    });
+    expect(waxUsdFromAux([alcorSpot, venueReserve])).toBeCloseTo(0.00507, 8);
+    expect(waxUsdFromAux([venueReserve, alcorSpot])).toBeCloseTo(0.00507, 8);
+  });
+
+  it("reserve books anchor only when no venue spot exists", () => {
+    const venueReserve = clmmWaxUsdcPool({
+      id: 1_000_001,
+      venue: "defibox",
+      priceA: undefined,
+      priceB: undefined,
+      sqrtPriceX64: undefined,
+      tokenA: { ...WAX, quantity: 100_000 },
+      tokenB: { symbol: "WAXUSDC", contract: "eth.token", decimals: 6, quantity: 507 },
+    });
+    expect(waxUsdFromAux([venueReserve])).toBeCloseTo(0.00507, 8);
+  });
+
   it("ignores WAX pools against untrusted stables", () => {
     const fake = clmmWaxUsdcPool({
       tokenB: { symbol: "WAXUSDC", contract: "fake.contract", decimals: 6, quantity: 930 },

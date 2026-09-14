@@ -154,15 +154,24 @@ export function parseAllPools(raw: unknown): { leef: LeefPool[]; aux: AuxPool[] 
  */
 export type WaxAnchor = { usd: number; tvlUsd: number; poolId: number };
 
+type WaxObservation = WaxAnchor & { spot: boolean };
+
 /**
- * Every WAX/trusted-stable pool is an observation; the anchor is the one
- * CLOSEST TO THE MEDIAN price (ties → deepest TVL). One depegged stable or
- * misread venue book must not move the WAX price: a "trusted stable" is
- * trusted to be a dollar until its own pools say otherwise — and when one
- * disagrees with the pack, the pack wins.
+ * Every WAX/trusted-stable pool is an observation, in two trust tiers:
+ *
+ *   spot    — venue-native spot price (Alcor priceA / on-chain sqrt price).
+ *             CLMM truth, independent of reserve skew.
+ *   reserve — reserve ratio. Correct for CP venues, but a misread table or
+ *             a depegged stable poisons it.
+ *
+ * Spot observations ALWAYS outrank reserve ones — a Defibox/Taco reserve
+ * book must never override Alcor's own quoted WAX price. Within a tier the
+ * anchor is CLOSEST TO THE MEDIAN (ties → deepest TVL), so one depegged
+ * stable or misread venue cannot move the price.
  */
 export function waxUsdAnchor(aux: AuxPool[]): WaxAnchor | null {
-  const observations: WaxAnchor[] = [];
+  const spot: WaxObservation[] = [];
+  const reserve: WaxObservation[] = [];
   for (const p of Array.isArray(aux) ? aux : []) {
     const aWax = isWaxToken(p.tokenA);
     const bWax = isWaxToken(p.tokenB);
@@ -173,21 +182,24 @@ export function waxUsdAnchor(aux: AuxPool[]): WaxAnchor | null {
     const fromApi = aWax ? p.priceA : p.priceB;
     const bPerA = q64Price(p.sqrtPriceX64, p.tokenA.decimals, p.tokenB.decimals);
     const fromSqrt = bPerA != null && bPerA > 0 ? (aWax ? bPerA : 1 / bPerA) : 0;
-    const fromReserves = wax.quantity > 0 && stable.quantity > 0
-      ? stable.quantity / wax.quantity
-      : 0;
-    const usd = fromApi && fromApi > 0 ? fromApi : fromSqrt > 0 ? fromSqrt : fromReserves;
-    if (!(usd > 0)) continue;
-    observations.push({ usd, tvlUsd: p.tvlUsd, poolId: p.id });
+    const fromReserves =
+      wax.quantity > 0 && stable.quantity > 0 ? stable.quantity / wax.quantity : 0;
+    if (fromApi && fromApi > 0) {
+      spot.push({ usd: fromApi, tvlUsd: p.tvlUsd, poolId: p.id, spot: true });
+    } else if (fromSqrt > 0) {
+      spot.push({ usd: fromSqrt, tvlUsd: p.tvlUsd, poolId: p.id, spot: true });
+    } else if (fromReserves > 0) {
+      reserve.push({ usd: fromReserves, tvlUsd: p.tvlUsd, poolId: p.id, spot: false });
+    }
   }
-  if (observations.length === 0) return null;
-  const sorted = [...observations].map((o) => o.usd).sort((a, b) => a - b);
+  // Spot tier first; reserve tier only when no venue quotes a WAX spot.
+  const tier = spot.length > 0 ? spot : reserve;
+  if (tier.length === 0) return null;
+  const sorted = [...tier].map((o) => o.usd).sort((a, b) => a - b);
   const mid = Math.floor(sorted.length / 2);
   const median = sorted.length % 2 === 1 ? sorted[mid]! : (sorted[mid - 1]! + sorted[mid]!) / 2;
-  observations.sort(
-    (a, b) => Math.abs(a.usd - median) - Math.abs(b.usd - median) || b.tvlUsd - a.tvlUsd,
-  );
-  return observations[0]!;
+  tier.sort((a, b) => Math.abs(a.usd - median) - Math.abs(b.usd - median) || b.tvlUsd - a.tvlUsd);
+  return tier[0]!;
 }
 
 export function waxUsdFromAux(aux: AuxPool[]): number {
