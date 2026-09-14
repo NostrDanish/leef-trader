@@ -6,16 +6,27 @@ import { canonicalTokenId } from "@/lib/market/stables";
 
 export type BalanceBook = Record<string, number>;
 
+/**
+ * Balance books come from persisted stores, async syncs, and migrations —
+ * a render can race them all. Every reader in this module treats a missing
+ * or malformed book as EMPTY, never a crash. (Crash trace: Object.entries
+ * on undefined from a half-migrated persist payload.)
+ */
+function asBook(balances: BalanceBook | null | undefined): BalanceBook {
+  return balances && typeof balances === "object" && !Array.isArray(balances) ? balances : {};
+}
+
 export function balanceKey(symbol: string, contract: string): string {
   return canonicalTokenId(symbol, contract.toLowerCase());
 }
 
 function findBalanceValue(balances: BalanceBook, canonicalId: string): number | undefined {
-  const exact = balances[canonicalId];
+  const book = asBook(balances);
+  const exact = book[canonicalId];
   if (exact != null) return exact;
   const wanted = canonicalId.toUpperCase();
-  const hit = Object.keys(balances).find((key) => key.toUpperCase() === wanted);
-  return hit ? balances[hit] : undefined;
+  const hit = Object.keys(book).find((key) => key.toUpperCase() === wanted);
+  return hit ? book[hit] : undefined;
 }
 
 /** Exact canonical amount; legacy bare-symbol fallback only when unambiguous. */
@@ -27,7 +38,7 @@ export function balanceAmount(
   const exact = findBalanceValue(balances, balanceKey(token.symbol, token.contract));
   if (exact != null) return exact;
   const matches = universe?.filter((t) => t.symbol === token.symbol) ?? [token];
-  return matches.length === 1 ? (balances[token.symbol] ?? 0) : 0;
+  return matches.length === 1 ? (asBook(balances)[token.symbol] ?? 0) : 0;
 }
 
 /** Resolve an identifier to a balance without merging same-symbol contracts. */
@@ -59,9 +70,11 @@ export function canonicalBalanceBook(
 ): BalanceBook {
   const out: BalanceBook = {};
   const bySymbol = new Map<string, { contract: string; amount: number }[]>();
-  for (const row of rows) {
+  for (const row of Array.isArray(rows) ? rows : []) {
+    if (!row || typeof row.symbol !== "string" || typeof row.contract !== "string") continue;
     const symbol = row.symbol.toUpperCase();
     const contract = row.contract.toLowerCase();
+    if (!symbol || !contract || !Number.isFinite(row.amount)) continue;
     out[balanceKey(symbol, contract)] = row.amount;
     const list = bySymbol.get(symbol) ?? [];
     list.push({ contract, amount: row.amount });
@@ -80,7 +93,7 @@ export function canonicalBalanceEntries(
 ): { token: UniverseToken; amount: number }[] {
   const out: { token: UniverseToken; amount: number }[] = [];
   const seen = new Set<string>();
-  for (const token of universe) {
+  for (const token of Array.isArray(universe) ? universe : []) {
     const id = balanceKey(token.symbol, token.contract);
     if (seen.has(id)) continue;
     const amount = balanceAmount(balances, token, universe);
@@ -109,14 +122,16 @@ export function walletBalanceRows(
   universe: UniverseToken[],
   includeZeroIds: string[] = [],
 ): WalletBalanceRow[] {
+  const book = asBook(balances);
+  const tokens = Array.isArray(universe) ? universe : [];
   const rows = new Map<string, WalletBalanceRow>();
   const tokenById = new Map(
-    universe.map((t) => [balanceKey(t.symbol, t.contract).toUpperCase(), t]),
+    tokens.map((t) => [balanceKey(t.symbol, t.contract).toUpperCase(), t]),
   );
   const canonicalSymbols = new Set<string>();
 
   // Canonical entries first, including assets not yet priced in the universe.
-  for (const [key, amount] of Object.entries(balances)) {
+  for (const [key, amount] of Object.entries(book)) {
     const at = key.indexOf("@");
     if (at <= 0) continue;
     const symbol = key.slice(0, at).toUpperCase();
@@ -130,11 +145,11 @@ export function walletBalanceRows(
 
   // Legacy/paper bare symbols only when no canonical key already represents
   // that symbol. Resolve a contract only when the universe is unambiguous.
-  for (const [key, amount] of Object.entries(balances)) {
+  for (const [key, amount] of Object.entries(book)) {
     if (key.includes("@")) continue;
     const symbol = key.toUpperCase();
     if (canonicalSymbols.has(symbol)) continue;
-    const matches = universe.filter((t) => t.symbol === symbol);
+    const matches = tokens.filter((t) => t.symbol === symbol);
     const token = matches.length === 1 ? matches[0]! : null;
     const id = token ? balanceKey(token.symbol, token.contract) : symbol;
     rows.set(id.toUpperCase(), {
@@ -147,7 +162,7 @@ export function walletBalanceRows(
   }
 
   for (const identifier of includeZeroIds) {
-    const token = universe.find(
+    const token = tokens.find(
       (t) =>
         t.alcorId === identifier.toLowerCase() ||
         balanceKey(t.symbol, t.contract).toUpperCase() === identifier.toUpperCase() ||

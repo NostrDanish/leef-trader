@@ -2,6 +2,14 @@
 
 All notable changes to LEEF Trader. Dates are commit-era, not release tags.
 
+## Unreleased — Crash-proof balance reads
+
+`walletBalanceRows` / `markPortfolioUsd` crashed the desk when a balance
+book arrived undefined (half-migrated persist payload or a failed sync
+writing `undefined`). Every balance reader now treats a missing/malformed
+book as EMPTY, never a crash; the wallet store also refuses to write a
+non-object balance book.
+
 ## Unreleased — Dust-size trades: governor reserve can no longer zero a small bag
 
 The engine already allowed $0-minimum (one-quantum) trades, but the

@@ -76,7 +76,12 @@ export const useWallet = create<WalletState>()(
         }),
       setLiveBalances: (liveBalances, res) =>
         set({
-          liveBalances,
+          // Never let a failed/partial sync write undefined into the book —
+          // downstream readers (portfolio mark, desks) assume an object.
+          liveBalances:
+            liveBalances && typeof liveBalances === "object" && !Array.isArray(liveBalances)
+              ? liveBalances
+              : get().liveBalances,
           cpuPct: res?.cpuPct ?? get().cpuPct,
           netPct: res?.netPct ?? get().netPct,
           ramPct: res?.ramPct ?? get().ramPct,
@@ -108,7 +113,8 @@ export const useWallet = create<WalletState>()(
       },
       balances: () => {
         const s = get();
-        return s.mode === "live" ? s.liveBalances : s.paperBalances;
+        const book = s.mode === "live" ? s.liveBalances : s.paperBalances;
+        return book && typeof book === "object" && !Array.isArray(book) ? book : {};
       },
       hasKey: () => get().mode === "live" && hasSecret(),
       canSign: () => {
