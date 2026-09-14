@@ -2,6 +2,16 @@
 
 All notable changes to LEEF Trader. Dates are commit-era, not release tags.
 
+## Unreleased — WAX price: venue spot, not CLMM reserves + crash fix
+
+- **WAX/USD was derived from raw reserve ratios on a CLMM pool** — with
+  concentrated liquidity, holdings ≠ spot. The book printed ~$0.0093 when
+  Alcor/CoinGecko said ~$0.00507. `attachUsdPrices` now prefers the venue's
+  quoted spot price (priceA/priceB), then sqrtPriceX64, reserves last.
+  Regression tests in `parse.test.ts`.
+- **Fix crash**: `StakeCpu` called the wallet selector's boolean as a
+  function (`canSign is not a function`).
+
 ## Unreleased — Old-trader forensic recovery: CPU staking + wake lock
 
 Forensic comparison against the previous LEEF Trader (see

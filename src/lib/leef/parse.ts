@@ -130,6 +130,12 @@ export function parseAllPools(raw: unknown): { leef: LeefPool[]; aux: AuxPool[] 
       tokenB: b,
       tvlUsd,
       volume24Usd,
+      // Spot prices from the API: CLMM pools' raw reserves are NOT the spot
+      // price (concentrated liquidity skews holdings). attachUsdPrices
+      // prefers these over the reserve ratio.
+      priceA: num(p.priceA) > 0 ? num(p.priceA) : undefined,
+      priceB: num(p.priceB) > 0 ? num(p.priceB) : undefined,
+      sqrtPriceX64: sqrt,
     });
   }
 
@@ -153,7 +159,18 @@ export function attachUsdPrices(
   if (usdtPool && waxUsd <= 0) {
     const wax = isWaxToken(usdtPool.tokenA) ? usdtPool.tokenA : usdtPool.tokenB;
     const usdt = isWaxToken(usdtPool.tokenA) ? usdtPool.tokenB : usdtPool.tokenA;
-    if (wax.quantity > 0 && usdt.quantity > 0) {
+    // CLMM trap: raw reserve ratio ≠ spot price when liquidity is
+    // concentrated in a tick range. Trust the venue's quoted spot price
+    // (priceA = B per 1 A) or the sqrt-price; reserves are the last resort.
+    const waxIsA = isWaxToken(usdtPool.tokenA);
+    const fromApi = waxIsA ? usdtPool.priceA : usdtPool.priceB;
+    const bPerA = q64Price(usdtPool.sqrtPriceX64, usdtPool.tokenA.decimals, usdtPool.tokenB.decimals);
+    const fromSqrt = bPerA != null && bPerA > 0 ? (waxIsA ? bPerA : 1 / bPerA) : null;
+    if (fromApi && fromApi > 0) {
+      waxUsd = fromApi;
+    } else if (fromSqrt && fromSqrt > 0) {
+      waxUsd = fromSqrt;
+    } else if (wax.quantity > 0 && usdt.quantity > 0) {
       waxUsd = usdt.quantity / wax.quantity;
     }
   }

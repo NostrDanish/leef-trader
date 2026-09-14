@@ -45,6 +45,11 @@ export type AuxPool = {
   volume24Usd: number;
   /** Liquidity venue. Omitted = Alcor (legacy aux books). */
   venue?: "alcor" | "defibox" | "taco";
+  /** Alcor's quoted spot price (B per 1 A) — CLMM-aware, unlike raw reserves. */
+  priceA?: number;
+  /** Alcor's quoted spot price (A per 1 B). */
+  priceB?: number;
+  sqrtPriceX64?: string;
 };
 
 export type LiveTrade = {

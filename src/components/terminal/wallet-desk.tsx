@@ -248,7 +248,7 @@ function StakeCpu({ waxBalance, cpuPct }: { waxBalance: number; cpuPct: number }
 
   async function stake() {
     const amt = Number(amount);
-    if (!(amt > 0) || amt > waxBalance || !canSign()) return;
+    if (!(amt > 0) || amt > waxBalance || !canSign) return;
     setBusy(true);
     try {
       const { txid } = await signAndPushStakeCpu({ account, permission, waxAmount: amt });
@@ -285,7 +285,7 @@ function StakeCpu({ waxBalance, cpuPct }: { waxBalance: number; cpuPct: number }
         <Button
           variant="outline"
           size="sm"
-          disabled={busy || !(Number(amount) > 0) || Number(amount) > waxBalance || !canSign()}
+          disabled={busy || !(Number(amount) > 0) || Number(amount) > waxBalance || !canSign}
           onClick={stake}
         >
           {busy ? "Staking…" : "Stake for CPU"}
