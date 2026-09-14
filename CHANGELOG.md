@@ -2,6 +2,16 @@
 
 All notable changes to LEEF Trader. Dates are commit-era, not release tags.
 
+## Unreleased — WAX price: trust tiers kill the reload-then-flip
+
+The "right on reload, wrong when everything loads" bug: first paint anchored
+on Alcor's venue spot price (correct), then the cold-path venue merge landed
+Defibox/Taco reserve books and the anchor could flip to a deep-but-wrong
+reserve ratio. Trust tiers now settle it: venue-native spot prices (Alcor
+priceA / on-chain sqrt) ALWAYS outrank reserve-ratio books; within a tier,
+closest-to-median wins. A reserve book only anchors when no venue quotes a
+WAX spot at all.
+
 ## Unreleased — Alcor token registry + split-or-skip depth guard
 
 - **Alcor token registry** (`token-registry.ts`): one bulk fetch of the
