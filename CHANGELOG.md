@@ -2,6 +2,17 @@
 
 All notable changes to LEEF Trader. Dates are commit-era, not release tags.
 
+## Unreleased — Dust-size trades: governor reserve can no longer zero a small bag
+
+The engine already allowed $0-minimum (one-quantum) trades, but the
+portfolio governor's FIXED reserves ($1 LEEF / $0.25 WAX / $1 WAXUSDC)
+meant a small wallet had 0 deployable forever — e.g. $0.50 of LEEF could
+never move. Reserves are now capped at 50% of the holding: a real wallet
+keeps its full reserve; a dust wallet can still trade its dust (the old
+trader handled ~10 LEEF clips). Regression tests cover both directions.
+
+Paper mode stays. It is not optional scaffolding — it is the preview path.
+
 ## Unreleased — WAX price: venue spot, not CLMM reserves + crash fix
 
 - **WAX/USD was derived from raw reserve ratios on a CLMM pool** — with

@@ -136,7 +136,12 @@ export function portfolioState(
   return { assets, totalUsd, state: "RUNNING", reason: "Inventory is inside operating bands" };
 }
 
-/** Capital exposed to strategies after operational reserves. */
+/**
+ * Capital exposed to strategies after operational reserves. The reserve is
+ * capped at half the holding: a reserve is meant to keep a wallet OPERATIONAL,
+ * not to zero out a dust wallet. The old trader traded down to ~10 LEEF clips
+ * — with a fixed $1 reserve a $0.50 LEEF bag could never move at all.
+ */
 export function deployableAmount(
   snap: LeefSnapshot,
   balances: BalanceBook,
@@ -149,7 +154,11 @@ export function deployableAmount(
   const token = snap.universe.find(
     (t) => `${t.symbol}@${t.contract}`.toUpperCase() === price.tokenId.toUpperCase(),
   );
-  const reserveUsd = token ? (bandFor(token, config)?.reserveUsd ?? config.defaultReserveUsd) : 0;
+  const reserveUsdRaw = token
+    ? (bandFor(token, config)?.reserveUsd ?? config.defaultReserveUsd)
+    : 0;
+  const holdingUsd = amount * price.priceUsd;
+  const reserveUsd = Math.min(reserveUsdRaw, holdingUsd * 0.5);
   return Math.max(0, amount - reserveUsd / price.priceUsd);
 }
 

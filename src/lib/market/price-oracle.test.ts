@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import type { LeefSnapshot } from "@/lib/leef/types";
 import type { UniverseToken } from "@/lib/leef/universe";
 import { tokenPrice, requireTradePrice, resolveOracleToken } from "./price-oracle";
-import { governTrade, portfolioState } from "./portfolio-governor";
+import { deployableAmount, governTrade, portfolioState } from "./portfolio-governor";
 import {
   balanceForIdentifier,
   canonicalBalanceBook,
@@ -269,6 +269,45 @@ describe("Portfolio Governor", () => {
     });
     expect(d.allowed).toBe(true);
     expect(d.state).toBe("REBALANCING");
+  });
+
+  it("dust wallets can trade: the reserve never zeroes a small holding", () => {
+    // Regression: a fixed $1 LEEF reserve meant a $0.50 LEEF bag had 0
+    // deployable forever — the old trader traded ~10 LEEF clips fine.
+    // LEEF-only wallet: selling some LEEF improves concentration, so the
+    // governor's only possible blocker here is the reserve.
+    const s = snap(BASE);
+    const balances = canonicalBalanceBook([
+      { symbol: "LEEF", contract: "leefmaincorp", amount: 50 }, // $0.50
+    ]);
+    const d = governTrade(s, balances, {
+      tokenIn: "LEEF@leefmaincorp",
+      tokenOut: "WAX@eosio.token",
+      amountIn: 10,
+      expectedOut: 2.6,
+      expectedNetProfitUsd: 0.001,
+      kind: "profit",
+    });
+    expect(d.allowed).toBe(true);
+    expect(d.allowedAmountIn).toBeGreaterThan(0);
+  });
+
+  it("still holds back the full reserve on a large holding", () => {
+    const s = snap(BASE);
+    const balances = canonicalBalanceBook([
+      { symbol: "LEEF", contract: "leefmaincorp", amount: 20_000 }, // $200
+    ]);
+    // Reserve $1 of LEEF = 100 LEEF held back (uncapped, well under 50%).
+    expect(deployableAmount(s, balances, "LEEF@leefmaincorp")).toBeCloseTo(20_000 - 100, 4);
+  });
+
+  it("caps the reserve at 50% so dust stays deployable", () => {
+    const s = snap(BASE);
+    const balances = canonicalBalanceBook([
+      { symbol: "LEEF", contract: "leefmaincorp", amount: 50 }, // $0.50
+    ]);
+    // Uncapped reserve ($1 = 100 LEEF) would zero this; capped at 50% → 25.
+    expect(deployableAmount(s, balances, "LEEF@leefmaincorp")).toBeCloseTo(25, 4);
   });
 });
 
