@@ -1,6 +1,7 @@
 import type { AuxPool, LeefPool, LeefSnapshot, LiveTrade } from "./types";
 import type { UniverseToken } from "./universe";
 import { emptyToken } from "./amm";
+import { lastKnownWaxUsd } from "./parse";
 
 function leefPool(p: {
   id: number;
@@ -271,7 +272,10 @@ export function sampleTrades(): LiveTrade[] {
 }
 
 /** Static priced universe for the offline book (last known values). */
-export function fallbackUniverse(waxUsd = 0.00608, leefUsd = 1.496e-7): UniverseToken[] {
+export function fallbackUniverse(
+  waxUsd = lastKnownWaxUsd() || 0.00608,
+  leefUsd = 1.496e-7,
+): UniverseToken[] {
   const t = (
     symbol: string,
     contract: string,
@@ -308,7 +312,8 @@ export function fallbackUniverse(waxUsd = 0.00608, leefUsd = 1.496e-7): Universe
 export function fallbackSnapshot(warning?: string, fetchedAt = "2026-01-01T00:00:00.000Z"): LeefSnapshot {
   const pools = fallbackPools();
   const aux = fallbackAux();
-  const waxUsd = 0.00608;
+  // Not live → last KNOWN live WAX price (persisted), never a snapshot constant.
+  const waxUsd = lastKnownWaxUsd() || 0.00608;
   const main = pools.find((p) => p.id === 217);
   const waxPerLeef = main?.waxPerLeef ?? 0.00002461;
   const leefUsd = waxPerLeef * waxUsd;

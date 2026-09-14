@@ -2,6 +2,19 @@
 
 All notable changes to LEEF Trader. Dates are commit-era, not release tags.
 
+## Unreleased — WAX price: live only, last-known when not live
+
+No more hardcoded snapshot constants in the price path. WAX/USD is:
+
+1. the live book (venue spot / on-chain sqrt, median-anchored), or
+2. the last KNOWN live price, persisted across reloads.
+
+Only when the app has literally never seen a live price does the nominal
+0.006 floor apply (fresh cold start, no book yet). `noteKnownWaxUsd` records
+only freshly computed live values — never hints or fallbacks. The offline
+fallback book/universe now also read the last known price instead of the
+baked-in 0.00608.
+
 ## Unreleased — WAX price: trust tiers kill the reload-then-flip
 
 The "right on reload, wrong when everything loads" bug: first paint anchored

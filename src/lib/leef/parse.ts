@@ -142,6 +142,36 @@ export function parseAllPools(raw: unknown): { leef: LeefPool[]; aux: AuxPool[] 
   return { leef, aux };
 }
 
+/* ------------------------------------------------------------------ */
+/* Last-known WAX price (persisted)                                     */
+/* ------------------------------------------------------------------ */
+
+const LAST_WAX_KEY = "leef-last-wax-usd";
+let lastKnownWaxUsdCache = 0;
+
+/** Last KNOWN live price, persisted across reloads. 0 when never seen. */
+export function lastKnownWaxUsd(): number {
+  if (lastKnownWaxUsdCache > 0) return lastKnownWaxUsdCache;
+  try {
+    const n = Number(globalThis.localStorage?.getItem(LAST_WAX_KEY) ?? 0);
+    if (Number.isFinite(n) && n > 0) lastKnownWaxUsdCache = n;
+  } catch {
+    /* storage unavailable */
+  }
+  return lastKnownWaxUsdCache;
+}
+
+/** Record a freshly computed live WAX price. Never stores hints/fallbacks. */
+export function noteKnownWaxUsd(usd: number): void {
+  if (!(usd > 0) || !Number.isFinite(usd)) return;
+  lastKnownWaxUsdCache = usd;
+  try {
+    globalThis.localStorage?.setItem(LAST_WAX_KEY, String(usd));
+  } catch {
+    /* storage unavailable */
+  }
+}
+
 /**
  * WAX/USD from the aux book. Every WAX pool against a trusted stable is an
  * observation; the DEEPEST one anchors (was: first-in-array — arbitrary
@@ -216,6 +246,7 @@ export function attachUsdPrices(
   // WAX/stable pool at all. (The on-chain refresh used to pass the old price
   // as the hint, freezing a bad first-load value forever.)
   let waxUsd = waxUsdFromAux(aux);
+  const livePriced = waxUsd > 0;
   const mainWax = [...pools]
     .filter((p) => isWaxToken(p.pair))
     .sort((a, b) => b.tvlUsd - a.tvlUsd)[0];
@@ -223,7 +254,9 @@ export function attachUsdPrices(
   if (mainWax && !(waxUsd > 0) && mainWax.tvlUsd > 0 && mainWax.pair.quantity > 0) {
     waxUsd = mainWax.tvlUsd / (mainWax.pair.quantity * 2);
   }
-  if (waxUsd <= 0) waxUsd = 0.006;
+  // Not live? Last KNOWN live price — never a hardcoded number.
+  if (!(waxUsd > 0)) waxUsd = lastKnownWaxUsd() || 0.006;
+  if (livePriced) noteKnownWaxUsd(waxUsd);
 
   const waxPerLeef = mainWax?.waxPerLeef ?? mainWax?.pairPerLeef ?? 0;
   const leefUsd =
