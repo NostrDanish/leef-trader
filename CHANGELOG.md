@@ -2,6 +2,25 @@
 
 All notable changes to LEEF Trader. Dates are commit-era, not release tags.
 
+## Unreleased — Old-trader forensic recovery: CPU staking + wake lock
+
+Forensic comparison against the previous LEEF Trader (see
+[OLD_TRADER_COMPARISON](./docs/OLD_TRADER_COMPARISON.md)). The old game
+architecture was not merged; two genuinely lost capabilities were recovered
+through the current safety pipeline:
+
+- **Stake WAX for CPU in-app** (old trader's delegatebw panel). The bot
+  pauses at 95% CPU — now there's a remedy on the wallet desk. Goes through
+  the policy firewall: self-stake only, WAX 8dp only, `transfer=true`
+  rejected (would give the stake away). Regression tests included.
+- **Screen wake lock while the bot runs.** The old trader prevented screen
+  sleep mid-session; the rebuilt engine only resynced on wake. Now it holds
+  a wake lock while running, re-acquiring on tab-visible, releasing on stop.
+
+Rejected with cause: background polling while hidden (throttled tabs trade
+blind — resync-on-wake is safer), Wombat plugin, TransactPluginAutoCorrect,
+game/achievement chrome.
+
 ## Unreleased — Venue truth labels + unified volatility + real regime confidence
 
 Audit pass against 5e89343 (pre-danger-score). Triaged, not blindly applied:

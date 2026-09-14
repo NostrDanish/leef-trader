@@ -48,6 +48,7 @@ import {
   targetUnitPnl,
 } from "@/lib/leef/growth-engine";
 import { classifyRegime, dangerScore } from "@/lib/leef/regime";
+import { holdWakeLock, releaseWakeLock } from "@/lib/market/wake-lock";
 
 const KIND_VARIANT: Record<
   BotDecisionLog["kind"],
@@ -65,6 +66,13 @@ const KIND_VARIANT: Record<
 
 export function BotDesk({ snap }: { snap: LeefSnapshot }) {
   const b = useBot();
+  // Keep the screen awake while the bot trades (recovered behavior — the old
+  // trader's BackgroundService). A suspended laptop pauses a live bot.
+  useEffect(() => {
+    if (b.running) holdWakeLock();
+    else releaseWakeLock();
+    return () => releaseWakeLock();
+  }, [b.running]);
   const mode = useWallet((s) => s.mode);
   const account = useWallet((s) => s.account);
   const authType = useWallet((s) => s.authType);

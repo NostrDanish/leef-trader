@@ -1,12 +1,16 @@
 import { KeyRound, Trash2 } from "lucide-react";
+import { useState } from "react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
+import { Input } from "@/components/ui/input";
 import { bestExecutionRoute } from "@/lib/leef/route-optimizer";
 import { fmtNum, fmtUsd } from "@/lib/leef/format";
 import type { LeefSnapshot } from "@/lib/leef/types";
 import { tokenPrice } from "@/lib/market/price-oracle";
 import { balanceForIdentifier, walletBalanceRows } from "@/lib/wallet/balances";
+import { signAndPushStakeCpu } from "@/lib/wallet/sign";
+import { toast } from "@/hooks/useToast";
 import { useBot } from "@/store/bot";
 import { useTerminal } from "@/store/terminal";
 import { useWallet } from "@/store/wallet";
@@ -135,6 +139,9 @@ export function WalletDesk({ snap }: { snap: LeefSnapshot }) {
               {netPct != null ? ` · NET ${(netPct * 100).toFixed(0)}%` : ""}
             </div>
           )}
+          {mode === "live" && cpuPct != null && cpuPct > 0.6 && (
+            <StakeCpu waxBalance={wax} cpuPct={cpuPct} />
+          )}
         </Card>
       </div>
 
@@ -223,6 +230,67 @@ export function WalletDesk({ snap }: { snap: LeefSnapshot }) {
           </p>
         )}
       </Card>
+    </div>
+  );
+}
+
+/**
+ * Stake WAX for CPU, recovered from the old trader's staking panel. The bot
+ * pauses at 95% CPU — this is the in-app remedy. Goes through the policy
+ * firewall like every action: self-stake only, never transfer=true.
+ */
+function StakeCpu({ waxBalance, cpuPct }: { waxBalance: number; cpuPct: number }) {
+  const [amount, setAmount] = useState("5");
+  const [busy, setBusy] = useState(false);
+  const account = useWallet((s) => s.account);
+  const permission = useWallet((s) => s.permission);
+  const canSign = useWallet((s) => s.canSign());
+
+  async function stake() {
+    const amt = Number(amount);
+    if (!(amt > 0) || amt > waxBalance || !canSign()) return;
+    setBusy(true);
+    try {
+      const { txid } = await signAndPushStakeCpu({ account, permission, waxAmount: amt });
+      toast({
+        title: `Staked ${amt.toFixed(4)} WAX for CPU`,
+        description: `tx ${txid.slice(0, 10)}…`,
+      });
+    } catch (err) {
+      toast({
+        title: "Stake failed",
+        description: err instanceof Error ? err.message : "unknown error",
+        variant: "destructive",
+      });
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div className="mt-2 rounded-md border border-warn/30 bg-warn/10 p-2">
+      <p className="mb-1.5 text-[11px] text-warn">
+        CPU at {(cpuPct * 100).toFixed(0)}% — the bot pauses at 95%. Stake WAX to keep trading.
+      </p>
+      <div className="flex items-center gap-2">
+        <Input
+          type="number"
+          className="h-8 w-24 font-mono text-xs"
+          value={amount}
+          min={0.1}
+          max={waxBalance}
+          step={1}
+          onChange={(e) => setAmount(e.target.value)}
+        />
+        <Button
+          variant="outline"
+          size="sm"
+          disabled={busy || !(Number(amount) > 0) || Number(amount) > waxBalance || !canSign()}
+          onClick={stake}
+        >
+          {busy ? "Staking…" : "Stake for CPU"}
+        </Button>
+      </div>
     </div>
   );
 }

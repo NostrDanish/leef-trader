@@ -8,16 +8,17 @@ import { fetchAlcorRoute, parseAssetAmount } from "./alcor-route";
 import {
   packAddLiquid,
   packCollect,
+  packDelegateBw,
   packSubLiquid,
   packTransaction,
   packedTransactionBody,
   packTransferData,
   signingDigest,
   transactionIdOf,
-  transactionHeaderFromInfo,
   type AddLiquidData,
   type ChainInfo,
   type CollectData,
+  type DelegateBwData,
   type SubLiquidData,
   type TransferActionData,
 } from "./antelope";
@@ -404,6 +405,42 @@ export async function signAndPushArb(opts: {
     permission: opts.permission,
     transfers,
     policy: { snap: opts.snap },
+  });
+}
+
+/* ------------------------------------------------------------------ */
+/* Resource staking (eosio::delegatebw, self-stake only)                */
+/* ------------------------------------------------------------------ */
+
+/**
+ * Stake WAX for CPU/NET. Goes through the SAME policy firewall as every
+ * trade action: only self-stake (from === receiver === signer), plain WAX
+ * at 8dp, and never transfer=true (which would give the stake away).
+ */
+export async function signAndPushStakeCpu(opts: {
+  account: string;
+  permission?: string;
+  waxAmount: number;
+}): Promise<{ txid: string }> {
+  const owner = walletSession() ? String(walletSession()!.actor) : opts.account;
+  const data: DelegateBwData = {
+    from: owner,
+    receiver: owner,
+    stakeNetQuantity: "0.00000000 WAX",
+    stakeCpuQuantity: `${opts.waxAmount.toFixed(8)} WAX`,
+    transfer: false,
+  };
+  return await dispatchActions({
+    account: owner,
+    permission: opts.permission,
+    actions: [
+      {
+        contract: "eosio",
+        name: "delegatebw",
+        plain: { ...data },
+        dataBytes: packDelegateBw(data),
+      },
+    ],
   });
 }
 

@@ -333,6 +333,49 @@ describe("memoMinOutSum", () => {
   });
 });
 
+describe("delegatebw (CPU staking) policy", () => {
+  const stake = (over: Record<string, unknown> = {}): PolicyAction => ({
+    contract: "eosio",
+    name: "delegatebw",
+    plain: {
+      from: ACCOUNT,
+      receiver: ACCOUNT,
+      stake_net_quantity: "0.00000000 WAX",
+      stake_cpu_quantity: "5.00000000 WAX",
+      transfer: false,
+      ...over,
+    },
+  });
+
+  it("allows a self-stake at 8dp WAX", () => {
+    expect(() => assertActionPolicy([stake()], ACCOUNT)).not.toThrow();
+  });
+
+  it("rejects staking to another account", () => {
+    expect(() => assertActionPolicy([stake({ receiver: "someone.else" })], ACCOUNT)).toThrow(
+      /self|signing account/i,
+    );
+  });
+
+  it("rejects transfer=true (gives the stake away)", () => {
+    expect(() => assertActionPolicy([stake({ transfer: true })], ACCOUNT)).toThrow(/transfer=true/);
+  });
+
+  it("rejects non-WAX stake assets and wrong precision", () => {
+    expect(() =>
+      assertActionPolicy([stake({ stake_cpu_quantity: "5.0000 LEEF" })], ACCOUNT),
+    ).toThrow(/WAX/);
+    expect(() =>
+      assertActionPolicy([stake({ stake_cpu_quantity: "5.0000 WAX" })], ACCOUNT),
+    ).toThrow(/precision|8 decimals/);
+  });
+
+  it("rejects other eosio actions", () => {
+    const a = stake();
+    expect(() => assertActionPolicy([{ ...a, name: "refund" }], ACCOUNT)).toThrow(/not allowed/);
+  });
+});
+
 describe("formatAsset / formatAmountParam", () => {
   const wax = { symbol: "WAX", contract: "eosio.token", decimals: 8, alcorId: "wax-eosio.token" };
   const leef = { symbol: "LEEF", contract: "leefmaincorp", decimals: 4, alcorId: "leef-leefmaincorp" };

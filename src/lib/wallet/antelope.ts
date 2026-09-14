@@ -458,6 +458,27 @@ export type CollectData = {
   tokenBMax: string;
 };
 
+/* ------------------------- eosio system actions -------------------- */
+/* delegatebw field order per the eosio.system ABI.                     */
+
+export type DelegateBwData = {
+  from: string;
+  receiver: string;
+  stakeNetQuantity: string;
+  stakeCpuQuantity: string;
+  transfer: boolean;
+};
+
+export function packDelegateBw(d: DelegateBwData): Uint8Array {
+  const w = new Writer();
+  w.name(d.from);
+  w.name(d.receiver);
+  writeAsset(w, parseAssetString(d.stakeNetQuantity));
+  writeAsset(w, parseAssetString(d.stakeCpuQuantity));
+  w.u8(d.transfer ? 1 : 0);
+  return w.done();
+}
+
 export function packAddLiquid(d: AddLiquidData): Uint8Array {
   const w = new Writer();
   w.u64(BigInt(d.poolId));

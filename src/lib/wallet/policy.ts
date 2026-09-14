@@ -34,6 +34,10 @@ const ALLOWED_SWAP_TO = new Set([ALCOR_SWAP_CONTRACT, DEFIBOX_SWAP, TACO_SWAP]);
 /** The only actions this app may ever call on the AMM contract itself. */
 const ALCOR_AMM_ACTIONS = new Set(["addliquid", "subliquid", "collect"]);
 
+/** System contract for resource staking (CPU/NET). Self-stake only. */
+const EOSIO_SYSTEM = "eosio";
+const EOSIO_ACTIONS = new Set(["delegatebw"]);
+
 /** Minimal token identity the policy needs — symbol + contract + precision. */
 export type PolicyToken = { symbol: string; contract: string; decimals: number };
 
@@ -191,6 +195,28 @@ export function assertActionPolicy(
       if (owner && owner !== account) fail(`${action.name} owner "${owner}" ≠ signer`);
       const recipient = String(action.plain.recipient ?? "");
       if (recipient && recipient !== account) fail(`${action.name} pays "${recipient}" ≠ signer`);
+      continue;
+    }
+    // Resource staking: only self-delegatebw with plain WAX quantities.
+    // `transfer: true` would GIVE the stake away — never allowed.
+    if (action.contract === EOSIO_SYSTEM) {
+      if (!EOSIO_ACTIONS.has(action.name)) {
+        fail(`action ${action.name} on ${EOSIO_SYSTEM} is not allowed`);
+      }
+      const from = String(action.plain.from ?? "");
+      const receiver = String(action.plain.receiver ?? "");
+      if (from !== account || receiver !== account) {
+        fail("delegatebw may only stake from and to the signing account");
+      }
+      if (action.plain.transfer === true) fail("delegatebw with transfer=true gives away the stake");
+      for (const field of ["stake_net_quantity", "stake_cpu_quantity"] as const) {
+        const q = String(action.plain[field] ?? "");
+        const asset = parseAsset(q);
+        if (!asset) fail(`bad ${field} "${q}"`);
+        if (asset!.symbol !== "WAX") fail(`delegatebw must stake WAX, not ${asset!.symbol}`);
+        const frac = q.trim().split(/\s+/)[0]?.split(".")[1] ?? "";
+        if (frac.length !== 8) fail(`WAX stake precision must be 8 decimals, got ${frac.length}`);
+      }
       continue;
     }
     if (action.name !== "transfer") {
