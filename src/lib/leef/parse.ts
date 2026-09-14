@@ -152,8 +152,17 @@ export function parseAllPools(raw: unknown): { leef: LeefPool[]; aux: AuxPool[] 
  * then the on-chain sqrt-price; reserves are the last resort (Defibox/Taco
  * are CP venues — there the reserve ratio IS the price).
  */
-export function waxUsdFromAux(aux: AuxPool[]): number {
-  let best: { usd: number; tvlUsd: number } | null = null;
+export type WaxAnchor = { usd: number; tvlUsd: number; poolId: number };
+
+/**
+ * Every WAX/trusted-stable pool is an observation; the anchor is the one
+ * CLOSEST TO THE MEDIAN price (ties → deepest TVL). One depegged stable or
+ * misread venue book must not move the WAX price: a "trusted stable" is
+ * trusted to be a dollar until its own pools say otherwise — and when one
+ * disagrees with the pack, the pack wins.
+ */
+export function waxUsdAnchor(aux: AuxPool[]): WaxAnchor | null {
+  const observations: WaxAnchor[] = [];
   for (const p of Array.isArray(aux) ? aux : []) {
     const aWax = isWaxToken(p.tokenA);
     const bWax = isWaxToken(p.tokenB);
@@ -169,9 +178,20 @@ export function waxUsdFromAux(aux: AuxPool[]): number {
       : 0;
     const usd = fromApi && fromApi > 0 ? fromApi : fromSqrt > 0 ? fromSqrt : fromReserves;
     if (!(usd > 0)) continue;
-    if (!best || p.tvlUsd > best.tvlUsd) best = { usd, tvlUsd: p.tvlUsd };
+    observations.push({ usd, tvlUsd: p.tvlUsd, poolId: p.id });
   }
-  return best?.usd ?? 0;
+  if (observations.length === 0) return null;
+  const sorted = [...observations].map((o) => o.usd).sort((a, b) => a - b);
+  const mid = Math.floor(sorted.length / 2);
+  const median = sorted.length % 2 === 1 ? sorted[mid]! : (sorted[mid - 1]! + sorted[mid]!) / 2;
+  observations.sort(
+    (a, b) => Math.abs(a.usd - median) - Math.abs(b.usd - median) || b.tvlUsd - a.tvlUsd,
+  );
+  return observations[0]!;
+}
+
+export function waxUsdFromAux(aux: AuxPool[]): number {
+  return waxUsdAnchor(aux)?.usd ?? 0;
 }
 
 export function attachUsdPrices(

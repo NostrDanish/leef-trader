@@ -74,6 +74,24 @@ describe("attachUsdPrices — CLMM WAX/stable pricing", () => {
     expect(waxUsdFromAux([real, junk])).toBeCloseTo(0.00507, 8);
   });
 
+  it("a deep DEPEGGED-stable pool cannot move the anchor when the pack disagrees", () => {
+    // The flip-to-0.009 bug: a WAX/PARAUSD-style book whose stable trades at
+    // ~$0.55 implies WAX ≈ $0.009 — deep enough to win the old deepest-TVL
+    // anchor, wrong enough to poison the whole snapshot.
+    const realA = clmmWaxUsdcPool({ id: 2, tvlUsd: 250_000, priceA: 0.00507, priceB: 197.2 });
+    const realB = clmmWaxUsdcPool({ id: 3, tvlUsd: 120_000, priceA: 0.00511, priceB: 195.7 });
+    const depegged = clmmWaxUsdcPool({
+      id: 4,
+      tokenB: { symbol: "PARAUSD", contract: "parareserves", decimals: 6, quantity: 500 },
+      tvlUsd: 400_000, // deepest — and wrong
+      priceA: 0.0093,
+      priceB: 1 / 0.0093,
+    });
+    // Median of [0.00507, 0.00511, 0.0093] is 0.00511 — the depeg is an outlier.
+    expect(waxUsdFromAux([depegged, realA, realB])).toBeCloseTo(0.00511, 8);
+    expect(waxUsdFromAux([realB, depegged, realA])).toBeCloseTo(0.00511, 8);
+  });
+
   it("ignores WAX pools against untrusted stables", () => {
     const fake = clmmWaxUsdcPool({
       tokenB: { symbol: "WAXUSDC", contract: "fake.contract", decimals: 6, quantity: 930 },
