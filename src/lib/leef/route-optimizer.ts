@@ -15,6 +15,7 @@
  * Alcor CLMM. Live execution still requotes the winner through Alcor.
  */
 import { isLeefToken, isWaxToken, quoteConstantProduct } from "./amm";
+import { isScamToken } from "./token-registry";
 import { LEEF_CONTRACT, LEEF_SYMBOL, WAX_CONTRACT, WAX_SYMBOL } from "./types";
 import type { AuxPool, LeefPool, QuoteLeg, SwapRoute } from "./types";
 
@@ -142,7 +143,8 @@ function pushEdge(
 }
 
 /**
- * Build a directed pool graph. Spoofed LEEF/WAX never become nodes.
+ * Build a directed pool graph. Spoofed LEEF/WAX never become nodes, and
+ * Alcor-scam-flagged tokens never become edges — fail closed on venue data.
  */
 export function buildRouteGraph(
   pools: LeefPool[],
@@ -154,6 +156,7 @@ export function buildRouteGraph(
     if (!isLeefToken(p.leef)) continue;
     if (p.pair.symbol.toUpperCase() === WAX_SYMBOL && !isWaxToken(p.pair)) continue;
     if (!(p.leef.quantity >= 1_000_000)) continue;
+    if (isScamToken(`${p.pair.symbol}@${p.pair.contract}`)) continue;
     const a = leefId();
     const b = tokenId(p.pair.symbol, p.pair.contract);
     const name = `LEEF / ${p.pair.symbol}`;
@@ -196,6 +199,8 @@ export function buildRouteGraph(
     if (p.tokenA.symbol.toUpperCase() === WAX_SYMBOL && !isWaxToken(p.tokenA)) continue;
     if (p.tokenB.symbol.toUpperCase() === WAX_SYMBOL && !isWaxToken(p.tokenB)) continue;
     if (p.tvlUsd < 5) continue;
+    if (isScamToken(`${p.tokenA.symbol}@${p.tokenA.contract}`)) continue;
+    if (isScamToken(`${p.tokenB.symbol}@${p.tokenB.contract}`)) continue;
     const a = tokenId(p.tokenA.symbol, p.tokenA.contract);
     const b = tokenId(p.tokenB.symbol, p.tokenB.contract);
     const venue = p.venue ?? "alcor";

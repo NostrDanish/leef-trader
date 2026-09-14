@@ -547,6 +547,8 @@ function AddToken({
         {available.map((t) => (
           <option key={t.alcorId} value={t.alcorId}>
             {t.symbol} · {t.contract} · {fmtUsd(t.tvlUsd, 0)} TVL
+            {t.alcorScore ? ` · score ${t.alcorScore}` : ""}
+            {t.alcorTrusted ? " ✓" : ""}
           </option>
         ))}
       </select>

@@ -1,6 +1,7 @@
 import { isWaxToken } from "./amm";
 import { fallbackSnapshot } from "./fallback";
 import { attachUsdPrices, parseAllPools, parseSwaps } from "./parse";
+import { loadTokenRegistry } from "./token-registry";
 import type { AuxPool, LeefPool, LeefSnapshot, LiveTrade } from "./types";
 import { buildUniverse, mergeUniverseFromBook, repriceUniverse, type UniverseToken } from "./universe";
 import { fetchExternalVenues } from "./venue-adapters";
@@ -119,6 +120,9 @@ async function loadFull(): Promise<{
   lastFullLoadAt = Date.now();
   const aux = relevantAux(parsed.aux, parsed.leef);
   const px0 = attachUsdPrices(parsed.leef, aux, undefined, undefined);
+  // Venue verification data rides the same load — the universe overlay
+  // annotates score/trust and drops scam-flagged tokens.
+  await loadTokenRegistry().catch(() => undefined);
   const universe = buildUniverse(
     Array.isArray(raw) ? raw.filter((p) => p && (p as { active?: boolean }).active !== false) : [],
     px0.waxUsd,

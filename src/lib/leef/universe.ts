@@ -7,6 +7,7 @@ import {
   type StableState,
 } from "@/lib/market/stables";
 import type { PriceSource } from "@/lib/market/price-oracle";
+import { registryToken } from "./token-registry";
 
 /**
  * The tradable token universe on Alcor/WAX, built from the full pool list.
@@ -39,6 +40,12 @@ export type UniverseToken = {
   priceSource?: PriceSource;
   /** Unix ms when this token price was last derived. */
   priceTimestamp?: number;
+  /** Alcor venue score 0–99 (0 = unlisted). */
+  alcorScore?: number;
+  /** Venue-flagged scam — hard-excluded from routing and pricing. */
+  alcorScam?: boolean;
+  /** Venue-trusted flag from the Alcor registry. */
+  alcorTrusted?: boolean;
 };
 
 type RawToken = {
@@ -199,7 +206,20 @@ export function buildUniverse(rawPools: unknown, waxUsd: number): UniverseToken[
     if (bStable && !aStable) consider(a, b, id, tvlUsd, false);
   }
 
-  return [...best.values()].sort((a, b) => b.tvlUsd - a.tvlUsd).slice(0, 60);
+  // Venue verification overlay: Alcor's own score/flags annotate every token.
+  // Scam-flagged tokens are REMOVED — a scam token must never be priced,
+  // routed, or suggested. Fail closed.
+  const out: UniverseToken[] = [];
+  for (const t of best.values()) {
+    const reg = registryToken(`${t.symbol}@${t.contract}`);
+    if (reg?.is_scam) continue;
+    out.push({
+      ...t,
+      alcorScore: reg?.score ?? 0,
+      alcorTrusted: reg?.is_trusted ?? false,
+    });
+  }
+  return out.sort((a, b) => b.tvlUsd - a.tvlUsd).slice(0, 60);
 }
 
 /** Re-price universe tokens from freshly refreshed pool rows. */

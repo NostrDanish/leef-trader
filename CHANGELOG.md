@@ -2,23 +2,18 @@
 
 All notable changes to LEEF Trader. Dates are commit-era, not release tags.
 
-## Unreleased — WAX price: kill the freeze, anchor on the deepest book
+## Unreleased — Alcor token registry + split-or-skip depth guard
 
-The first fix (venue spot over reserves) wasn't enough — two more bugs kept
-the wrong WAX price alive:
-
-- **Frozen hint**: the on-chain refresh passed the old `snap.waxUsd` back
-  into `attachUsdPrices` as the hint, and the hint short-circuited the pool
-  math. A bad first load stayed forever. Fresh book math now always wins;
-  the hint only applies when the book has no WAX/stable pool at all.
-- **Arbitrary anchor**: the WAX/stable pool was the first match in array
-  order — after the venue merge that's effectively random, including thin
-  or depegged books. Now the deepest-TVL trusted-stable pool anchors.
-- On-chain aux patches now carry the sqrt-derived spot price through
-  (they updated quantities while the price stayed at the API pull).
-
-Regression tests: stale-hint override, deepest-pool anchor both orders,
-untrusted-stable rejection.
+- **Alcor token registry** (`token-registry.ts`): one bulk fetch of the
+  venue's own `/tokens` (score 0–99, is_scam, is_trusted, safe_usd_price)
+  on the cold path, cached 30 min. Universe tokens carry the venue score;
+  the token picker shows it. **`is_scam` is fail-closed**: scam-flagged
+  tokens are removed from the universe AND from the route graph — they can
+  never be priced, routed, or suggested.
+- **Split-or-skip depth guard**: a trade that moves the market past the
+  risk cap after the router's own split optimization is now skipped, not
+  forced ("Too big for the book — already split-optimized"). The manual
+  swap desk has the same never-cross line (10% impact).
 
 ## Unreleased — Crash-proof balance reads
 

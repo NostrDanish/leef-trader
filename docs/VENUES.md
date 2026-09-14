@@ -4,6 +4,21 @@ Status: Alcor is production (CLMM router). Defibox and TacoSwap are
 **on-chain CP adapters** plugged into the same route graph. Ranking quotes
 are APPROXIMATE; live Alcor legs remain EXACT.
 
+## Alcor token registry
+
+The venue's own verification layer (`/api/v2/tokens`, one bulk call, cached
+30 min): `score` (0–99), `is_trusted`, `is_scam`, `safe_usd_price`. The
+universe annotates tokens with the venue score and the pickers show it.
+**`is_scam` is fail-closed** — scam-flagged tokens are dropped from both
+the universe and the route graph, never priced, routed, or suggested.
+
+## Depth discipline
+
+No oversized position through an undersized pool. The router splits across
+books when that pays; if the best route still exceeds the risk impact cap,
+the trade is skipped ("too big for the book — already split-optimized").
+Manual swaps have a hard 10% impact line.
+
 ## Supported venues
 
 | Venue | Contract | Discovery | Quote | Live execution |

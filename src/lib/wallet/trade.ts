@@ -23,6 +23,13 @@ export type SwapOutcome = {
 };
 
 /**
+ * Hard depth cap for manual swaps. The router splits across books when that
+ * helps; beyond this impact even the best split is a bad trade. Strategies
+ * run much tighter (risk.maxImpactPct) — this is the never-cross line.
+ */
+export const MAX_SWAP_IMPACT_PCT = 10;
+
+/**
  * Execute one swap from the Quotes desk (or anywhere) — paper fill on the
  * simulated book when no signer is connected, live on-chain otherwise.
  */
@@ -99,6 +106,17 @@ export async function executeSwap(opts: {
       governed.allowed
         ? `Portfolio reserve allows only ${governed.allowedAmountIn.toFixed(8)} ${opts.tokenIn}`
         : `Portfolio governor: ${governed.reason}`,
+    );
+  }
+
+  // Depth guard: never push an oversized position through an undersized
+  // pool. The router already split across books when that paid (the winning
+  // route may BE a split) — so if the best executable route still moves the
+  // market this much, the right trade is a smaller one or none at all.
+  const impactPct = route.priceImpact * 100;
+  if (impactPct > MAX_SWAP_IMPACT_PCT) {
+    throw new Error(
+      `Too big for this book — ${impactPct.toFixed(1)}% price impact even after pool splitting. Try a smaller amount.`,
     );
   }
 

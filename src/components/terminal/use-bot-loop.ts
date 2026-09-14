@@ -484,6 +484,16 @@ async function runBotOnceInner(
       };
     }
 
+    // Depth guard (split-or-skip): the router splits across books when that
+    // pays, so if the winning route STILL moves the market past the risk
+    // cap, the position is too big for the pool — skip, don't force it.
+    if (decision.route.priceImpact * 100 > risk.maxImpactPct) {
+      const reason = `Too big for the book — ${(decision.route.priceImpact * 100).toFixed(1)}% impact > ${risk.maxImpactPct}% cap (already split-optimized) — skipping`;
+      b.pushDecision({ kind: "hold", mode: "live", reason, priceUsd: book.leefUsd });
+      b.setLastReason(reason);
+      return { kind: "hold", reason };
+    }
+
     // Treasure growth: the graph proposed, now the EXACT venue quote must
     // approve. Re-run the growth thesis on the real executable output for
     // this size — if the fresh quote no longer grows the treasure, HOLD
