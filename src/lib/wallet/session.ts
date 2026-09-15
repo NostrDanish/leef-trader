@@ -6,7 +6,7 @@
  * swap.alcor transfers to trade without popups).
  */
 import { SessionKit, type Session } from "@wharfkit/session";
-import { WebUIRenderer } from "@wharfkit/web-ui-renderer";
+import { WebRenderer } from "@wharfkit/web-renderer";
 import { WalletPluginAnchor } from "@wharfkit/wallet-plugin-anchor";
 import { WalletPluginCloudWallet } from "@wharfkit/wallet-plugin-cloudwallet";
 
@@ -43,7 +43,7 @@ function getKit(): SessionKit {
       {
         appName: "LEEF Trader",
         chains: [{ id: WAX_CHAIN_ID, url: "https://wax.greymass.com" }],
-        ui: new WebUIRenderer(),
+        ui: new WebRenderer(),
         walletPlugins: [new WalletPluginCloudWallet(), new WalletPluginAnchor()],
       },
       { fetch: proxyFetch },

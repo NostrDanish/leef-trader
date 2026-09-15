@@ -28,7 +28,7 @@
     "@wharfkit/signing-request": "^3.4.0",
     "@wharfkit/wallet-plugin-anchor": "^1.7.3",
     "@wharfkit/wallet-plugin-cloudwallet": "^1.6.5",
-    "@wharfkit/web-ui-renderer": "^0.3.7",
+    "@wharfkit/web-renderer": "^1.4.3",
     "buffer": "^6.0.3",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
