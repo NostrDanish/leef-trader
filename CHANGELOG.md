@@ -2,6 +2,15 @@
 
 All notable changes to LEEF Trader. Dates are commit-era, not release tags.
 
+## Unreleased — Position card shows holdings for swap strategies
+
+Volume / Volume-X / Unleashed fire `swap` decisions, which never open a
+tracked pair Position — the card said "Flat" forever while trades fired
+on-chain. The card now shows the base token's real wallet balance plus its
+change this session (a full wallet snapshot is taken at bot start). Pair
+strategies (signal / meanrev / grid / dca) still show the tracked position
+with entry P&L.
+
 ## Unreleased — One WAX price authority: downstream paths venue-spot only
 
 The anchor fixes were necessary but not sufficient — three downstream paths

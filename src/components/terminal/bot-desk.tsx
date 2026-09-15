@@ -23,6 +23,7 @@ import {
   type BotStrategy,
 } from "@/lib/leef/bot-engine";
 import { positionMarkUsd } from "@/lib/leef/risk-usd";
+import { usdPriceOf } from "@/lib/leef/cost-model";
 import { fmtNum, fmtUsd } from "@/lib/leef/format";
 import type { LeefSnapshot } from "@/lib/leef/types";
 import { hasSecret } from "@/lib/wallet/secret";
@@ -124,6 +125,7 @@ export function BotDesk({ snap }: { snap: LeefSnapshot }) {
     const start: Record<string, number> = {};
     for (const t of snapshotTargets(snap, balances, b.growthTargets)) start[t.symbol] = t.amount;
     b.snapshotGrowthStart(start);
+    b.snapshotSessionStart(balances);
     b.start(equityUsd);
     void runBotOnce(snap);
   }
@@ -389,10 +391,7 @@ export function BotDesk({ snap }: { snap: LeefSnapshot }) {
                   <PositionPnl snap={snap} />
                 </>
               ) : (
-                <>
-                  <div className="mt-1 font-mono text-lg tabular-nums">Flat</div>
-                  <div className="text-xs text-muted-foreground">No open position</div>
-                </>
+                <HoldingsPosition snap={snap} />
               )}
             </Card>
             <Card className="p-4">
@@ -543,6 +542,43 @@ export function BotDesk({ snap }: { snap: LeefSnapshot }) {
 }
 
 /* ------------------------------------------------------------------ */
+
+/**
+ * Swap-style strategies (volume / volume-x / unleashed) never open a tracked
+ * pair position — the card must not say "Flat" while the wallet is filling.
+ * Show the base token's real wallet balance and its change this session.
+ */
+function HoldingsPosition({ snap }: { snap: LeefSnapshot }) {
+  const base = useBot((s) => s.base) || "LEEF";
+  const start = useBot((s) => s.sessionStartBalances);
+  const running = useBot((s) => s.running);
+  const balances = useWallet((s) => s.balances());
+  const now = balanceForIdentifier(balances, snap.universe, base);
+  const px = usdPriceOf(base, snap);
+  const opened = start[base] ?? start[`${base}@`] ?? null;
+  const startAmount =
+    opened ?? balanceForIdentifier(start, snap.universe, base);
+  const delta = running && startAmount > 0 ? now - startAmount : null;
+  const usdNow = now * (px || 0);
+  return (
+    <>
+      <div className="mt-1 font-mono text-lg tabular-nums text-leef">
+        {fmtNum(now, { compact: true })} {base}
+      </div>
+      <div className="font-mono text-xs tabular-nums text-muted-foreground">
+        {fmtUsd(usdNow)}
+        {delta != null && (
+          <span className={delta >= 0 ? " text-buy" : " text-sell"}>
+            {" "}
+            {delta >= 0 ? "+" : ""}
+            {fmtNum(delta, { compact: true })} this session
+          </span>
+        )}
+      </div>
+      <div className="text-xs text-subtle">Holdings · swap strategies don't open pair positions</div>
+    </>
+  );
+}
 
 function RegimeBadge({ snap }: { snap: LeefSnapshot }) {
   const series = useBot((s) => s.series);

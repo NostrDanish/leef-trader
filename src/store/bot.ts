@@ -77,6 +77,10 @@ type BotState = {
   growthMode: GrowthMode;
   /** Snapshot of target amounts at session start (for growth P&L). */
   growthStart: Record<string, number>;
+  /** Full wallet snapshot at session start — swap-style strategies (volume,
+   *  volume-x, unleashed) never open a tracked Position, so the position card
+   *  shows holdings delta vs this instead of a fake "Flat". */
+  sessionStartBalances: Record<string, number>;
   goals: BotGoals;
   risk: BotRisk;
   position: Position | null;
@@ -100,6 +104,7 @@ type BotState = {
   setGrowthTargets: (t: GrowthTarget[]) => void;
   setGrowthMode: (m: GrowthMode) => void;
   snapshotGrowthStart: (amounts: Record<string, number>) => void;
+  snapshotSessionStart: (amounts: Record<string, number>) => void;
   setGoals: (p: Partial<BotGoals>) => void;
   setRisk: (p: Partial<BotRisk>) => void;
   pushSeries: (p: PricePoint) => void;
@@ -144,6 +149,7 @@ export const useBot = create<BotState>()(
       growthTargets: [...DEFAULT_GROWTH_TARGETS],
       growthMode: "balanced",
       growthStart: {},
+      sessionStartBalances: {},
       goals: { ...DEFAULT_GOALS },
       risk: { ...DEFAULT_RISK },
       position: null,
@@ -196,6 +202,7 @@ export const useBot = create<BotState>()(
       setGrowthTargets: (t) => set({ growthTargets: normalizeTargets(t) }),
       setGrowthMode: (growthMode) => set({ growthMode }),
       snapshotGrowthStart: (growthStart) => set({ growthStart }),
+      snapshotSessionStart: (sessionStartBalances) => set({ sessionStartBalances }),
       setGoals: (p) => set((s) => ({ goals: { ...s.goals, ...p } })),
       setRisk: (p) => set((s) => ({ risk: { ...s.risk, ...p } })),
       pushSeries: (p) =>
@@ -331,6 +338,7 @@ export const useBot = create<BotState>()(
             : [...DEFAULT_GROWTH_TARGETS],
           growthMode: p.growthMode === "max" || p.growthMode === "compound" ? p.growthMode : "balanced",
           growthStart: p.growthStart && typeof p.growthStart === "object" ? p.growthStart : {},
+          sessionStartBalances: {},
           goals: { ...DEFAULT_GOALS, ...(p.goals ?? {}) },
           risk: {
             ...DEFAULT_RISK,
@@ -364,6 +372,7 @@ export const useBot = create<BotState>()(
         growthTargets: s.growthTargets,
         growthMode: s.growthMode,
         growthStart: s.growthStart,
+        sessionStartBalances: s.sessionStartBalances,
         goals: s.goals,
         risk: s.risk,
         position: s.position,
