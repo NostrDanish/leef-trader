@@ -12,14 +12,18 @@ the execution loop (`use-bot-loop.ts`). Both fail closed.
 | Book freshness | `risk.maxQuoteAgeSec` | 45s (one missed 30s pull tolerated) |
 | Session profit goal → stop | `goals.sessionGoalUsd` | 0 (off) |
 | Max drawdown → stop | `goals.maxDrawdownPct` | 0 (off) |
-| Cooldown | `risk.cooldownSec` (adaptive ×0.5–×1.5, floor 10s) | 60s |
-| Hourly trade cap | `risk.maxTradesHour` | 10 |
+| Cooldown | `risk.cooldownSec` (adaptive ×0.5–×1.5, floor 10s) | 15s |
+| Hourly trade cap | `risk.maxTradesHour` | 120 |
 | Position cap | `risk.maxPositionUsd` | $1,000 marked value |
 | Entry impact cap | `risk.maxImpactPct` | 3% |
 | Min confidence (signal) | `risk.minConfidence` | 55% |
-| Min arb edge (on-chain floor) | `risk.minEdgePct` | 1.2% |
-| Min NET edge after all costs | `risk.minNetEdgePct` | 0.1% |
+| Min arb edge (on-chain floor) | `risk.minEdgePct` | 0.3% |
+| Min NET edge after all costs | `risk.minNetEdgePct` | 0 (WAX micro-edge: a dust clip with a $1e-10 net is a win) |
 | Volume echo loss budget (on-chain) | `risk.maxEchoLossPct` | 1.5% |
+
+These are the shipped defaults. The desk can tighten every one of them —
+the values above are the floor the engine enforces, not a claim that looser
+is safer.
 
 ## Position guards
 

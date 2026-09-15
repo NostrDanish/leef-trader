@@ -92,6 +92,11 @@ export function exactEntryVerdict(opts: ExactGateOpts & {
  */
 export function exactSwapVerdict(opts: ExactGateOpts & {
   minNetPct: number;
+  /**
+   * Explicit tolerance the GUARANTEED (min-out) side may dip below the floor,
+   * percent. Default 0 — the floor is a floor. (Was a hidden 0.05.)
+   */
+  floorTolerancePct?: number;
 }): { pass: boolean; exactNetPct: number; reason: string } {
   const { exactNetPct, exactExecCostPct } = exactOneShot(opts);
   // Worst case matters too: if the guaranteed output breaches the floor,
@@ -106,12 +111,14 @@ export function exactSwapVerdict(opts: ExactGateOpts & {
       guaranteedPct = inUsd > 0 ? ((gUsd - inUsd) / inUsd) * 100 : -100;
     }
   }
-  const pass = exactNetPct + 1e-9 >= opts.minNetPct && guaranteedPct + 1e-9 >= opts.minNetPct - 0.05;
+  const tol = Math.max(0, opts.floorTolerancePct ?? 0);
+  const pass =
+    exactNetPct + 1e-9 >= opts.minNetPct && guaranteedPct + 1e-9 >= opts.minNetPct - tol;
   return {
     pass,
     exactNetPct,
     reason: pass
       ? `exact net ${exactNetPct.toFixed(2)}% ≥ ${opts.minNetPct}% (exec cost ${exactExecCostPct.toFixed(2)}%)`
-      : `exact net ${exactNetPct.toFixed(2)}% / guaranteed ${guaranteedPct.toFixed(2)}% < floor ${opts.minNetPct}%`,
+      : `exact net ${exactNetPct.toFixed(2)}% / guaranteed ${guaranteedPct.toFixed(2)}% < floor ${opts.minNetPct}%${tol > 0 ? ` (+${tol}% tol)` : ""}`,
   };
 }

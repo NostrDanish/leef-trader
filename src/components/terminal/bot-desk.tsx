@@ -49,6 +49,7 @@ import {
   targetUnitPnl,
 } from "@/lib/leef/growth-engine";
 import { classifyRegime, dangerScore } from "@/lib/leef/regime";
+import { isEconomicFailureReason } from "@/lib/wallet/trade-error";
 import { holdWakeLock, releaseWakeLock } from "@/lib/market/wake-lock";
 
 const KIND_VARIANT: Record<
@@ -595,7 +596,7 @@ function RegimeBadge({ snap }: { snap: LeefSnapshot }) {
     dislocationPct: r.dislocationPct,
     liquidityUsd: Math.max(0, ...snap.pools.map((p) => p.tvlUsd)),
     recentFailures: decisions.filter(
-      (d) => d.kind === "error" && Date.now() - Date.parse(d.t) < 600_000,
+      (d) => d.kind === "error" && isEconomicFailureReason(d.reason) && Date.now() - Date.parse(d.t) < 600_000,
     ).length,
   });
   const tone =

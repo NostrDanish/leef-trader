@@ -39,6 +39,30 @@ export class TradeError extends Error {
   }
 }
 
+/**
+ * Does this failure class say something about MARKET DANGER (teach the
+ * danger score) or is it infrastructure noise (RPC/venue/quota) that must
+ * never move conviction? Economic and on-chain execution failures teach;
+ * transport failures don't.
+ */
+export function isEconomicFailureCode(code: string): boolean {
+  return (
+    code === "MIN_OUT_FAILED" ||
+    code === "SLIPPAGE_TOO_HIGH" ||
+    code === "LIQUIDITY_CHANGED" ||
+    code === "TRANSACTION_FAILED" ||
+    code === "TRANSACTION_REJECTED" ||
+    code === "PRICE_UNCERTAIN" ||
+    code === "PRICE_DEPEGGED"
+  );
+}
+
+/** Decision-log reasons carry the classified code as `CODE: message`. */
+export function isEconomicFailureReason(reason: string): boolean {
+  const code = reason.split(":", 1)[0] ?? "";
+  return isEconomicFailureCode(code);
+}
+
 /** Pull the real contract assert from an Antelope HTTP 500 body. */
 export function chainAssertMessage(raw: string): string | null {
   // Deepest first: error.details[].message holds the contract's assert text.

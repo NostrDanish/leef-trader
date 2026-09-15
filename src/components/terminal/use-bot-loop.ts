@@ -10,6 +10,8 @@ import { optimizeEntrySize } from "@/lib/leef/net-edge";
 import { markDeadOpportunity, opportunityFingerprint } from "@/lib/leef/opportunity";
 import { fmtNum } from "@/lib/leef/format";
 import { fetchAlcorRouteCached, verifyExecutableRoute } from "@/lib/leef/quote-verify";
+import type { AlcorRouteQuote } from "@/lib/wallet/alcor-route";
+import { isEconomicFailureReason } from "@/lib/wallet/trade-error";
 import { verifyGrowthExact } from "@/lib/leef/growth-engine";
 import { exactEntryVerdict, exactSwapVerdict } from "@/lib/leef/exact-gate";
 import { exceedsMaxPositionUsd, usdToTokenBounds } from "@/lib/leef/risk-usd";
@@ -217,9 +219,11 @@ async function runBotOnceInner(
     base: b.base,
     growthTargets: b.growthTargets,
     growthMode: b.growthMode,
-    // Danger input: infrastructure errors in the last 10 minutes.
+    // Danger input: only ECONOMIC failures teach the danger score. An RPC
+    // timeout or Alcor 500 is infrastructure noise — it must never move
+    // market conviction.
     recentFailures: b.decisions.filter(
-      (d) => d.kind === "error" && Date.now() - Date.parse(d.t) < 600_000,
+      (d) => d.kind === "error" && isEconomicFailureReason(d.reason) && Date.now() - Date.parse(d.t) < 600_000,
     ).length,
     force: opts?.force ?? null,
   });
@@ -285,6 +289,8 @@ async function runBotOnceInner(
 
   const quoteTok = b.quote || "WAX";
   const baseTok = b.base || "LEEF";
+  /** The quote an exact gate approved — the signer uses THESE memos. */
+  let gateQuote: AlcorRouteQuote | undefined;
   const bounds = usdToTokenBounds({
     snap: book,
     quote: quoteTok,
@@ -365,6 +371,9 @@ async function runBotOnceInner(
           b.setLastReason(reason);
           return { kind: "hold", reason };
         }
+        // The gate approved THIS quote — the signer must use these memos,
+        // not a fresh re-quote (gate quote A ≠ sign quote B race).
+        gateQuote = verified.verified[0]?.alcor;
         const verdict = exactEntryVerdict({
           snap: book,
           route: decision.route,
@@ -482,6 +491,8 @@ async function runBotOnceInner(
         route: resized,
         reason: `${decision.reason} · ${governed.reason}`,
       };
+      // Resized before the gates ran — no gate quote can survive a resize.
+      gateQuote = undefined;
     }
 
     // Depth guard (split-or-skip): the router splits across books when that
@@ -516,6 +527,7 @@ async function runBotOnceInner(
           b.setLastReason(reason);
           return { kind: "hold", reason };
         }
+        gateQuote = verified.verified[0]?.alcor;
         const verdict = verifyGrowthExact(
           decision.growthPlan,
           decision.amountIn,
@@ -564,6 +576,7 @@ async function runBotOnceInner(
             b.setLastReason(reason);
             return { kind: "hold", reason };
           }
+          gateQuote = verified.verified[0]?.alcor;
           const verdict = exactSwapVerdict({
             snap: book,
             route: decision.route,
@@ -632,6 +645,9 @@ async function runBotOnceInner(
         route: resized,
         reason: `${decision.reason} · ${governed.reason}`,
       };
+      // Governor resized AFTER the exact gate — the gate-approved quote is
+      // for the old size. Discard it; the signer re-quotes at the new size.
+      gateQuote = undefined;
     }
   }
 
@@ -677,6 +693,7 @@ async function runBotOnceInner(
             amountIn: decision.amountWax,
             slippagePct: b.risk.slippage,
             snap: book,
+            preQuoted: gateQuote,
           });
           timings.signMs = Date.now() - tSign;
           timings.broadcastMs = timings.signMs;
@@ -857,6 +874,7 @@ async function runBotOnceInner(
             amountIn: decision.amountIn,
             slippagePct: b.risk.slippage,
             snap: book,
+            preQuoted: gateQuote,
           });
           txid = exec.txid;
           markBroadcast(txid);

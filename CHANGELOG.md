@@ -2,6 +2,31 @@
 
 All notable changes to LEEF Trader. Dates are commit-era, not release tags.
 
+## Unreleased — Audit round: sign the gate's quote, hard floors, honest danger input
+
+Dual-audit follow-through (ChatGPT + Grok):
+
+- **Exact-gate→signing race closed.** The exact gate approved quote A, then
+  `signAndPushSwap` re-quoted fresh at sign time (quote B, economically
+  un-evaluated). The signer now receives the gate-approved quote as
+  `preQuoted` and signs THOSE memos. Governor resizes after a gate discard
+  the stale quote (re-quote at the new size). Regression-safe: resizes and
+  non-gated paths still re-quote fresh.
+- **Floor tolerance made explicit.** `exactSwapVerdict` had a hidden 5 bps
+  dip below the guaranteed floor. Now `floorTolerancePct` (default 0 — the
+  floor is a floor). Regression tests cover both sides.
+- **Danger input filtered.** Only economic failures (min-out, slippage,
+  liquidity drift, tx failures, price uncertainty/depeg) feed the danger
+  score. RPC/rate-limit/venue/CPU/policy noise no longer moves conviction.
+- **Docs match the code.** RISK_MANAGEMENT.md's table claimed 60s cooldown,
+  10 trades/hr, 1.2% arb floor, 0.1% net edge — the shipped defaults are
+  15s / 120 / 0.3% / 0. Fixed the doc, not the engine.
+- **Honest labeling.** OG/title no longer says "AI Auto Trading Bot" — the
+  README already admits no LLM is wired in.
+
+Not changed (verified first): Grok's "Alcor caps maxHops at 3" — the live
+router accepts maxHops=10 and returns valid routes, so no behavior change.
+
 ## Unreleased — Position card shows holdings for swap strategies
 
 Volume / Volume-X / Unleashed fire `swap` decisions, which never open a

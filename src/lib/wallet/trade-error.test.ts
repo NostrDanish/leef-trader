@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { classifyTradeError, TradeError } from "./trade-error";
+import { classifyTradeError, isEconomicFailureCode, isEconomicFailureReason, TradeError } from "./trade-error";
 import {
   beginSigning,
   liveCapitalBlocked,
@@ -59,6 +59,24 @@ describe("classifyTradeError", () => {
     const c = classifyTradeError(new Error("HTTP 500: Internal error"));
     expect(c.code).toBe("UNKNOWN");
     expect(c.message).toMatch(/internal error/i);
+  });
+});
+
+describe("economic failure classification (danger-score feed)", () => {
+  it("market/execution failures teach danger", () => {
+    for (const c of ["MIN_OUT_FAILED", "SLIPPAGE_TOO_HIGH", "LIQUIDITY_CHANGED", "TRANSACTION_FAILED", "TRANSACTION_REJECTED", "PRICE_UNCERTAIN", "PRICE_DEPEGGED"]) {
+      expect(isEconomicFailureCode(c)).toBe(true);
+    }
+  });
+  it("infrastructure failures never move market conviction", () => {
+    for (const c of ["RPC_FAILURE", "QUOTE_TIMEOUT", "API_RATE_LIMIT", "VENUE_UNAVAILABLE", "MODEL_ONLY", "UNKNOWN", "INSUFFICIENT_CPU", "POLICY_BLOCK", "SIGNING_FAILURE"]) {
+      expect(isEconomicFailureCode(c)).toBe(false);
+    }
+  });
+  it("parses the decision-log reason prefix", () => {
+    expect(isEconomicFailureReason("MIN_OUT_FAILED: output rounds to 0")).toBe(true);
+    expect(isEconomicFailureReason("RPC_FAILURE: all endpoints down")).toBe(false);
+    expect(isEconomicFailureReason("no prefix here")).toBe(false);
   });
 });
 

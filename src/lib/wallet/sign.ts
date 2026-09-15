@@ -4,7 +4,7 @@ import { LEEF_CONTRACT, WAX_CONTRACT } from "@/lib/leef/types";
 import { swapContractOf, venueOfPoolId } from "@/lib/leef/venues";
 import { verifyExecutableRoute } from "@/lib/leef/quote-verify";
 import { TradeError } from "./trade-error";
-import { fetchAlcorRoute, parseAssetAmount } from "./alcor-route";
+import { fetchAlcorRoute, parseAssetAmount, type AlcorRouteQuote } from "./alcor-route";
 import {
   packAddLiquid,
   packCollect,
@@ -61,22 +61,32 @@ async function buildTransfers(opts: {
   amountIn: number;
   slippagePct: number;
   snap: LeefSnapshot;
+  /**
+   * The exact quote the economic gate just approved. When present and fresh,
+   * we sign THESE memos — re-quoting at sign time would create a race where
+   * the gate approved quote A but the chain sees quote B.
+   */
+  preQuoted?: AlcorRouteQuote;
 }): Promise<{ transfers: TransferSpec[]; expectedOut: number }> {
   const tokenIn = metaOf(opts.route.tokenIn, opts.snap);
   const tokenOut = metaOf(opts.route.tokenOut, opts.snap);
 
   if (allAlcor(opts.route)) {
-    // Fresh (uncached) quote at sign time — a cached memo can carry a min-out
-    // the market no longer clears, which the chain reverts.
-    const quote = await fetchAlcorRoute({
-      tokenInId: tokenIn.alcorId,
-      tokenOutId: tokenOut.alcorId,
-      amount: opts.amountIn,
-      slippagePct: opts.slippagePct,
-      receiver: opts.account,
-      maxHops: Math.min(10, Math.max(2, opts.route.legs.length)),
-      decimalsIn: tokenIn.decimals,
-    });
+    // Sign the gate-approved quote when we have it; otherwise fetch fresh.
+    // A cached memo can carry a min-out the market no longer clears, which
+    // the chain reverts — but a quote the gate approved seconds ago IS the
+    // economically evaluated one.
+    const quote =
+      opts.preQuoted ??
+      (await fetchAlcorRoute({
+        tokenInId: tokenIn.alcorId,
+        tokenOutId: tokenOut.alcorId,
+        amount: opts.amountIn,
+        slippagePct: opts.slippagePct,
+        receiver: opts.account,
+        maxHops: Math.min(10, Math.max(2, opts.route.legs.length)),
+        decimalsIn: tokenIn.decimals,
+      }));
     const transfers = quote.swaps.map((s) => ({
       tokenContract: tokenIn.contract,
       to: ALCOR_SWAP_CONTRACT,
@@ -280,6 +290,8 @@ export async function signAndPushSwap(opts: {
   amountIn: number;
   slippagePct: number;
   snap: LeefSnapshot;
+  /** Gate-approved quote — sign these memos, not a fresh re-quote. */
+  preQuoted?: AlcorRouteQuote;
 }): Promise<SwapExecution> {
   const { transfers, expectedOut } = await buildTransfers(opts);
   const { txid } = await signAndPushTransfers({
