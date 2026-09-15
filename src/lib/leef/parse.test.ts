@@ -6,7 +6,7 @@
  * real book said $0.00507.
  */
 import { describe, expect, it } from "vitest";
-import { attachUsdPrices, parseAllPools, waxUsdFromAux } from "./parse";
+import { attachUsdPrices, parseAllPools, waxUsdAnchor, waxUsdFromAux } from "./parse";
 import type { AuxPool } from "./types";
 
 const WAX = { symbol: "WAX", contract: "eosio.token", decimals: 8 };
@@ -122,6 +122,39 @@ describe("attachUsdPrices — CLMM WAX/stable pricing", () => {
       tokenA: { ...WAX, quantity: 100_000 },
       tokenB: { symbol: "WAXUSDC", contract: "eth.token", decimals: 6, quantity: 507 },
     });
+    expect(waxUsdFromAux([venueReserve])).toBeCloseTo(0.00507, 8);
+  });
+});
+
+describe("waxUsdAnchor — observation set quality", () => {
+  it("one observation can never be confident", () => {
+    const a = waxUsdAnchor([clmmWaxUsdcPool()]);
+    expect(a).not.toBeNull();
+    expect(a!.sources).toBe(1);
+    expect(a!.confidence).toBeLessThan(0.5);
+  });
+
+  it("three tight observations = high confidence, low dispersion", () => {
+    const a = waxUsdAnchor([
+      clmmWaxUsdcPool({ id: 1, priceA: 0.00507, priceB: 197.2 }),
+      clmmWaxUsdcPool({ id: 2, priceA: 0.00509, priceB: 196.5 }),
+      clmmWaxUsdcPool({ id: 3, priceA: 0.00506, priceB: 197.6 }),
+    ]);
+    expect(a!.sources).toBe(3);
+    expect(a!.spotSources).toBe(3);
+    expect(a!.dispersionPct).toBeLessThan(1);
+    expect(a!.confidence).toBeGreaterThan(0.9);
+  });
+
+  it("wide disagreement caps confidence low even with many sources", () => {
+    const a = waxUsdAnchor([
+      clmmWaxUsdcPool({ id: 1, priceA: 0.005, priceB: 200 }),
+      clmmWaxUsdcPool({ id: 2, priceA: 0.006, priceB: 166.7 }),
+      clmmWaxUsdcPool({ id: 3, priceA: 0.0093, priceB: 107.5 }),
+    ]);
+    expect(a!.confidence).toBeLessThanOrEqual(0.4);
+  });
+});
     expect(waxUsdFromAux([venueReserve])).toBeCloseTo(0.00507, 8);
   });
 

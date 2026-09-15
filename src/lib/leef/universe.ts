@@ -62,6 +62,10 @@ type RawPoolRow = {
   tvlUSD?: number;
   tokenA?: RawToken;
   tokenB?: RawToken;
+  /** Venue-quoted spot: B per 1 A (CLMM-aware; reserves lie on CLMM). */
+  priceA?: number;
+  /** Venue-quoted spot: A per 1 B. */
+  priceB?: number;
 };
 
 const num = (v: unknown): number => {
@@ -122,6 +126,8 @@ export function buildUniverse(rawPools: unknown, waxUsd: number): UniverseToken[
     poolId: number,
     tvlUsd: number,
     otherIsWax: boolean,
+    /** Venue-quoted spot: tok per 1 other (priceA/priceB from the pool row). */
+    otherPerTokSpot: number,
   ) => {
     const symbol = String(tok.symbol ?? "").toUpperCase();
     const contract = String(tok.contract ?? "");
@@ -134,9 +140,11 @@ export function buildUniverse(rawPools: unknown, waxUsd: number): UniverseToken[
     if (!otherIsWax && !stableOther) return;
 
     // Price: WAX per token (directly for WAX pools, via $-stable pools).
-    const rawUsd = otherIsWax
-      ? (otherQty / qty) * waxUsd
-      : otherQty / qty; // stable per token ≈ USD (trusted contract only)
+    // VENUE SPOT ONLY — reserve ratios (otherQty/qty) are CP truth but CLMM
+    // poison. No spot → no valuation, not a wrong one.
+    const otherPerTok = otherPerTokSpot > 0 ? otherPerTokSpot : 0;
+    if (!(otherPerTok > 0)) return;
+    const rawUsd = otherIsWax ? otherPerTok * waxUsd : otherPerTok;
     if (!(rawUsd > 0) || rawUsd > 1e6) return;
     const oracle = priceWithStableOracle(symbol, contract, rawUsd, tvlUsd);
     if (!(oracle.usdPrice > 0) || oracle.usdPrice > 1e6) return;
@@ -150,7 +158,7 @@ export function buildUniverse(rawPools: unknown, waxUsd: number): UniverseToken[
       decimals: Number(tok.decimals ?? 4) || 4,
       alcorId: `${symbol.toLowerCase()}-${contract}`,
       poolId,
-      waxPerToken: otherIsWax ? otherQty / qty : 0,
+      waxPerToken: otherIsWax ? otherPerTok : 0,
       usdPrice: oracle.usdPrice,
       tvlUsd,
       stable: oracle.stable,
@@ -160,6 +168,15 @@ export function buildUniverse(rawPools: unknown, waxUsd: number): UniverseToken[
       priceSource: oracle.priceSource,
       priceTimestamp: oracle.priceTimestamp,
     });
+  };
+
+  /**
+   * Spot price of `tok` denominated in the other side. Venue convention:
+   * priceA = B per 1 A, priceB = A per 1 B. So tok=A → priceA, tok=B → priceB.
+   */
+  const spotFor = (p: RawPoolRow, tokIsA: boolean): number => {
+    const v = tokIsA ? num(p.priceA) : num(p.priceB);
+    return v > 0 ? v : 0;
   };
 
   for (const p of list) {
@@ -172,9 +189,10 @@ export function buildUniverse(rawPools: unknown, waxUsd: number): UniverseToken[
     const aWax = isWaxToken(a);
     const bWax = isWaxToken(b);
     if (aWax || bWax) {
-      // WAX pool: price the non-WAX side.
-      if (aWax && b) consider(b, a, id, tvlUsd, true);
-      if (bWax && a) consider(a, b, id, tvlUsd, true);
+      // WAX pool: price the non-WAX side. tokIsA=false → tok is tokenB (venue
+      // priceB = A per 1 B); tokIsA=true → priceA. CLMM-safe.
+      if (aWax && b) consider(b, a, id, tvlUsd, true, spotFor(p, false));
+      if (bWax && a) consider(a, b, id, tvlUsd, true, spotFor(p, true));
       // WAX itself is always in the universe.
       const waxTok = aWax ? a : b;
       if (waxTok && !best.has("WAX@eosio.token")) {
@@ -202,8 +220,8 @@ export function buildUniverse(rawPools: unknown, waxUsd: number): UniverseToken[
       String(b.symbol ?? "").toUpperCase(),
       String(b.contract ?? ""),
     );
-    if (aStable && !bStable) consider(b, a, id, tvlUsd, false);
-    if (bStable && !aStable) consider(a, b, id, tvlUsd, false);
+    if (aStable && !bStable) consider(b, a, id, tvlUsd, false, spotFor(p, false));
+    if (bStable && !aStable) consider(a, b, id, tvlUsd, false, spotFor(p, true));
   }
 
   // Venue verification overlay: Alcor's own score/flags annotate every token.
@@ -225,7 +243,15 @@ export function buildUniverse(rawPools: unknown, waxUsd: number): UniverseToken[
 /** Re-price universe tokens from freshly refreshed pool rows. */
 export function repriceUniverse(
   universe: UniverseToken[],
-  aux: { id: number; tokenA: { symbol: string; contract: string; quantity: number }; tokenB: { symbol: string; contract: string; quantity: number }; tvlUsd: number }[],
+  aux: {
+    id: number;
+    tokenA: { symbol: string; contract: string; quantity: number };
+    tokenB: { symbol: string; contract: string; quantity: number };
+    tvlUsd: number;
+    /** Venue-quoted spot prices (B per 1 A / A per 1 B) when present. */
+    priceA?: number;
+    priceB?: number;
+  }[],
   waxUsd: number,
 ): UniverseToken[] {
   const byId = new Map(aux.map((p) => [p.id, p]));
@@ -243,17 +269,21 @@ export function repriceUniverse(
     const mine = matchA ? pool.tokenA : pool.tokenB;
     const other = matchA ? pool.tokenB : pool.tokenA;
     if (mine.quantity <= 0 || other.quantity <= 0) return t;
+    // VENUE SPOT ONLY for the reprice: other-per-token from priceA/priceB.
+    // Reserve ratios are CP truth but CLMM poison — a refresh must never
+    // silently re-derive a price from holdings on a concentrated pool.
+    const spot = matchA ? (pool.priceA ?? 0) : (pool.priceB ?? 0);
+    if (!(spot > 0)) return t; // no venue spot → keep the previous price
     if (isWaxToken(other)) {
-      const wpt = other.quantity / mine.quantity;
       const oracle = priceWithStableOracle(
         t.symbol,
         t.contract,
-        wpt * waxUsd,
+        spot * waxUsd,
         pool.tvlUsd,
       );
       return {
         ...t,
-        waxPerToken: wpt,
+        waxPerToken: spot,
         usdPrice: oracle.usdPrice,
         tvlUsd: pool.tvlUsd,
         stable: oracle.stable,
@@ -268,7 +298,7 @@ export function repriceUniverse(
       const oracle = priceWithStableOracle(
         t.symbol,
         t.contract,
-        other.quantity / mine.quantity,
+        spot,
         pool.tvlUsd,
       );
       return {

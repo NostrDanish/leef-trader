@@ -146,27 +146,45 @@ export function parseAllPools(raw: unknown): { leef: LeefPool[]; aux: AuxPool[] 
 /* Last-known WAX price (persisted)                                     */
 /* ------------------------------------------------------------------ */
 
-const LAST_WAX_KEY = "leef-last-wax-usd";
+const LAST_WAX_KEY = "leef-last-wax-usd-v2";
 let lastKnownWaxUsdCache = 0;
+let lastKnownWaxAtCache = 0;
 
-/** Last KNOWN live price, persisted across reloads. 0 when never seen. */
-export function lastKnownWaxUsd(): number {
-  if (lastKnownWaxUsdCache > 0) return lastKnownWaxUsdCache;
+function hydrateLastKnown(): void {
+  if (lastKnownWaxUsdCache > 0) return;
   try {
-    const n = Number(globalThis.localStorage?.getItem(LAST_WAX_KEY) ?? 0);
-    if (Number.isFinite(n) && n > 0) lastKnownWaxUsdCache = n;
+    const raw = globalThis.localStorage?.getItem(LAST_WAX_KEY);
+    if (!raw) return;
+    const parsed = JSON.parse(raw) as { usd?: number; at?: number };
+    if (parsed && typeof parsed.usd === "number" && parsed.usd > 0) {
+      lastKnownWaxUsdCache = parsed.usd;
+      lastKnownWaxAtCache = typeof parsed.at === "number" ? parsed.at : 0;
+    }
   } catch {
-    /* storage unavailable */
+    /* storage unavailable or legacy value */
   }
-  return lastKnownWaxUsdCache;
+}
+
+/**
+ * Last KNOWN live price with its observation time. 0 when never seen.
+ * A number without provenance is not a price — the timestamp is what makes
+ * "last known" honest.
+ */
+export function lastKnownWaxUsd(): { usd: number; at: number } {
+  hydrateLastKnown();
+  return { usd: lastKnownWaxUsdCache, at: lastKnownWaxAtCache };
 }
 
 /** Record a freshly computed live WAX price. Never stores hints/fallbacks. */
 export function noteKnownWaxUsd(usd: number): void {
   if (!(usd > 0) || !Number.isFinite(usd)) return;
   lastKnownWaxUsdCache = usd;
+  lastKnownWaxAtCache = Date.now();
   try {
-    globalThis.localStorage?.setItem(LAST_WAX_KEY, String(usd));
+    globalThis.localStorage?.setItem(
+      LAST_WAX_KEY,
+      JSON.stringify({ usd, at: lastKnownWaxAtCache }),
+    );
   } catch {
     /* storage unavailable */
   }
@@ -182,7 +200,19 @@ export function noteKnownWaxUsd(usd: number): void {
  * then the on-chain sqrt-price; reserves are the last resort (Defibox/Taco
  * are CP venues — there the reserve ratio IS the price).
  */
-export type WaxAnchor = { usd: number; tvlUsd: number; poolId: number };
+export type WaxAnchor = {
+  usd: number;
+  tvlUsd: number;
+  poolId: number;
+  /** Independent observations that survived orientation/trust filters. */
+  sources: number;
+  /** Spot-tier observations (venue-quoted or on-chain sqrt). */
+  spotSources: number;
+  /** Max |observation − median| / median, percent. High = books disagree. */
+  dispersionPct: number;
+  /** 0–1. One observation = LOW by construction; wide dispersion = LOW. */
+  confidence: number;
+};
 
 type WaxObservation = WaxAnchor & { spot: boolean };
 
@@ -229,23 +259,50 @@ export function waxUsdAnchor(aux: AuxPool[]): WaxAnchor | null {
   const mid = Math.floor(sorted.length / 2);
   const median = sorted.length % 2 === 1 ? sorted[mid]! : (sorted[mid - 1]! + sorted[mid]!) / 2;
   tier.sort((a, b) => Math.abs(a.usd - median) - Math.abs(b.usd - median) || b.tvlUsd - a.tvlUsd);
-  return tier[0]!;
+  const anchor = tier[0]!;
+  const maxDev = Math.max(...tier.map((o) => Math.abs(o.usd - median)));
+  const dispersionPct = median > 0 ? (maxDev / median) * 100 : 100;
+  const sources = tier.length;
+  // Confidence: one observation can never be confident. Two agreeing tightly
+  // is decent. Three+ tight is strong. Wide dispersion always caps it low.
+  const confidence =
+    sources >= 3 && dispersionPct <= 0.5
+      ? 0.96
+      : sources >= 2 && dispersionPct <= 0.5
+        ? 0.85
+        : sources >= 2 && dispersionPct <= 2
+          ? 0.6
+          : sources >= 2
+            ? 0.4
+            : 0.25;
+  return { ...anchor, sources, spotSources: spot.length, dispersionPct, confidence };
 }
 
 export function waxUsdFromAux(aux: AuxPool[]): number {
   return waxUsdAnchor(aux)?.usd ?? 0;
 }
 
+export type UsdAttach = {
+  waxUsd: number;
+  leefUsd: number;
+  waxPerLeef: number;
+  /** Oracle quality for the WAX/USD leg — 0 when not live. */
+  waxConfidence: number;
+  waxSources: number;
+  waxDispersionPct: number;
+};
+
 export function attachUsdPrices(
   pools: LeefPool[],
   aux: AuxPool[],
   waxUsdHint?: number,
   leefUsdHint?: number,
-): { waxUsd: number; leefUsd: number; waxPerLeef: number } {
+): UsdAttach {
   // Fresh book math ALWAYS wins; the hint is a fallback for a book with no
   // WAX/stable pool at all. (The on-chain refresh used to pass the old price
   // as the hint, freezing a bad first-load value forever.)
-  let waxUsd = waxUsdFromAux(aux);
+  const anchor = waxUsdAnchor(aux);
+  let waxUsd = anchor?.usd ?? 0;
   const livePriced = waxUsd > 0;
   const mainWax = [...pools]
     .filter((p) => isWaxToken(p.pair))
@@ -254,9 +311,15 @@ export function attachUsdPrices(
   if (mainWax && !(waxUsd > 0) && mainWax.tvlUsd > 0 && mainWax.pair.quantity > 0) {
     waxUsd = mainWax.tvlUsd / (mainWax.pair.quantity * 2);
   }
-  // Not live? Last KNOWN live price — never a hardcoded number.
-  if (!(waxUsd > 0)) waxUsd = lastKnownWaxUsd() || 0.006;
+  // Not live? Last KNOWN live price — never a hardcoded number. A
+  // never-seen-live cold start is UNKNOWN (0), and the trading engine fails
+  // closed on it (bot-engine gates on waxConfidence === 0).
+  if (!(waxUsd > 0)) waxUsd = lastKnownWaxUsd().usd || 0.006;
   if (livePriced) noteKnownWaxUsd(waxUsd);
+
+  const waxConfidence = livePriced ? anchor!.confidence : 0;
+  const waxSources = livePriced ? anchor!.sources : 0;
+  const waxDispersionPct = livePriced ? anchor!.dispersionPct : 0;
 
   const waxPerLeef = mainWax?.waxPerLeef ?? mainWax?.pairPerLeef ?? 0;
   const leefUsd =
@@ -265,21 +328,34 @@ export function attachUsdPrices(
   // Canonical per-token conversion map: "SYMBOL@contract" → WAX per token.
   // Symbol alone is NOT identity — a clone "WAXUSDC" on a foreign contract
   // must never borrow the real one's price.
+  //
+  // VENUE SPOT ONLY: priceA/priceB (or the on-chain sqrt price). Reserve
+  // ratios are CP-venue truth but CLMM poison — an Alcor pool's holdings
+  // are NOT its price. Missing spot → no conversion, not a wrong one.
   const waxByToken = new Map<string, number>();
   waxByToken.set("WAX@eosio.token", 1);
   for (const p of aux) {
     const aWax = isWaxToken(p.tokenA);
     const bWax = isWaxToken(p.tokenB);
-    if (aWax && p.tokenA.quantity > 0) {
-      waxByToken.set(
-        `${p.tokenB.symbol.toUpperCase()}@${p.tokenB.contract}`,
-        p.tokenB.quantity > 0 ? p.tokenA.quantity / p.tokenB.quantity : 0,
-      );
-    } else if (bWax && p.tokenB.quantity > 0) {
-      waxByToken.set(
-        `${p.tokenA.symbol.toUpperCase()}@${p.tokenA.contract}`,
-        p.tokenA.quantity > 0 ? p.tokenB.quantity / p.tokenA.quantity : 0,
-      );
+    if (!aWax && !bWax) continue;
+    const bPerA = q64Price(p.sqrtPriceX64, p.tokenA.decimals, p.tokenB.decimals);
+    // WAX per unit of the OTHER token.
+    let waxPerOther = 0;
+    if (aWax) {
+      // A=WAX. priceB = A per 1 B → WAX per other. priceA = B per 1 A → invert.
+      const spot =
+        p.priceB && p.priceB > 0 ? p.priceB : bPerA != null && bPerA > 0 ? 1 / bPerA : 0;
+      waxPerOther = spot;
+    } else {
+      // B=WAX. priceA = B per 1 A → WAX per other.
+      const spot = p.priceA && p.priceA > 0 ? p.priceA : bPerA ?? 0;
+      waxPerOther = spot ?? 0;
+    }
+    if (!(waxPerOther > 0)) continue;
+    if (aWax) {
+      waxByToken.set(`${p.tokenB.symbol.toUpperCase()}@${p.tokenB.contract}`, waxPerOther);
+    } else {
+      waxByToken.set(`${p.tokenA.symbol.toUpperCase()}@${p.tokenA.contract}`, waxPerOther);
     }
   }
 
@@ -305,7 +381,7 @@ export function attachUsdPrices(
     }
   }
 
-  return { waxUsd, leefUsd, waxPerLeef };
+  return { waxUsd, leefUsd, waxPerLeef, waxConfidence, waxSources, waxDispersionPct };
 }
 
 export function parseSwaps(raw: unknown, pool: LeefPool): LiveTrade[] {

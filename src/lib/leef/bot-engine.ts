@@ -731,6 +731,11 @@ export function evaluateBot(input: BotInput): Decision {
   if (!input.running && !input.force) return hold("Bot is stopped");
   if (snap.source !== "live") return hold("Book is stale — waiting for live Alcor data");
   if (!(leefUsd > 0) || !(waxUsd > 0)) return hold("Waiting for a priced book");
+  // Never-seen-live WAX price (cold start) is UNKNOWN for the trading engine
+  // — the display may show a last-known value, but no capital moves on it.
+  if (snap.waxConfidence === 0) {
+    return hold("WAX/USD oracle has never seen a live price — not trading on an unknown mark");
+  }
   if (!(baseUsd > 0)) return hold(`No USD mark for ${base} — pick another base token`);
   if (quote !== "WAX" && !(usdPriceOf(quote, snap) > 0)) {
     return hold(`No USD mark for ${quote} — pick another quote token`);

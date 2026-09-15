@@ -2,6 +2,29 @@
 
 All notable changes to LEEF Trader. Dates are commit-era, not release tags.
 
+## Unreleased — One WAX price authority: downstream paths venue-spot only
+
+The anchor fixes were necessary but not sufficient — three downstream paths
+still derived token prices from raw reserve ratios (CLMM poison):
+
+- **`waxByToken`** (aux → WAX conversion map) — now venue spot only
+  (priceA/priceB → sqrtPriceX64), never reserves. No spot → no conversion.
+- **`buildUniverse`** — token valuation uses the venue-quoted spot from the
+  pool row instead of `otherQty / qty`.
+- **`repriceUniverse`** — refresh path now uses venue spot too, and a pool
+  without a venue spot keeps the previous price (and its timestamp) instead
+  of re-deriving from holdings.
+
+Plus:
+
+- **WAX oracle quality on the snapshot**: `waxConfidence` / `waxSources` /
+  `waxDispersionPct` from the observation set. One observation can never be
+  confident (0.25); three tight ones = 0.96; wide dispersion caps at 0.4.
+- **Cold start fails closed**: never-seen-live WAX price → bot refuses to
+  trade ("WAX/USD oracle has never seen a live price"). Display may show a
+  last-known value; capital never moves on it.
+- **Last-known price carries its timestamp** (`{ usd, at }`).
+
 ## Unreleased — WAX price: live only, last-known when not live
 
 No more hardcoded snapshot constants in the price path. WAX/USD is:

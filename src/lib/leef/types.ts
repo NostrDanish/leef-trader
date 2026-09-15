@@ -131,6 +131,13 @@ export type LeefSnapshot = {
   waxUsd: number;
   leefUsd: number;
   waxPerLeef: number;
+  /**
+   * WAX/USD oracle quality: how many independent WAX/stable observations
+   * produced this price and how tightly they agree. 0 confidence = unknown.
+   */
+  waxConfidence?: number;
+  waxSources?: number;
+  waxDispersionPct?: number;
   pools: LeefPool[];
   aux: AuxPool[];
   trades: LiveTrade[];
