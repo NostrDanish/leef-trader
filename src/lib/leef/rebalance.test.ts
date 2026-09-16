@@ -1,7 +1,15 @@
 import { describe, expect, it } from "vitest";
-import { holdingsFromBalances, planRebalance, DEFAULT_REBALANCE, DEFAULT_LADDER } from "./rebalance";
+import {
+  chunkSweepLegs,
+  holdingsFromBalances,
+  planRebalance,
+  quoteOracleDeviationPct,
+  DEFAULT_REBALANCE,
+  DEFAULT_LADDER,
+  type PlannedLeg,
+} from "./rebalance";
 import { mergeUniverseFromBook } from "./universe";
-import { parseAssetAmount } from "@/lib/wallet/alcor-route";
+import { parseAssetAmount, type AlcorRouteQuote } from "@/lib/wallet/alcor-route";
 import type { UniverseToken } from "./universe";
 
 function tok(
@@ -113,5 +121,86 @@ describe("mergeUniverseFromBook", () => {
     const u = mergeUniverseFromBook([], [], [], 0.04, 0.000002);
     expect(u.find((t) => t.symbol === "WAX")?.usdPrice).toBeCloseTo(0.04, 8);
     expect(u.find((t) => t.symbol === "LEEF")?.usdPrice).toBeCloseTo(0.000002, 8);
+  });
+});
+
+/* ------------------------------------------------------------------ */
+/* Sweep chunking + poisoned-pool guard                                 */
+/* ------------------------------------------------------------------ */
+
+function legWithQuote(fromSym: string, toSym: string, actions: number, output: string, amountIn: number, fromUsd: number, toUsd: number): PlannedLeg {
+  const quote: AlcorRouteQuote = {
+    route: [1],
+    memo: "m",
+    swaps: Array.from({ length: actions }, () => ({
+      input: "1.0 T",
+      memo: "m",
+      output: "1.0 T",
+      route: [1],
+      percent: 100,
+      maxSent: "1.0 T",
+      minReceived: "1.0 T",
+    })),
+    input: `${amountIn} ${fromSym}`,
+    output,
+    minReceived: output,
+    maxSent: `${amountIn} ${fromSym}`,
+    priceImpact: "1",
+  };
+  return {
+    from: tok(fromSym, `${fromSym.toLowerCase()}.tok`, fromUsd),
+    to: tok(toSym, `${toSym.toLowerCase()}.tok`, toUsd),
+    amountIn,
+    estUsd: amountIn * fromUsd,
+    kind: "dust",
+    reason: "test",
+    quote,
+  };
+}
+
+describe("chunkSweepLegs", () => {
+  it("packs legs up to the per-tx action cap and keeps legs atomic", () => {
+    // 3 + 2 + 2 + 1 actions, cap 4 → [3] [2+2] [1]... wait: greedy order:
+    // leg A(3): cur=[A] (3). leg B(2): 3+2>4 → flush [A], cur=[B] (2).
+    // leg C(2): 2+2=4 ≤ 4 → cur=[B,C]. leg D(1): 4+1>4 → flush [B,C], cur=[D].
+    const legs = [
+      legWithQuote("A", "WAX", 3, "1 WAX", 10, 1, 1),
+      legWithQuote("B", "WAX", 2, "1 WAX", 10, 1, 1),
+      legWithQuote("C", "WAX", 2, "1 WAX", 10, 1, 1),
+      legWithQuote("D", "WAX", 1, "1 WAX", 10, 1, 1),
+    ];
+    const { chunks, dropped } = chunkSweepLegs(legs, 4);
+    expect(dropped).toHaveLength(0);
+    expect(chunks.map((c) => c.map((l) => l.from.symbol))).toEqual([["A"], ["B", "C"], ["D"]]);
+  });
+
+  it("drops a single leg too complex for one transaction", () => {
+    const legs = [legWithQuote("A", "WAX", 7, "1 WAX", 10, 1, 1), legWithQuote("B", "WAX", 1, "1 WAX", 10, 1, 1)];
+    const { chunks, dropped } = chunkSweepLegs(legs, 4);
+    expect(dropped.map((l) => l.from.symbol)).toEqual(["A"]);
+    expect(chunks).toHaveLength(1);
+    expect(chunks[0]![0]!.from.symbol).toBe("B");
+  });
+});
+
+describe("quoteOracleDeviationPct (poisoned-pool guard)", () => {
+  it("flags a quote paying hundreds of times the oracle value", () => {
+    // 122.71M LEEF ($0.000002) ≈ $245 in; quote pays 4608 WAX ($1) out → +1780%.
+    const leg = legWithQuote("LEEF", "WAX", 1, "4608.56502259 WAX", 122_710_000, 0.000002, 1);
+    const dev = quoteOracleDeviationPct(leg)!;
+    expect(dev).toBeGreaterThan(35);
+    expect(Math.abs(dev)).toBeGreaterThan(1000);
+  });
+
+  it("passes a fair quote (~0%) and a mildly negative one", () => {
+    const fair = legWithQuote("LEEF", "WAX", 1, "100 WAX", 1_000, 0.1, 1);
+    expect(quoteOracleDeviationPct(fair)!).toBeCloseTo(0, 6);
+    const mild = legWithQuote("LEEF", "WAX", 1, "97 WAX", 1_000, 0.1, 1);
+    expect(quoteOracleDeviationPct(mild)!).toBeCloseTo(-3, 6);
+  });
+
+  it("returns null when the quote has no parseable output", () => {
+    const leg = legWithQuote("LEEF", "WAX", 1, "garbage", 1000, 0.1, 1);
+    expect(quoteOracleDeviationPct(leg)).toBeNull();
   });
 });

@@ -3,9 +3,11 @@ import {
   CirclePlay,
   CircleStop,
   Crosshair,
+  Loader2,
   RotateCcw,
   ScanSearch,
   ShieldAlert,
+  Sparkles,
   Waves,
 } from "lucide-react";
 import { useEffect, useState } from "react";
@@ -51,6 +53,8 @@ import {
 import { classifyRegime, dangerScore } from "@/lib/leef/regime";
 import { isEconomicFailureReason } from "@/lib/wallet/trade-error";
 import { holdWakeLock, releaseWakeLock } from "@/lib/market/wake-lock";
+import { aiTask, extractGrowthTargets } from "@/lib/leef/ai-analyst";
+import { journal } from "@/lib/leef/journal";
 
 const KIND_VARIANT: Record<
   BotDecisionLog["kind"],
@@ -911,6 +915,72 @@ function TreasureCard({ snap }: { snap: LeefSnapshot }) {
   const now = snapshotTargets(snap, balances, targets);
   const choices = listTreasureTokens(snap);
   const activeMode = GROWTH_MODES.find((m) => m.id === mode) ?? GROWTH_MODES[1]!;
+  const aiEnabled = useTerminal((s) => s.aiEnabled);
+  const aiGatewayUrl = useTerminal((s) => s.aiGatewayUrl);
+  const [aiBusy, setAiBusy] = useState(false);
+  const [aiPick, setAiPick] = useState<{ symbol: string; weight: number }[] | null>(null);
+  const [aiNote, setAiNote] = useState<string | null>(null);
+
+  /**
+   * AI-assisted treasure mix: the analyst RANKS candidates from liquid
+   * universe tokens; a human applies the mix. The growth engine then trades
+   * it through the same deterministic gates as everything else — the AI
+   * never touches the trade path.
+   */
+  async function askAiForMix() {
+    if (aiBusy || !aiEnabled) return;
+    setAiBusy(true);
+    setAiPick(null);
+    setAiNote(null);
+    const t0 = Date.now();
+    try {
+      const candidates = choices.slice(0, 24);
+      const candData = candidates.map((symbol) => {
+        const u = snap.universe.find((t) => t.symbol === symbol);
+        return {
+          symbol,
+          tvlUsd: Math.round(u?.tvlUsd ?? 0),
+          volume24Usd: Math.round(u?.volume24Usd ?? 0),
+          usdPrice: u?.usdPrice ?? null,
+          trusted: u?.alcorTrusted ?? false,
+          scam: u?.alcorScam ?? false,
+        };
+      });
+      const res = await aiTask(
+        "strategy_analysis",
+        {
+          mode: "growth_target_selection",
+          instruction:
+            "Pick 1-5 tokens from `candidates` to ACCUMULATE over the coming weeks (a treasure mix). " +
+            "Prefer liquid, venue-trusted tokens; exclude scam-flagged ones; LEEF may be included when sensible. " +
+            "Reply in JSON including a `targets` array of {symbol, weight} whose weights sum to 100, plus a short `reason`.",
+          currentTargets: targets,
+          walletUsd: Math.round(markPortfolioUsd(snap, balances).totalUsd * 100) / 100,
+          candidates: candData,
+        },
+        { url: aiGatewayUrl },
+      );
+      journal({
+        kind: "ai",
+        reason: `growth_target_selection: ok · ${res.raw.slice(0, 160)}`,
+        latencyMs: Date.now() - t0,
+      });
+      const pick = extractGrowthTargets(res.content, candidates);
+      if (!pick) {
+        setAiNote("The analyst answered, but no usable token mix was found in its reply. Try again or pick manually.");
+      } else {
+        setAiPick(pick);
+        const reason = (res.content as { reason?: unknown })?.reason;
+        setAiNote(typeof reason === "string" ? reason.slice(0, 240) : null);
+      }
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : "AI call failed";
+      journal({ kind: "ai", reason: `growth_target_selection: failed · ${msg}`, latencyMs: Date.now() - t0 });
+      setAiNote(msg);
+    } finally {
+      setAiBusy(false);
+    }
+  }
 
   function setSlot(i: number, symbol: string) {
     const next = targets.map((t, j) => (j === i ? { ...t, symbol } : t));
@@ -921,7 +991,7 @@ function TreasureCard({ snap }: { snap: LeefSnapshot }) {
     setTargets(next);
   }
   function addSlot() {
-    if (targets.length >= 3) return;
+    if (targets.length >= 5) return;
     const used = new Set(targets.map((t) => t.symbol));
     const extra = choices.find((c) => !used.has(c)) ?? "LEEF";
     setTargets([...targets, { symbol: extra, weight: 10 }]);
@@ -942,7 +1012,7 @@ function TreasureCard({ snap }: { snap: LeefSnapshot }) {
         Treasure
       </h3>
       <p className="mb-3 text-xs text-muted-foreground">
-        Name 1–3 assets to grow. Token count is the objective; economic value
+        Name 1–5 assets to grow. Token count is the objective; economic value
         is a constraint. The bot never promises growth — it seeks positive
         expected target growth and HOLDs when the book does not offer it.
       </p>
@@ -1035,10 +1105,63 @@ function TreasureCard({ snap }: { snap: LeefSnapshot }) {
           );
         })}
       </div>
-      {targets.length < 3 && (
-        <Button variant="outline" size="sm" className="mt-2" disabled={running} onClick={addSlot}>
-          Add treasure
-        </Button>
+      <div className="mt-2 flex flex-wrap items-center gap-2">
+        {targets.length < 5 && (
+          <Button variant="outline" size="sm" disabled={running} onClick={addSlot}>
+            Add treasure
+          </Button>
+        )}
+        {aiEnabled && (
+          <Button
+            variant="outline"
+            size="sm"
+            disabled={running || aiBusy}
+            onClick={() => void askAiForMix()}
+            title="The analyst suggests a mix from liquid, trusted universe tokens — you apply it, the engine trades it through the normal gates"
+          >
+            {aiBusy ? <Loader2 className="size-3.5 animate-spin" /> : <Sparkles className="size-3.5" />}
+            {aiBusy ? "Asking…" : "Ask AI for a mix"}
+          </Button>
+        )}
+      </div>
+      {(aiPick || aiNote) && (
+        <div className="mt-2 rounded-lg border border-accent/30 bg-accent/5 p-3">
+          {aiPick ? (
+            <>
+              <div className="mb-2 flex flex-wrap items-center gap-1.5">
+                {aiPick.map((t) => (
+                  <Badge key={t.symbol} variant="accent" className="font-mono">
+                    {t.symbol} · {Math.round(t.weight)}%
+                  </Badge>
+                ))}
+              </div>
+              {aiNote && <p className="mb-2 text-xs text-muted-foreground">{aiNote}</p>}
+              <div className="flex gap-2">
+                <Button
+                  size="sm"
+                  variant="leef"
+                  disabled={running}
+                  onClick={() => {
+                    setTargets(aiPick);
+                    setAiPick(null);
+                    setAiNote(null);
+                  }}
+                >
+                  Use this mix
+                </Button>
+                <Button size="sm" variant="ghost" onClick={() => setAiPick(null)}>
+                  Dismiss
+                </Button>
+              </div>
+              <p className="mt-2 text-[11px] text-subtle">
+                Advisory only — applying just changes the treasure list. Every trade still passes
+                the deterministic net-edge, exact-quote, governor and firewall gates.
+              </p>
+            </>
+          ) : (
+            <p className="text-xs text-muted-foreground">{aiNote}</p>
+          )}
+        </div>
       )}
       <p className="mt-3 border-t border-border pt-2 font-mono text-xs text-subtle">
         Working capital {fmtUsd(workingUsd)} (everything not in the mix) · wallet {fmtUsd(walletUsd)}

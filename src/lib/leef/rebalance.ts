@@ -1,7 +1,7 @@
 import type { LeefSnapshot } from "./types";
 import { findToken, type UniverseToken } from "./universe";
 import { fetchAlcorRouteCached } from "@/lib/leef/quote-verify";
-import type { AlcorRouteQuote } from "@/lib/wallet/alcor-route";
+import { parseAssetAmount, type AlcorRouteQuote } from "@/lib/wallet/alcor-route";
 import { balanceAmount, canonicalBalanceEntries } from "@/lib/wallet/balances";
 import { tokenPrice, type TokenPrice } from "@/lib/market/price-oracle";
 
@@ -62,6 +62,14 @@ export type RebalanceSettings = {
   reserveWax: number;
   slippage: number;
   maxImpactPct: number;
+  /**
+   * Poisoned-pool protection: a rebalancer consolidates at fair value — it
+   * is NOT an arb desk hunting mispricing. If the venue's executable quote
+   * implies an execution price this far from the oracle price (percent, in
+   * EITHER direction), the pool is broken, manipulated, or abandoned: skip
+   * the leg instead of signing a fantasy quote (or dumping into a trap).
+   */
+  maxOracleDeviationPct: number;
 };
 
 export const DEFAULT_REBALANCE: RebalanceSettings = {
@@ -76,7 +84,61 @@ export const DEFAULT_REBALANCE: RebalanceSettings = {
   reserveWax: 2,
   slippage: 0.8,
   maxImpactPct: 4,
+  maxOracleDeviationPct: 35,
 };
+
+/**
+ * WAX enforces a per-transaction CPU budget; CLMM swaps are CPU-heavy. A
+ * sweep bundling many router splits/hops into one atomic tx reverts with
+ * tx_cpu_usage_exceeded — and repeated reverts get the ACCOUNT throttled
+ * ("exceeded failure limit"). Chunk sweep legs so one transaction carries
+ * at most this many router swap actions.
+ */
+export const MAX_ACTIONS_PER_SWEEP_TX = 4;
+
+/**
+ * Greedy pack: group legs into transactions whose total router action count
+ * stays under the cap. A single leg too complex for one tx is dropped (its
+ * reason is preserved in the `dropped` list).
+ */
+export function chunkSweepLegs(
+  legs: PlannedLeg[],
+  maxActions = MAX_ACTIONS_PER_SWEEP_TX,
+): { chunks: PlannedLeg[][]; dropped: PlannedLeg[] } {
+  const chunks: PlannedLeg[][] = [];
+  const dropped: PlannedLeg[] = [];
+  let cur: PlannedLeg[] = [];
+  let curActions = 0;
+  for (const leg of legs) {
+    const actions = leg.quote?.swaps.length ?? 1;
+    if (actions > maxActions) {
+      dropped.push(leg);
+      continue;
+    }
+    if (curActions + actions > maxActions && cur.length > 0) {
+      chunks.push(cur);
+      cur = [];
+      curActions = 0;
+    }
+    cur.push(leg);
+    curActions += actions;
+  }
+  if (cur.length > 0) chunks.push(cur);
+  return { chunks, dropped };
+}
+
+/**
+ * Deviation of the quote's implied execution price from the oracle price,
+ * percent of oracle. Positive = venue pays MORE than fair value (suspicious
+ * on a rebalance — usually a poisoned pool, not free money).
+ */
+export function quoteOracleDeviationPct(leg: PlannedLeg): number | null {
+  const out = leg.quote ? parseAssetAmount(leg.quote.output) : 0;
+  const inUsd = leg.amountIn * leg.from.usdPrice;
+  if (!(out > 0) || !(inUsd > 0) || !(leg.to.usdPrice > 0)) return null;
+  const outUsd = out * leg.to.usdPrice;
+  return (outUsd / inUsd - 1) * 100;
+}
 
 /** Default ladder: bridged USDC first, then WAX, then LEEF. */
 export const DEFAULT_LADDER = ["waxusdc-eth.token", "wax-eosio.token", "leef-leefmaincorp"];

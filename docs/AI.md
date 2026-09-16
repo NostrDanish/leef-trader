@@ -38,8 +38,20 @@ AI desk (browser)                     your Cloudflare Worker              PPQ
 | `strategy_analysis`  | Full bot config (goals/risk), session P&L, open position, per-strategy calibration aggregates |
 | `evidence_review`    | The aggregated evidence journal: per-strategy evidence + grouped gate-failure signatures |
 
+There is also a **growth-target mix suggester** on the Bot desk's Treasure
+card (`strategy_analysis` with `mode: "growth_target_selection"`): the
+analyst ranks liquid, venue-trusted universe tokens into a 1–5 mix, a human
+applies it, and the deterministic growth engine trades it through the same
+gates as everything else.
+
 The worker pairs `data` with its own server-side system prompt — the client
 cannot inject a system prompt or pick a different model.
+
+## Master switch
+
+The AI desk has an **AI on/off toggle** (persisted per browser). Off means
+exactly zero calls leave the browser — no health ping, no tasks. Trading
+never depends on the analyst either way.
 
 ## Setup checklist
 

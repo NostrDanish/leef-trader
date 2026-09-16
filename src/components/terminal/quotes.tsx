@@ -1,11 +1,11 @@
-import { ArrowDownUp, ArrowRight, CheckCircle2, Zap } from "lucide-react";
+import { ArrowDownUp, ArrowRight, CheckCircle2, Pin, Search, Zap } from "lucide-react";
 import { useMemo, useState } from "react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { pairTokens, MIN_LEEF_BACKING } from "@/lib/leef/amm";
-import { rankExecutionRoutes } from "@/lib/leef/route-optimizer";
+import { rankExecutionRoutes, routeSignature } from "@/lib/leef/route-optimizer";
 import { fmtNum, fmtPct } from "@/lib/leef/format";
 import { executeSwap, type SwapOutcome } from "@/lib/wallet/trade";
 import { hasWalletSession } from "@/lib/wallet/session";
@@ -34,6 +34,10 @@ export function Quotes({
   const setSwap = useTerminal((s) => s.setSwap);
   const flipSwap = useTerminal((s) => s.flipSwap);
   const selectPool = useTerminal((s) => s.selectPool);
+  const swapMaxHops = useTerminal((s) => s.swapMaxHops);
+  const setSwapMaxHops = useTerminal((s) => s.setSwapMaxHops);
+  const selectedRouteSig = useTerminal((s) => s.selectedRouteSig);
+  const selectRoute = useTerminal((s) => s.selectRoute);
   const head = headline(ranked);
 
   const tokens = useMemo(
@@ -43,12 +47,17 @@ export function Quotes({
   const amount = Number(amountIn) || 0;
 
   const routes = useMemo(
-    () => rankExecutionRoutes(snap.pools, snap.aux, amount, tokenIn, tokenOut),
-    [snap.pools, snap.aux, amount, tokenIn, tokenOut],
+    () => rankExecutionRoutes(snap.pools, snap.aux, amount, tokenIn, tokenOut, swapMaxHops),
+    [snap.pools, snap.aux, amount, tokenIn, tokenOut, swapMaxHops],
   );
 
   const best = routes[0];
   const runner = routes[1];
+  // A pinned route drives the quote card + the trade button; Auto = best.
+  const pinned = selectedRouteSig
+    ? (routes.find((r) => routeSignature(r) === selectedRouteSig) ?? null)
+    : null;
+  const active = pinned ?? best;
   const edge =
     best && runner && runner.amountOut > 0
       ? best.amountOut / runner.amountOut - 1
@@ -140,10 +149,17 @@ export function Quotes({
             </div>
 
             <div className="rounded-lg border border-border bg-bg p-3">
-              <div className="mb-1 text-xs text-muted-foreground">Best fill</div>
+              <div className="mb-1 flex items-center justify-between text-xs text-muted-foreground">
+                <span>{pinned ? "Pinned route fill" : "Best fill"}</span>
+                {pinned && (
+                  <Badge variant="accent" className="gap-1">
+                    <Pin className="size-3" /> Pinned
+                  </Badge>
+                )}
+              </div>
               <div className="flex items-center gap-2">
                 <div className="h-12 min-w-0 flex-1 overflow-x-auto font-mono text-xl font-medium tabular-nums text-leef sm:text-2xl">
-                  {best ? fmtNum(best.amountOut, { compact: true }) : "0.00"}
+                  {active ? fmtNum(active.amountOut, { compact: true }) : "0.00"}
                 </div>
                 <TokenSelect
                   value={tokenOut}
@@ -174,42 +190,72 @@ export function Quotes({
               </div>
             </div>
 
-            {best && (
+            <div className="flex items-center justify-between text-xs text-muted-foreground">
+              <span>Max hops</span>
+              <div className="flex gap-1">
+                {[1, 2, 3, 4, 6, 10].map((h) => (
+                  <button
+                    key={h}
+                    type="button"
+                    onClick={() => setSwapMaxHops(h)}
+                    className={cn(
+                      "rounded-md px-2 py-1 border tabular-nums",
+                      swapMaxHops === h
+                        ? "border-accent/40 bg-accent/10 text-accent"
+                        : "border-border text-muted-foreground hover:text-fg",
+                    )}
+                  >
+                    {h}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            {active && (
               <dl className="space-y-1.5 rounded-lg border border-border bg-surface-2 p-3 text-xs">
-                <Row label="Winning book" value={best.label} />
+                <Row label={pinned ? "Pinned path" : "Winning book"} value={active.label} />
                 <Row
                   label="Execution"
-                  value={`1 ${tokenIn} = ${fmtNum(best.executionPrice)} ${tokenOut}`}
+                  value={`1 ${tokenIn} = ${fmtNum(active.executionPrice)} ${tokenOut}`}
                 />
                 <Row
                   label="Price impact"
-                  value={fmtPct(best.priceImpact, 2, false)}
+                  value={fmtPct(active.priceImpact, 2, false)}
                   tone={
-                    best.priceImpact > 0.05
+                    active.priceImpact > 0.05
                       ? "sell"
-                      : best.priceImpact > 0.02
+                      : active.priceImpact > 0.02
                         ? "warn"
                         : "buy"
                   }
                 />
-                <Row label="Fees on path" value={`${best.feePct.toFixed(2)}%`} />
+                <Row label="Fees on path" value={`${active.feePct.toFixed(2)}%`} />
                 <Row
                   label="Min received"
-                  value={`${fmtNum(best.amountOut * (1 - slippage / 100))} ${tokenOut}`}
+                  value={`${fmtNum(active.amountOut * (1 - slippage / 100))} ${tokenOut}`}
                 />
-                {edge > 0.001 && runner && (
+                {!pinned && edge > 0.001 && runner && (
                   <Row
                     label="Vs next book"
                     value={`${fmtPct(edge, 1)} more than #${runner.poolIds[0]}`}
                     tone="leef"
                   />
                 )}
+                {pinned && best && pinned.id !== best.id && (
+                  <Row
+                    label="Vs best route"
+                    value={fmtPct(pinned.amountOut / best.amountOut - 1, 2)}
+                    tone={pinned.amountOut >= best.amountOut ? "leef" : "warn"}
+                  />
+                )}
               </dl>
             )}
 
-            {best && <TradeButton snap={snap} />}
+            {active && <TradeButton snap={snap} />}
             <p className="text-center text-xs text-subtle">
-              Best executable route for this exact size — hops and splits only when they pay.
+              {pinned
+                ? "Pinned route — exactly this path is executed, or the trade errors. Never a silent fallback."
+                : "Auto — best executable route for this exact size; hops and splits only when they pay. Click a route on the right to pin it."}
             </p>
           </div>
         </Card>
@@ -242,12 +288,39 @@ export function Quotes({
             </Card>
           ) : (
             <div className="flex flex-col gap-2">
+              <button
+                type="button"
+                onClick={() => selectRoute(null)}
+                className={cn(
+                  "flex items-center justify-between rounded-lg border p-3 text-left text-sm transition-colors duration-[var(--motion-quick)]",
+                  selectedRouteSig == null
+                    ? "border-accent/40 bg-accent/5"
+                    : "border-dashed border-border bg-surface hover:border-accent/25",
+                )}
+              >
+                <span className="flex items-center gap-2">
+                  <Zap className="size-3.5 text-accent" />
+                  <span>
+                    <span className="font-medium">Auto · best route for this size</span>
+                    <span className="block text-xs text-muted-foreground">
+                      The engine picks — hops and splits only when they pay.
+                    </span>
+                  </span>
+                </span>
+                {selectedRouteSig == null && <Badge variant="accent">Selected</Badge>}
+              </button>
               {routes.slice(0, 12).map((r, i) => (
                 <RouteRow
                   key={r.id}
                   route={r}
                   rank={i + 1}
                   isBest={i === 0}
+                  selected={routeSignature(r) === selectedRouteSig}
+                  onSelect={() =>
+                    selectRoute(
+                      routeSignature(r) === selectedRouteSig ? null : routeSignature(r),
+                    )
+                  }
                   onInspect={() => selectPool(leefLegPoolId(r))}
                 />
               ))}
@@ -264,6 +337,8 @@ function TradeButton({ snap }: { snap: LeefSnapshot }) {
   const tokenOut = useTerminal((s) => s.tokenOut);
   const amountIn = useTerminal((s) => s.amountIn);
   const slippage = useTerminal((s) => s.slippage);
+  const swapMaxHops = useTerminal((s) => s.swapMaxHops);
+  const selectedRouteSig = useTerminal((s) => s.selectedRouteSig);
   const setImportOpen = useWallet((s) => s.setImportOpen);
   const authType = useWallet((s) => s.authType);
   const mode = useWallet((s) => s.mode);
@@ -284,6 +359,8 @@ function TradeButton({ snap }: { snap: LeefSnapshot }) {
       tokenOut,
       amountIn: Number(amountIn) || 0,
       slippage,
+      maxHops: swapMaxHops,
+      routeSig: selectedRouteSig ?? undefined,
     })
       .then((outcome) => setDone(outcome))
       .catch((err) => setError(err instanceof Error ? err.message : "Swap failed"))
@@ -347,22 +424,35 @@ function RouteRow({
   route,
   rank,
   isBest,
+  selected,
+  onSelect,
   onInspect,
 }: {
   route: SwapRoute;
   rank: number;
   isBest: boolean;
+  selected: boolean;
+  onSelect: () => void;
   onInspect: () => void;
 }) {
   return (
-    <button
-      type="button"
-      onClick={onInspect}
+    <div
+      role="button"
+      tabIndex={0}
+      onClick={onSelect}
+      onKeyDown={(e) => {
+        if (e.key === "Enter" || e.key === " ") {
+          e.preventDefault();
+          onSelect();
+        }
+      }}
       className={cn(
-        "rounded-lg border p-3 text-left transition-colors duration-[var(--motion-quick)]",
-        isBest
-          ? "border-accent/40 bg-accent/5"
-          : "border-border bg-surface hover:border-accent/25",
+        "cursor-pointer rounded-lg border p-3 text-left transition-colors duration-[var(--motion-quick)]",
+        selected
+          ? "border-leef/50 bg-leef/5 ring-1 ring-leef/30"
+          : isBest
+            ? "border-accent/40 bg-accent/5 hover:border-accent/60"
+            : "border-border bg-surface hover:border-accent/25",
       )}
     >
       <div className="flex items-start justify-between gap-3">
@@ -370,7 +460,7 @@ function RouteRow({
           <span
             className={cn(
               "font-mono text-xs tabular-nums pt-0.5",
-              isBest ? "text-accent" : "text-subtle",
+              selected ? "text-leef" : isBest ? "text-accent" : "text-subtle",
             )}
           >
             {String(rank).padStart(2, "0")}
@@ -386,6 +476,11 @@ function RouteRow({
               />
               <span className="text-sm font-medium truncate">{route.label}</span>
               {isBest && <Badge variant="accent">Best executable</Badge>}
+              {selected && (
+                <Badge variant="leef" className="gap-1">
+                  <Pin className="size-3" /> Pinned
+                </Badge>
+              )}
               {route.kind === "hop" && <Badge>{route.legs.length}-hop</Badge>}
               {route.kind === "split" && <Badge>split</Badge>}
             </div>
@@ -405,21 +500,34 @@ function RouteRow({
             </div>
           </div>
         </div>
-        <div className="text-right shrink-0">
-          <div className="font-mono text-sm tabular-nums text-fg">
-            {fmtNum(route.amountOut, { compact: true })} {route.tokenOut}
+        <div className="flex shrink-0 flex-col items-end gap-1">
+          <div className="text-right">
+            <div className="font-mono text-sm tabular-nums text-fg">
+              {fmtNum(route.amountOut, { compact: true })} {route.tokenOut}
+            </div>
+            <div
+              className={cn(
+                "text-xs font-mono tabular-nums",
+                isBest ? "text-leef" : "text-sell",
+              )}
+            >
+              {isBest ? "leading" : fmtPct(route.vsBestPct, 1)}
+            </div>
           </div>
-          <div
-            className={cn(
-              "text-xs font-mono tabular-nums",
-              isBest ? "text-leef" : "text-sell",
-            )}
+          <button
+            type="button"
+            onClick={(e) => {
+              e.stopPropagation();
+              onInspect();
+            }}
+            aria-label="Inspect pool"
+            className="rounded-md p-1 text-subtle hover:text-accent hover:bg-accent/10"
           >
-            {isBest ? "leading" : fmtPct(route.vsBestPct, 1)}
-          </div>
+            <Search className="size-3.5" />
+          </button>
         </div>
       </div>
-    </button>
+    </div>
   );
 }
 

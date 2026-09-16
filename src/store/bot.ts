@@ -73,7 +73,7 @@ type BotState = {
   quote: string;
   /** Tokens to bias the scan toward. Empty = no extra bias. */
   focus: string[];
-  /** 1–3 treasures the growth strategy tries to increase. */
+  /** 1–5 treasures the growth strategy tries to increase. */
   growthTargets: GrowthTarget[];
   growthMode: GrowthMode;
   /** Snapshot of target amounts at session start (for growth P&L). */

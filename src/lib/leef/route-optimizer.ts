@@ -635,6 +635,16 @@ export function bestExecutionRouteOnGraph(
 /** Alias used by existing desks — same function, size-specific graph search. */
 export const compareAllRoutes = rankExecutionRoutes;
 
+/**
+ * Amount-independent identity of a route's PATH (kind + pool sequence).
+ * Route `id` embeds per-leg amounts, so it changes on every book refresh;
+ * the signature stays stable — this is what the Quotes desk pins when the
+ * user picks a route manually.
+ */
+export function routeSignature(route: SwapRoute): string {
+  return `${route.kind}:${route.poolIds.join(">")}`;
+}
+
 /* ------------------------------------------------------------------ */
 /* LEEF preference — a post-economics tie-break, never an override      */
 /* ------------------------------------------------------------------ */

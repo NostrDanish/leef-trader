@@ -111,6 +111,47 @@ export function extractContent(body: unknown): { content: unknown; raw: string; 
 }
 
 /**
+ * Pull a 1–5 token growth mix out of an analyst response. Prefers a
+ * structured `targets: [{symbol, weight}]` field; falls back to scanning the
+ * serialized content for candidate symbols (schema varies by model/worker
+ * prompt — never trust it blindly). Returns null when nothing usable is
+ * found. The caller presents the mix; a HUMAN applies it.
+ */
+export function extractGrowthTargets(
+  content: unknown,
+  candidates: string[],
+): { symbol: string; weight: number }[] | null {
+  const allowed = new Set(candidates.map((c) => c.toUpperCase()));
+  const structured = (content as { targets?: unknown } | null)?.targets;
+  if (Array.isArray(structured)) {
+    const found = structured
+      .map((x) => {
+        const o = x as { symbol?: unknown; weight?: unknown };
+        return {
+          symbol: String(o?.symbol ?? "").toUpperCase(),
+          weight: typeof o?.weight === "number" && Number.isFinite(o.weight) ? o.weight : 0,
+        };
+      })
+      .filter((x) => allowed.has(x.symbol));
+    if (found.length > 0) {
+      const sum = found.reduce((s, x) => s + Math.max(0, x.weight), 0);
+      return found.slice(0, 5).map((x) => ({
+        symbol: x.symbol,
+        weight: sum > 0 ? (Math.max(0, x.weight) / sum) * 100 : 100 / Math.min(found.length, 5),
+      }));
+    }
+  }
+  const text = JSON.stringify(content ?? "").toUpperCase();
+  const mentioned = candidates.filter((c) => {
+    const esc = c.toUpperCase().replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    return new RegExp(`\\b${esc}\\b`).test(text);
+  });
+  if (mentioned.length === 0) return null;
+  const picked = mentioned.slice(0, 5);
+  return picked.map((symbol) => ({ symbol, weight: 100 / picked.length }));
+}
+
+/**
  * Run one analyst task. `data` should be a compact JSON-serializable object
  * (the worker pairs it with its server-side system prompt). Throws AiError.
  */

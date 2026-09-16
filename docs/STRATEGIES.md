@@ -73,7 +73,7 @@ If the exact quote fails the thesis, the trade dies as HOLD. The four
 quantities are modeled separately: expected output, guaranteed (min-out)
 output, execution input, and the on-chain protected floor.
 
-**Treasure growth** is different: it does not trade a pair. It grows 1–3
+**Treasure growth** is different: it does not trade a pair. It grows 1–5
 named assets. See [below](#treasure-growth--dont-trade-pairs-grow-assets).
 
 ## Strategy matrix
@@ -86,7 +86,7 @@ named assets. See [below](#treasure-growth--dont-trade-pairs-grow-assets).
 | Grid stepper | price drops one `gridStepPct` below the anchor | price rises one step above the anchor sell | ✅ expected = 80% of one step vs round-trip costs | ✅ same | KEEP |
 | DCA accumulator | every cycle until position cap | TP / SL / trailing | ✅ entries still must clear net edge | ✅ same | KEEP |
 | Volume maker | atomic WAX→LEEF→WAX echo whenever round-trip cost ≤ `maxEchoLossPct` | atomic — same transaction | ✅ exact quote + on-chain loss-budget floor | ✅ router legs | KEEP (budget-bounded; not wash trading — see below) |
-| Treasure growth | maximize 1–3 target token counts from whatever you hold (direct, multi-hop, cycle) | HOLD unless expected target growth clears the firewall | ✅ fees, impact, value-drop cap, harvest floor | ✅ exec probability + impact cap | KEEP (objective = target units, not USD) |
+| Treasure growth | maximize 1–5 target token counts from whatever you hold (direct, multi-hop, cycle) | HOLD unless expected target growth clears the firewall | ✅ fees, impact, value-drop cap, harvest floor | ✅ exec probability + impact cap | KEEP (objective = target units, not USD) |
 
 ## Notes on hard thresholds (and why they exist)
 
@@ -125,7 +125,7 @@ calibration, not an LLM in the loop.
 
 ## Treasure growth — don't trade pairs. Grow assets.
 
-`src/lib/leef/growth-engine.ts` (`planGrowthAction`). The user names 1–3
+`src/lib/leef/growth-engine.ts` (`planGrowthAction`). The user names 1–5
 treasures and a mix (e.g. LEEF 60 / WAX 30 / TLM 10) plus a mode:
 
 | Mode | Clip | Acquire drop cap | Harvest floor | Idea |

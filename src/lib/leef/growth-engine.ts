@@ -174,7 +174,7 @@ export function normalizeTargets(raw: GrowthTarget[]): GrowthTarget[] {
     if (!symbol || seen.has(symbol)) continue;
     seen.add(symbol);
     cleaned.push({ symbol, weight: Math.max(0, t.weight) });
-    if (cleaned.length >= 3) break;
+    if (cleaned.length >= 5) break;
   }
   const sum = cleaned.reduce((s, t) => s + t.weight, 0);
   if (cleaned.length === 0) return [...DEFAULT_GROWTH_TARGETS];

@@ -40,6 +40,12 @@ type TerminalState = {
   tokenOut: string;
   amountIn: string;
   slippage: number;
+  /** Manual swap: graph depth cap (1–10). */
+  swapMaxHops: number;
+  /** Manual swap: pinned route path signature (kind+poolIds). null = auto/best. */
+  selectedRouteSig: string | null;
+  /** AI analyst master switch — off = zero calls to the gateway. */
+  aiEnabled: boolean;
   poolQuery: string;
   poolSort:
     | "score"
@@ -63,6 +69,9 @@ type TerminalState = {
   setSwap: (
     p: Partial<Pick<TerminalState, "tokenIn" | "tokenOut" | "amountIn" | "slippage">>,
   ) => void;
+  setSwapMaxHops: (n: number) => void;
+  selectRoute: (id: string | null) => void;
+  setAiEnabled: (on: boolean) => void;
   flipSwap: () => void;
   setPoolQuery: (q: string) => void;
   setPoolSort: (k: TerminalState["poolSort"]) => void;
@@ -81,6 +90,9 @@ export const useTerminal = create<TerminalState>()(
   tokenOut: "LEEF",
   amountIn: "10",
   slippage: 0.5,
+  swapMaxHops: 4,
+  selectedRouteSig: null,
+  aiEnabled: true,
   poolQuery: "",
   poolSort: "tvl",
   poolDir: "desc",
@@ -89,15 +101,22 @@ export const useTerminal = create<TerminalState>()(
   aiGatewayUrl: DEFAULT_AI_GATEWAY,
   setTab: (tab) => set({ tab }),
   selectPool: (id) => set({ selectedPoolId: id, tab: "pool" }),
-  setSwap: (p) => set(p),
+  // Route pins are pair-specific: changing the swap inputs invalidates the
+  // pinned path.
+  setSwap: (p) => set({ ...p, selectedRouteSig: null }),
   flipSwap: () => {
     const { tokenIn, tokenOut, amountIn } = get();
     set({
       tokenIn: tokenOut,
       tokenOut: tokenIn,
       amountIn: tokenOut === "LEEF" && Number(amountIn) < 1000 ? "1000000" : "10",
+      selectedRouteSig: null,
     });
   },
+  setSwapMaxHops: (n) =>
+    set({ swapMaxHops: Math.min(10, Math.max(1, Math.round(n))), selectedRouteSig: null }),
+  selectRoute: (selectedRouteSig) => set({ selectedRouteSig }),
+  setAiEnabled: (aiEnabled) => set({ aiEnabled }),
   setPoolQuery: (q) => set({ poolQuery: q }),
   setPoolSort: (k) =>
     set((s) => ({
@@ -114,7 +133,12 @@ export const useTerminal = create<TerminalState>()(
     {
       name: "leef-terminal-sync",
       version: 1,
-      partialize: (s) => ({ syncSec: s.syncSec, aiGatewayUrl: s.aiGatewayUrl }),
+      partialize: (s) => ({
+        syncSec: s.syncSec,
+        aiGatewayUrl: s.aiGatewayUrl,
+        swapMaxHops: s.swapMaxHops,
+        aiEnabled: s.aiEnabled,
+      }),
     },
   ),
 );

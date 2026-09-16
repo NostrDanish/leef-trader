@@ -12,6 +12,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
+import { Switch } from "@/components/ui/switch";
 import {
   aiBudget,
   aiHealth,
@@ -280,6 +281,8 @@ export function AiDesk({ snap }: { snap: LeefSnapshot }) {
   const { toast } = useToast();
   const aiGatewayUrl = useTerminal((s) => s.aiGatewayUrl);
   const setAiGatewayUrl = useTerminal((s) => s.setAiGatewayUrl);
+  const aiEnabled = useTerminal((s) => s.aiEnabled);
+  const setAiEnabled = useTerminal((s) => s.setAiEnabled);
   const strategy = useBot((s) => s.strategy);
 
   const [urlDraft, setUrlDraft] = useState(aiGatewayUrl);
@@ -289,16 +292,18 @@ export function AiDesk({ snap }: { snap: LeefSnapshot }) {
   const budget = aiBudget();
 
   const checkHealth = useCallback(async () => {
+    if (!useTerminal.getState().aiEnabled) return;
     setHealth("checking");
     setHealth((await aiHealth(aiGatewayUrl)) ? "ok" : "down");
   }, [aiGatewayUrl]);
 
   useEffect(() => {
+    setHealth("unknown");
     void checkHealth();
-  }, [checkHealth]);
+  }, [checkHealth, aiEnabled]);
 
   const runTask = async (task: AiTask) => {
-    if (run.status === "running") return;
+    if (!aiEnabled || run.status === "running") return;
     setRun({ status: "running", task });
     const t0 = Date.now();
     try {
@@ -348,61 +353,78 @@ export function AiDesk({ snap }: { snap: LeefSnapshot }) {
               </p>
             </div>
           </div>
-          <Badge
-            variant="outline"
-            className={cn(
-              "gap-1.5",
-              health === "ok" && "border-leef/40 text-leef",
-              health === "down" && "border-sell/40 text-sell",
-            )}
-          >
-            {health === "checking" ? (
-              <Loader2 className="size-3 animate-spin" />
-            ) : health === "ok" ? (
-              <CheckCircle2 className="size-3" />
-            ) : health === "down" ? (
-              <XCircle className="size-3" />
-            ) : (
-              <CircleDashed className="size-3" />
-            )}
-            {health === "checking"
-              ? "Checking…"
-              : health === "ok"
-                ? "Gateway online"
-                : health === "down"
-                  ? "Unreachable / CORS"
-                  : "Gateway"}
-          </Badge>
+          <div className="flex items-center gap-3">
+            <label className="flex items-center gap-2 text-sm text-muted-foreground cursor-pointer select-none">
+              <Switch
+                checked={aiEnabled}
+                onCheckedChange={setAiEnabled}
+                aria-label="Enable AI analyst"
+              />
+              {aiEnabled ? "AI on" : "AI off"}
+            </label>
+            <Badge
+              variant="outline"
+              className={cn(
+                "gap-1.5",
+                health === "ok" && "border-leef/40 text-leef",
+                health === "down" && "border-sell/40 text-sell",
+              )}
+            >
+              {health === "checking" ? (
+                <Loader2 className="size-3 animate-spin" />
+              ) : health === "ok" ? (
+                <CheckCircle2 className="size-3" />
+              ) : health === "down" ? (
+                <XCircle className="size-3" />
+              ) : (
+                <CircleDashed className="size-3" />
+              )}
+              {health === "checking"
+                ? "Checking…"
+                : health === "ok"
+                  ? "Gateway online"
+                  : health === "down"
+                    ? "Unreachable / CORS"
+                    : "Gateway"}
+            </Badge>
+          </div>
         </div>
 
-        <div className="mt-4 flex flex-wrap items-center gap-2">
-          <Input
-            value={urlDraft}
-            onChange={(e) => setUrlDraft(e.target.value)}
-            placeholder={DEFAULT_AI_GATEWAY}
-            className="max-w-md font-mono text-xs"
-            aria-label="AI gateway URL"
-          />
-          <Button
-            variant="outline"
-            size="sm"
-            onClick={() => {
-              setAiGatewayUrl(urlDraft);
-              toast({ title: "Gateway saved", description: urlDraft.trim() || DEFAULT_AI_GATEWAY });
-            }}
-            disabled={urlDraft.trim() === aiGatewayUrl}
-          >
-            <Save className="size-4" />
-            Save
-          </Button>
-          <Button variant="ghost" size="sm" onClick={() => void checkHealth()}>
-            Re-check
-          </Button>
-          <span className="text-xs text-muted-foreground ml-auto tabular-nums">
-            Budget: {budget.remaining}/18 calls this minute
-            {budget.resetInSec > 0 ? ` · resets in ${budget.resetInSec}s` : ""}
-          </span>
-        </div>
+        {!aiEnabled ? (
+          <div className="mt-4 rounded-lg border border-dashed p-4 text-sm text-muted-foreground">
+            AI is off — zero calls leave this browser. Flip the switch to enable the analyst.
+            Trading never depends on it either way.
+          </div>
+        ) : (
+          <div className="mt-4 flex flex-wrap items-center gap-2">
+            <Input
+              value={urlDraft}
+              onChange={(e) => setUrlDraft(e.target.value)}
+              placeholder={DEFAULT_AI_GATEWAY}
+              className="max-w-md font-mono text-xs"
+              aria-label="AI gateway URL"
+            />
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => {
+                setAiGatewayUrl(urlDraft);
+                toast({ title: "Gateway saved", description: urlDraft.trim() || DEFAULT_AI_GATEWAY });
+              }}
+              disabled={urlDraft.trim() === aiGatewayUrl}
+            >
+              <Save className="size-4" />
+              Save
+            </Button>
+            <Button variant="ghost" size="sm" onClick={() => void checkHealth()}>
+              Re-check
+            </Button>
+            <span className="text-xs text-muted-foreground ml-auto tabular-nums">
+              Budget: {budget.remaining}/18 calls this minute
+              {budget.resetInSec > 0 ? ` · resets in ${budget.resetInSec}s` : ""}
+            </span>
+          </div>
+        )}
 
         {health === "down" && (
           <div className="mt-3 rounded-lg border border-warn/30 bg-warn/5 p-3 text-sm text-muted-foreground">
@@ -416,27 +438,29 @@ export function AiDesk({ snap }: { snap: LeefSnapshot }) {
         )}
       </Card>
 
-      <div className="grid gap-4 md:grid-cols-3">
-        {TASKS.map((t) => (
-          <Card key={t.id} className="p-4 flex flex-col gap-2">
-            <div className="flex items-center justify-between gap-2">
-              <h3 className="font-semibold">{t.label}</h3>
-              {run.status !== "idle" && run.task === t.id && run.status === "running" && (
-                <Loader2 className="size-4 animate-spin text-muted-foreground" />
-              )}
-            </div>
-            <p className="text-sm text-muted-foreground flex-1">{t.blurb}</p>
-            <Button
-              variant="secondary"
-              size="sm"
-              onClick={() => void runTask(t.id)}
-              disabled={run.status === "running" || budget.remaining <= 0}
-            >
-              {run.status === "running" && run.task === t.id ? "Analyzing (~30s)…" : "Run"}
-            </Button>
-          </Card>
-        ))}
-      </div>
+      {aiEnabled && (
+        <div className="grid gap-4 md:grid-cols-3">
+          {TASKS.map((t) => (
+            <Card key={t.id} className="p-4 flex flex-col gap-2">
+              <div className="flex items-center justify-between gap-2">
+                <h3 className="font-semibold">{t.label}</h3>
+                {run.status !== "idle" && run.task === t.id && run.status === "running" && (
+                  <Loader2 className="size-4 animate-spin text-muted-foreground" />
+                )}
+              </div>
+              <p className="text-sm text-muted-foreground flex-1">{t.blurb}</p>
+              <Button
+                variant="secondary"
+                size="sm"
+                onClick={() => void runTask(t.id)}
+                disabled={run.status === "running" || budget.remaining <= 0}
+              >
+                {run.status === "running" && run.task === t.id ? "Analyzing (~30s)…" : "Run"}
+              </Button>
+            </Card>
+          ))}
+        </div>
+      )}
 
       {run.status === "done" && (
         <Card className="p-4 sm:p-5">

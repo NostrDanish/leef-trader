@@ -49,7 +49,7 @@ export type JournalEntry = {
   verifyMs?: number;
 
   /** execution entries */
-  action?: "buy" | "sell" | "swap" | "arb";
+  action?: "buy" | "sell" | "swap" | "arb" | "rebalance";
   tokenIn?: string;
   tokenOut?: string;
   amountIn?: number;

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { aiBudget, extractContent } from "./ai-analyst";
+import { aiBudget, extractContent, extractGrowthTargets } from "./ai-analyst";
 
 describe("extractContent", () => {
   it("parses an OpenAI-style chat completion", () => {
@@ -46,5 +46,52 @@ describe("aiBudget", () => {
     expect(b.remaining).toBeGreaterThan(0);
     expect(b.remaining).toBeLessThanOrEqual(18);
     expect(b.resetInSec).toBe(0);
+  });
+});
+
+describe("extractGrowthTargets", () => {
+  const candidates = ["LEEF", "WAX", "TLM", "WAXUSDC", "TACO"];
+
+  it("reads a structured targets array and renormalizes weights", () => {
+    const out = extractGrowthTargets(
+      { targets: [{ symbol: "leef", weight: 60 }, { symbol: "TLM", weight: 20 }] },
+      candidates,
+    );
+    expect(out).not.toBeNull();
+    expect(out!.map((t) => t.symbol)).toEqual(["LEEF", "TLM"]);
+    expect(out![0]!.weight).toBeCloseTo(75);
+    expect(out![1]!.weight).toBeCloseTo(25);
+  });
+
+  it("drops symbols that are not in the candidate list", () => {
+    const out = extractGrowthTargets(
+      { targets: [{ symbol: "LEEF", weight: 1 }, { symbol: "SCAM", weight: 99 }] },
+      candidates,
+    );
+    expect(out!.map((t) => t.symbol)).toEqual(["LEEF"]);
+    expect(out![0]!.weight).toBeCloseTo(100);
+  });
+
+  it("falls back to scanning the content for mentioned candidates", () => {
+    const out = extractGrowthTargets(
+      { summary: "I'd accumulate LEEF and TACO here; avoid thin books.", trade_authorization: false },
+      candidates,
+    );
+    expect(out!.map((t) => t.symbol)).toEqual(["LEEF", "TACO"]);
+    expect(out![0]!.weight).toBeCloseTo(50);
+  });
+
+  it("does not substring-match (WAXUSDC is not a WAX mention)", () => {
+    const out = extractGrowthTargets({ summary: "WAXUSDC only." }, candidates);
+    expect(out!.map((t) => t.symbol)).toEqual(["WAXUSDC"]);
+  });
+
+  it("caps at 5 targets and returns null on no match", () => {
+    const many = extractGrowthTargets(
+      { targets: ["A", "B", "C", "D", "E", "F", "G"].map((s) => ({ symbol: s, weight: 1 })) },
+      ["A", "B", "C", "D", "E", "F", "G"],
+    );
+    expect(many).toHaveLength(5);
+    expect(extractGrowthTargets({ summary: "no tokens here" }, candidates)).toBeNull();
   });
 });

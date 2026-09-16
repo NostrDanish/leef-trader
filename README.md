@@ -23,7 +23,7 @@ continuously with no page refresh and no key re-import.
   split) — paper by default, live when a wallet/session key is connected.
   See [ROUTING](./docs/ROUTING.md) and [VENUES](./docs/VENUES.md).
 - **Automated bot**: signal, mean reversion, spread arb, grid, DCA, volume
-  maker, plus **Treasure growth** — name 1–3 assets to accumulate; the bot
+  maker, plus **Treasure growth** — name 1–5 assets to accumulate; the bot
   maximizes those token counts without destroying portfolio value, and HOLDs
   (with a why) when the book does not offer enough expected growth.
 - **Rebalancer**: priority-ladder portfolio sweeps (dust consolidation + drift

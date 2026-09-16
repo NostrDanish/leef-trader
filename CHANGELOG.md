@@ -2,6 +2,37 @@
 
 All notable changes to LEEF Trader. Dates are commit-era, not release tags.
 
+## Unreleased — Rebalancer CPU fix + poisoned-pool guard, route pinning, AI toggle & mixes
+
+- **Sweep CPU revert fixed.** Live rebalances bundled every leg's router
+  splits/hops into ONE atomic transaction — 8+ CLMM actions blew the per-tx
+  CPU budget (`tx_cpu_usage_exceeded`), and repeated reverts got the account
+  throttled by producers. Sweeps now pack legs into ≤4-action chunks
+  (`chunkSweepLegs`), execute sequentially, and STOP on the first
+  failure/UNKNOWN. A CPU-flavored revert parks the AUTO sweeper for 15 min
+  (chain "until" hint honored); manual runs stay available. Too-complex
+  single legs are skipped with a reason, never force-signed.
+- **Poisoned-pool guard.** A rebalance consolidates at fair value — it is
+  not an arb desk. Legs whose venue quote implies an execution price more
+  than `maxOracleDeviationPct` (default 35%) from the oracle in EITHER
+  direction are refused ("122M LEEF → 4608 WAX" fantasy quotes can no longer
+  reach a signer). Rebalance executions are journaled to the evidence log.
+- **Quotes desk: pin your route.** Routes were look-but-don't-touch; now
+  click any ranked route to pin it (path-signature based, stable across book
+  refreshes) — the quote card, min-received and trade button all follow the
+  pin, and a pinned route executes exactly that path or errors cleanly,
+  never a silent fallback. New max-hops selector (1–10, default 4). Manual
+  split swaps that would expand past 6 on-chain actions now refuse BEFORE
+  signing with a clear message.
+- **AI master toggle.** One switch on the AI desk — off means zero calls
+  leave the browser (no health ping, no tasks). Persisted per browser.
+- **Treasure growth goes 1–5 + AI mix suggester.** The growth strategy
+  accepts up to 5 targets (engine + UI). "Ask AI for a mix" sends the
+  liquid/trusted universe to the analyst, extracts a 1–5 token mix
+  (structured `targets` or symbol scan), and presents it for one-click
+  apply — the human applies, the deterministic engine trades it through the
+  same gates. Advisory, never on the trade path.
+
 ## Unreleased — AI analyst desk (advisory-only LLM via your own gateway)
 
 - **AI analyst integration** ([Leef-signer](https://github.com/NostrDanish/Leef-signer)
