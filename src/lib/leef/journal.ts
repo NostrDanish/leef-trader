@@ -21,7 +21,7 @@
  */
 import type { BotStrategy } from "./bot-engine";
 
-export type JournalKind = "decision" | "gate" | "execution" | "calibration";
+export type JournalKind = "decision" | "gate" | "execution" | "calibration" | "ai";
 
 export type JournalEntry = {
   /** ms epoch. */
@@ -166,6 +166,9 @@ export function aggregateEntries(entries: JournalEntry[]): EvidenceStats {
   for (const e of entries) {
     if (oldestTs == null || e.ts < oldestTs) oldestTs = e.ts;
     if (newestTs == null || e.ts > newestTs) newestTs = e.ts;
+    // Analyst calls stay auditable in the raw log but never become a
+    // per-strategy row — they are commentary, not trading performance.
+    if (e.kind === "ai") continue;
     const s = strat(e);
     switch (e.kind) {
       case "decision":

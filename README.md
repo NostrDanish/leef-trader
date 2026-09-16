@@ -96,8 +96,11 @@ Full details in [SECURITY](./docs/SECURITY.md).
 
 ## Honest limitations
 
-- **AI integration: PLANNED.** The "AI bot" name refers to the deterministic
-  multi-engine signal blend. No LLM is wired into trading decisions today.
+- **AI integration: analyst only.** An optional LLM desk (via your own
+  Cloudflare gateway — see [AI](./docs/AI.md)) can comment on the market, the
+  strategy config and the evidence journal. It is never on the trade path:
+  no signing, no gate input, and the gateway forces
+  `trade_authorization: false`. All trading decisions remain deterministic.
 - **Backtester: PLANNED.** Strategy calibration currently learns from live /
   paper results only (predicted-vs-realized edge memory).
 - Paper fills use the same route math but do not simulate partial fills,

@@ -3,6 +3,7 @@ import { restoreWallet } from "@/lib/wallet/session";
 import { marketEngine } from "@/lib/market/market-engine";
 import { useTerminal } from "@/store/terminal";
 import { useWallet } from "@/store/wallet";
+import { AiDesk } from "./ai-desk";
 import { BotDesk } from "./bot-desk";
 import { Dashboard } from "./dashboard";
 import { Evidence } from "./evidence";
@@ -98,6 +99,7 @@ export function TerminalApp() {
         {tab === "bot" && <BotDesk snap={snap} />}
         {tab === "portfolio" && <PortfolioDesk snap={snap} />}
         {tab === "evidence" && <Evidence />}
+        {tab === "ai" && <AiDesk snap={snap} />}
         {tab === "infra" && <InfraStatus />}
       </main>
 

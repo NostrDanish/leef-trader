@@ -2,6 +2,26 @@
 
 All notable changes to LEEF Trader. Dates are commit-era, not release tags.
 
+## Unreleased — AI analyst desk (advisory-only LLM via your own gateway)
+
+- **AI analyst integration** ([Leef-signer](https://github.com/NostrDanish/Leef-signer)
+  Cloudflare Worker → PPQ). New **AI desk** tab: gateway health check,
+  editable/persisted gateway URL, client-side budget (18/min under the
+  worker's 20), and three one-click tasks — market analysis (live book +
+  oracle quality + recent decisions), strategy review (config + session +
+  calibration aggregates), evidence review (the persistent journal's
+  per-strategy stats + gate-failure signatures).
+- **Analyst, never the engine.** Nothing from the gateway touches the trade
+  path — no signing, no gate input; the worker forces
+  `trade_authorization: false`. Gateway down/slow/CORS-blocked → the desk
+  shows the error, trading continues deterministically. Client timeout 12s
+  (worker caps upstream at 10s).
+- **Auditable analyst.** Every AI call lands in the evidence journal
+  (`kind: "ai"`, task + latency + digest) without polluting per-strategy
+  trading stats.
+- **CORS honesty.** Failures name the exact origin to allowlist. Verified
+  against the live gateway: health OK, PPQ key valid.
+
 ## Unreleased — Evidence journal, gate candidate fallback, LEEF near-tie preference
 
 - **Evidence journal (P1).** The bot now has a persistent memory: an

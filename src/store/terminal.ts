@@ -1,5 +1,6 @@
 import { create } from "zustand";
 import { persist } from "zustand/middleware";
+import { DEFAULT_AI_GATEWAY } from "@/lib/leef/ai-analyst";
 
 /** Book-pull cadence. Live = 10s — fastest that stays polite to Alcor. */
 export const MIN_SYNC_SEC = 10;
@@ -29,6 +30,7 @@ export type TabId =
   | "bot"
   | "portfolio"
   | "evidence"
+  | "ai"
   | "infra";
 
 type TerminalState = {
@@ -54,6 +56,8 @@ type TerminalState = {
   tickPoolId: number | null;
   /** Seconds between authoritative market pulls. */
   syncSec: number;
+  /** AI analyst gateway (Leef-signer worker). Advisory only — never trades. */
+  aiGatewayUrl: string;
   setTab: (tab: TabId) => void;
   selectPool: (id: number) => void;
   setSwap: (
@@ -65,6 +69,7 @@ type TerminalState = {
   togglePoolDir: () => void;
   setTickPool: (id: number | null) => void;
   setSyncSec: (sec: number) => void;
+  setAiGatewayUrl: (url: string) => void;
 };
 
 export const useTerminal = create<TerminalState>()(
@@ -81,6 +86,7 @@ export const useTerminal = create<TerminalState>()(
   poolDir: "desc",
   tickPoolId: 217,
   syncSec: DEFAULT_SYNC_SEC,
+  aiGatewayUrl: DEFAULT_AI_GATEWAY,
   setTab: (tab) => set({ tab }),
   selectPool: (id) => set({ selectedPoolId: id, tab: "pool" }),
   setSwap: (p) => set(p),
@@ -102,11 +108,13 @@ export const useTerminal = create<TerminalState>()(
   togglePoolDir: () => set((s) => ({ poolDir: s.poolDir === "asc" ? "desc" : "asc" })),
   setTickPool: (id) => set({ tickPoolId: id }),
   setSyncSec: (sec) => set({ syncSec: clampSyncSec(sec) }),
+  setAiGatewayUrl: (url) =>
+    set({ aiGatewayUrl: url.trim().replace(/\/+$/, "") || DEFAULT_AI_GATEWAY }),
     }),
     {
       name: "leef-terminal-sync",
       version: 1,
-      partialize: (s) => ({ syncSec: s.syncSec }),
+      partialize: (s) => ({ syncSec: s.syncSec, aiGatewayUrl: s.aiGatewayUrl }),
     },
   ),
 );
