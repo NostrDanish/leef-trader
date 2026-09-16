@@ -23,6 +23,8 @@ import {
 } from "@/lib/leef/ai-analyst";
 import { fmtNum, timeAgo } from "@/lib/leef/format";
 import { journal, journalStats } from "@/lib/leef/journal";
+import { classifyRegime, dangerScore } from "@/lib/leef/regime";
+import { isEconomicFailureReason } from "@/lib/wallet/trade-error";
 import type { LeefSnapshot } from "@/lib/leef/types";
 import { useBot } from "@/store/bot";
 import { useTerminal } from "@/store/terminal";
@@ -35,6 +37,26 @@ import { cn } from "@/lib/utils";
 
 function marketContext(snap: LeefSnapshot): Record<string, unknown> {
   const b = useBot.getState();
+  // Same regime + danger computation the bot desk shows and the engine
+  // gates on — the analyst should see the engine's own risk read, not
+  // invent a parallel one.
+  const regime = classifyRegime({
+    series: b.series,
+    poolPricesUsd: snap.pools.map((p) => p.usdPerLeef ?? 0).filter((v) => v > 0),
+  });
+  const danger = dangerScore({
+    quoteAgeMs: Math.max(0, Date.now() - Date.parse(snap.fetchedAt)),
+    maxQuoteAgeMs: Math.max(15, b.risk.maxQuoteAgeSec) * 1000,
+    volPct: regime.volPct,
+    dislocationPct: regime.dislocationPct,
+    liquidityUsd: Math.max(0, ...snap.pools.map((p) => p.tvlUsd)),
+    recentFailures: b.decisions.filter(
+      (d) =>
+        d.kind === "error" &&
+        isEconomicFailureReason(d.reason) &&
+        Date.now() - Date.parse(d.t) < 600_000,
+    ).length,
+  });
   const topPools = [...snap.pools]
     .sort((a, c) => c.tvlUsd - a.tvlUsd)
     .slice(0, 6)
@@ -66,6 +88,16 @@ function marketContext(snap: LeefSnapshot): Record<string, unknown> {
     },
     topLeefPools: topPools,
     recentTape: tape,
+    risk: {
+      regime: regime.regime,
+      regimeConfidence: regime.confidence,
+      volPerPrintPct: regime.volPct,
+      dislocationPct: regime.dislocationPct,
+      dangerScore: danger.score,
+      dangerBand: danger.band,
+      entrySizeFactor: danger.sizeFactor,
+      explain: [...regime.explain, ...danger.explain].slice(0, 8),
+    },
     bot: {
       strategy: b.strategy,
       running: b.running,
