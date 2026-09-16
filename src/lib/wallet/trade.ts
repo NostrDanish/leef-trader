@@ -1,4 +1,7 @@
 import { rankExecutionRoutes, routeSignature, splitSlices } from "@/lib/leef/route-optimizer";
+import { exactSwapVerdict } from "@/lib/leef/exact-gate";
+import { journal } from "@/lib/leef/journal";
+import { verifyExecutableRoute } from "@/lib/leef/quote-verify";
 import type { SwapRoute } from "@/lib/leef/types";
 import { refreshExecutionState } from "@/lib/market/execution-state";
 import { governTrade } from "@/lib/market/portfolio-governor";
@@ -10,7 +13,7 @@ import { withTransientPreparationRetry } from "./retry-policy";
 import { TradeError } from "./trade-error";
 import { metaOf } from "./tokens";
 import { balanceForIdentifier } from "./balances";
-import { parseAssetAmount } from "./alcor-route";
+import { parseAssetAmount, type AlcorRouteQuote } from "./alcor-route";
 import { fetchAlcorRouteCached } from "@/lib/leef/quote-verify";
 import { useWallet } from "@/store/wallet";
 
@@ -58,9 +61,11 @@ export async function executeSwap(opts: {
   routeSig?: string;
 }): Promise<SwapOutcome> {
   if (!(opts.amountIn > 0)) throw new Error("Enter an amount first");
-  if (opts.tokenIn.toUpperCase() === opts.tokenOut.toUpperCase()) {
-    throw new Error("Pick two different tokens");
-  }
+  // Same token both sides = a ROUND TRIP (LEEF→WUF→WAX→LEEF). Cycles are
+  // where poisoned books produce fantasy yields (+56% at "0% impact"), so a
+  // cycle is never trusted from local math: the venue must re-quote it and
+  // the chain-guaranteed output must not lose.
+  const isCycle = opts.tokenIn.toUpperCase() === opts.tokenOut.toUpperCase();
   const w = useWallet.getState();
   const have = balanceForIdentifier(w.balances(), opts.snap.universe, opts.tokenIn);
   if (have < opts.amountIn) {
@@ -88,8 +93,13 @@ export async function executeSwap(opts: {
     throw new Error(
       opts.routeSig
         ? "Pinned route isn't executable for this pair and size — re-pick or switch to Auto"
-        : "No backed route for this pair and size",
+        : isCycle
+          ? "No round trip route for this token and size"
+          : "No backed route for this pair and size",
     );
+  }
+  if (isCycle && route.legs.length < 2) {
+    throw new Error("A round trip needs at least two legs — no cycle found for this size");
   }
   if (opts.snap.source === "live") {
     const prepared = await withTransientPreparationRetry({
@@ -114,6 +124,51 @@ export async function executeSwap(opts: {
     book = prepared.book;
     route = prepared.route;
   }
+
+  // Cycle firewall: venue-exact re-quote + no-loss floor before anything is
+  // signed. If the venue won't pay what the local book claimed, we refuse
+  // here — the user sees the real number, never signs the fantasy.
+  let preQuoted: AlcorRouteQuote | undefined;
+  if (isCycle) {
+    const t0 = Date.now();
+    const verified = await verifyExecutableRoute({
+      route,
+      amountIn: opts.amountIn,
+      slippagePct: opts.slippage,
+      account: w.canSign() ? w.account : "paper.leef",
+      snap: book,
+      deadlineMs: 6_000,
+    });
+    if (verified.trust !== "executable") {
+      journal({
+        kind: "gate", gate: "swap", pass: false, strategy: "manual",
+        reason: `cycle: venue quote not executable (attempt on ${route.poolIds.join(">")})`,
+        verifyMs: Date.now() - t0, leefUsd: book.leefUsd, waxUsd: book.waxUsd,
+      });
+      throw new TradeError("MODEL_ONLY", "Round trip is not executable at the venue right now");
+    }
+    const verdict = exactSwapVerdict({
+      snap: book,
+      route,
+      amountIn: opts.amountIn,
+      expectedOut: verified.expectedOut,
+      guaranteedOut: verified.guaranteedOut,
+      minNetPct: 0, // a manual round trip may never intentionally lose
+    });
+    journal({
+      kind: "gate", gate: "swap", pass: verdict.pass, strategy: "manual",
+      reason: `cycle ${route.poolIds.join(">")}: ${verdict.reason}`,
+      expectedOut: verified.expectedOut, guaranteedOut: verified.guaranteedOut,
+      netPct: verdict.exactNetPct, exactness: verified.exactness,
+      verifyMs: Date.now() - t0, leefUsd: book.leefUsd, waxUsd: book.waxUsd,
+    });
+    if (!verdict.pass) {
+      throw new Error(`Round trip refused — ${verdict.reason}`);
+    }
+    route = { ...route, amountOut: verified.expectedOut };
+    preQuoted = verified.verified[0]?.alcor;
+  }
+
   const governed = governTrade(book, w.balances(), {
     tokenIn: opts.tokenIn,
     tokenOut: opts.tokenOut,
@@ -193,6 +248,13 @@ export async function executeSwap(opts: {
         const actual = assetDelta(rec.transfers, w.account, outMeta.symbol, outMeta.contract);
         if (actual > 0) amountOut = actual;
       }
+      journal({
+        kind: "execution", action: "swap", strategy: "manual", mode: "live",
+        tokenIn: opts.tokenIn, tokenOut: opts.tokenOut, amountIn: opts.amountIn,
+        expectedOut, actualOut: amountOut, txid,
+        status: rec.status === "confirmed" ? "confirmed" : "unknown",
+        leefUsd: book.leefUsd, waxUsd: book.waxUsd,
+      });
       return {
         mode: "live",
         amountOut,
@@ -211,6 +273,8 @@ export async function executeSwap(opts: {
           amountIn: opts.amountIn,
           slippagePct: opts.slippage,
           snap: book,
+          // A cycle signs the venue-verified memos, not a blind re-quote.
+          preQuoted,
         }),
     });
     const exec = coordinated.value;
@@ -224,6 +288,13 @@ export async function executeSwap(opts: {
       const actual = assetDelta(rec.transfers, w.account, outMeta.symbol, outMeta.contract);
       if (actual > 0) amountOut = actual;
     }
+    journal({
+      kind: "execution", action: "swap", strategy: "manual", mode: "live",
+      tokenIn: opts.tokenIn, tokenOut: opts.tokenOut, amountIn: opts.amountIn,
+      expectedOut: exec.expectedOut, actualOut: amountOut, txid: exec.txid,
+      status: rec.status === "confirmed" ? "confirmed" : "unknown",
+      leefUsd: book.leefUsd, waxUsd: book.waxUsd,
+    });
     return {
       mode: "live",
       amountOut,
@@ -242,9 +313,21 @@ export async function executeSwap(opts: {
       w.applyPaperFill(sl.tokenIn, sl.amountIn, sl.tokenOut, min);
       out += min;
     }
+    journal({
+      kind: "execution", action: "swap", strategy: "manual", mode: "paper",
+      tokenIn: opts.tokenIn, tokenOut: opts.tokenOut, amountIn: opts.amountIn,
+      expectedOut: route.amountOut, actualOut: out, status: "paper",
+      leefUsd: book.leefUsd, waxUsd: book.waxUsd,
+    });
     return { mode: "paper", amountOut: out, routeLabel: route.label };
   }
   const minOut = route.amountOut * (1 - opts.slippage / 100);
   w.applyPaperFill(route.tokenIn, opts.amountIn, route.tokenOut, minOut);
+  journal({
+    kind: "execution", action: "swap", strategy: "manual", mode: "paper",
+    tokenIn: opts.tokenIn, tokenOut: opts.tokenOut, amountIn: opts.amountIn,
+    expectedOut: route.amountOut, actualOut: minOut, status: "paper",
+    leefUsd: book.leefUsd, waxUsd: book.waxUsd,
+  });
   return { mode: "paper", amountOut: minOut, routeLabel: route.label };
 }

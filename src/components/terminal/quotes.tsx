@@ -58,6 +58,14 @@ export function Quotes({
     ? (routes.find((r) => routeSignature(r) === selectedRouteSig) ?? null)
     : null;
   const active = pinned ?? best;
+  // Same token both sides = round trip (cycle). The desk shows the NET yield
+  // front and center, and flags mirage yields — local CP math can read a
+  // poisoned book as free money; the venue gate re-verifies before signing.
+  const isCycle = tokenIn.toUpperCase() === tokenOut.toUpperCase();
+  const cycleNetPct =
+    isCycle && active && active.amountIn > 0
+      ? (active.amountOut / active.amountIn - 1) * 100
+      : null;
   const edge =
     best && runner && runner.amountOut > 0
       ? best.amountOut / runner.amountOut - 1
@@ -98,9 +106,20 @@ export function Quotes({
             <h2 className="text-base font-medium tracking-tight">Size quote</h2>
             <p className="text-xs text-muted-foreground">
               Same notional against every ≥1M LEEF book, including non-WAX. Hops
-              via WAX or the pair token. Read-only.
+              via WAX or the pair token. Same token on both sides = a round-trip
+              cycle — venue-verified before it can sign.
             </p>
           </div>
+
+          {isCycle && cycleNetPct != null && cycleNetPct > 8 && (
+            <div className="mb-3 rounded-lg border border-warn/30 bg-warn/5 p-3 text-xs text-warn">
+              This round trip claims {cycleNetPct >= 0 ? "+" : ""}
+              {cycleNetPct.toFixed(1)}%. Local book math can read a poisoned pool as free
+              money — before anything signs, the venue must re-quote the exact cycle and the
+              chain-guaranteed output must beat the input. If it's not real, the trade is
+              refused, not signed.
+            </div>
+          )}
 
           <div className="space-y-3">
             <div className="rounded-lg border border-border bg-bg p-3">
@@ -213,7 +232,14 @@ export function Quotes({
 
             {active && (
               <dl className="space-y-1.5 rounded-lg border border-border bg-surface-2 p-3 text-xs">
-                <Row label={pinned ? "Pinned path" : "Winning book"} value={active.label} />
+                <Row label={pinned ? "Pinned path" : isCycle ? "Cycle" : "Winning book"} value={active.label} />
+                {cycleNetPct != null && (
+                  <Row
+                    label="Round-trip net"
+                    value={`${cycleNetPct >= 0 ? "+" : ""}${cycleNetPct.toFixed(2)}%`}
+                    tone={cycleNetPct > 0 ? "leef" : "sell"}
+                  />
+                )}
                 <Row
                   label="Execution"
                   value={`1 ${tokenIn} = ${fmtNum(active.executionPrice)} ${tokenOut}`}
@@ -348,6 +374,7 @@ function TradeButton({ snap }: { snap: LeefSnapshot }) {
 
   const live = mode === "live" && (hasSecret() || hasWalletSession());
   const liveBook = snap.source === "live";
+  const isCycle = tokenIn.toUpperCase() === tokenOut.toUpperCase();
 
   function onTrade() {
     setBusy(true);
@@ -372,12 +399,24 @@ function TradeButton({ snap }: { snap: LeefSnapshot }) {
       {live ? (
         <Button variant="leef" className="w-full" disabled={busy || !liveBook} onClick={onTrade}>
           <Zap className="size-3.5" />
-          {busy ? "Signing…" : `Swap ${amountIn || "0"} ${tokenIn} → ${tokenOut}`}
+          {busy
+            ? isCycle
+              ? "Verifying at venue…"
+              : "Signing…"
+            : isCycle
+              ? `Round trip ${amountIn || "0"} ${tokenIn} (venue-verified)`
+              : `Swap ${amountIn || "0"} ${tokenIn} → ${tokenOut}`}
         </Button>
       ) : (
         <Button variant="leef" className="w-full" disabled={busy || !liveBook} onClick={onTrade}>
           <Zap className="size-3.5" />
-          {busy ? "Filling…" : `Paper swap ${amountIn || "0"} ${tokenIn} → ${tokenOut}`}
+          {busy
+            ? isCycle
+              ? "Verifying at venue…"
+              : "Filling…"
+            : isCycle
+              ? `Paper round trip ${amountIn || "0"} ${tokenIn}`
+              : `Paper swap ${amountIn || "0"} ${tokenIn} → ${tokenOut}`}
         </Button>
       )}
       {!live && (

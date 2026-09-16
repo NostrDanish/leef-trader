@@ -33,7 +33,13 @@ export type NextActionPlan = {
   kind: "path" | "cycle";
 };
 
-const CYCLE_ASSETS = new Set(["WAX", "WAXUSDC", "WAXUSDT", "USDT", "PARAUSD"]);
+/**
+ * Assets the planner may search for a profitable round trip (A→…→A). LEEF
+ * included: a LEEF→X→Y→LEEF cycle that grows LEEF is exactly the ecosystem's
+ * favorite trade. Every cycle still passes the exact-quote gate with a
+ * ≥0 net floor before it can sign — fantasy cycles are refused, not fired.
+ */
+const CYCLE_ASSETS = new Set(["LEEF", "WAX", "WAXUSDC", "WAXUSDT", "USDT", "PARAUSD"]);
 
 function destinationSymbols(snap: LeefSnapshot): string[] {
   const ranked = [...snap.universe]
