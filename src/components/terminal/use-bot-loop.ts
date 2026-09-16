@@ -18,8 +18,22 @@ import { lastSnapshotTimings } from "@/lib/leef/snapshot";
 import {
   bestExecutionRoute,
   rankExecutionRoutesPreferLeef,
+  routeSignature,
 } from "@/lib/leef/route-optimizer";
-import { journal } from "@/lib/leef/journal";
+import { journal, journalAll, setJournalCycleId } from "@/lib/leef/journal";
+import {
+  bootLearning,
+  evaluateDueCounterfactuals,
+  learnedSizeCeilingMult,
+  learnedSlippageOverride,
+  learningBooted,
+  measureDueSelfImpact,
+  refreshProposals,
+  registerCounterfactual,
+  registerSelfImpact,
+  CF_HORIZON_MS,
+} from "@/lib/leef/learning-store";
+import { classifyRegime, dangerScore } from "@/lib/leef/regime";
 import { refreshExecutionState } from "@/lib/market/execution-state";
 import { governTrade, portfolioState } from "@/lib/market/portfolio-governor";
 import type { LeefSnapshot, SwapRoute } from "@/lib/leef/types";
@@ -168,6 +182,72 @@ function gateCandidates(
 
 let lastHoldReason = "";
 let holdStreak = 0;
+
+/**
+ * Per-cycle market context for journal enrichment — computed lazily on the
+ * first gate/execution of a cycle (never on HOLD-only paths), cached for the
+ * cycle. Same regime/danger math the engine gates on.
+ */
+function makeCycleCtx(book: LeefSnapshot, series: { t: number; usd: number }[], maxQuoteAgeSec: number) {
+  let cache: { regime: string; volPct: number; dangerScore: number } | null = null;
+  return () => {
+    if (cache) return cache;
+    const r = classifyRegime({
+      series,
+      poolPricesUsd: book.pools.map((p) => p.usdPerLeef ?? 0).filter((v) => v > 0),
+    });
+    const d = dangerScore({
+      quoteAgeMs: Math.max(0, Date.now() - Date.parse(book.fetchedAt)),
+      maxQuoteAgeMs: Math.max(15, maxQuoteAgeSec) * 1000,
+      volPct: r.volPct,
+      dislocationPct: r.dislocationPct,
+      liquidityUsd: Math.max(0, ...book.pools.map((p) => p.tvlUsd)),
+    });
+    cache = { regime: r.regime, volPct: r.volPct, dangerScore: d.score };
+    return cache;
+  };
+}
+
+/** Structured learning fields for a route journal entry. */
+function routeJournalMeta(route: SwapRoute, amountIn: number, pxIn: number) {
+  return {
+    poolIds: route.poolIds,
+    routeSig: routeSignature(route),
+    hops: route.legs.length,
+    venues: [...new Set(route.legs.map((l) => l.venue ?? "alcor"))],
+    sizeUsd: amountIn * Math.max(0, pxIn),
+  };
+}
+
+/**
+ * Register a self-impact measurement after a confirmed live fill: the next
+ * snapshot's pool spot is compared against this pre-trade spot. LEEF pools
+ * only (their spot is derivable from the book); aux pools are skipped.
+ */
+function noteSelfImpact(
+  book: LeefSnapshot,
+  poolId: number | undefined,
+  action: string,
+  sizeUsd: number,
+  tokenIn: string,
+  tokenOut: string,
+): void {
+  if (poolId == null) return;
+  const pool = book.pools.find((p) => p.id === poolId);
+  if (!pool) return;
+  const waxPerLeef = pool.waxPerLeef ?? (pool.leefPerPair > 0 ? 1 / pool.leefPerPair : 0);
+  const pre = waxPerLeef > 0 ? waxPerLeef * book.waxUsd : 0;
+  if (!(pre > 0)) return;
+  registerSelfImpact({
+    poolId,
+    preSpotUsd: pre,
+    sizeUsd,
+    action,
+    tokenIn,
+    tokenOut,
+    at: Date.now(),
+  });
+}
 /** Set when the API rate-limits us — evaluations pause until then. */
 let rateLimitedUntil = 0;
 /** Evaluation mutex — paper fills and live quotes must not overlap. */
@@ -221,6 +301,8 @@ async function runBotOnceInner(
   opts?: { force?: "buy" | "sell"; dry?: boolean },
 ) {
   const cycleT0 = Date.now();
+  const cycleId = `${cycleT0.toString(36)}-${Math.random().toString(16).slice(2, 6)}`;
+  setJournalCycleId(cycleId);
   const timings = emptyTimings();
   const snapT = lastSnapshotTimings();
   timings.snapshotFetchMs = snapT.snapshotFetchMs;
@@ -328,9 +410,11 @@ async function runBotOnceInner(
 
   const quoteTok = b.quote || "WAX";
   const baseTok = b.base || "LEEF";
+  /** Lazily computed regime/danger context for journal enrichment. */
+  const ctxOf = makeCycleCtx(book, b.series, risk.maxQuoteAgeSec);
   /** The quote an exact gate approved — the signer uses THESE memos. */
   let gateQuote: AlcorRouteQuote | undefined;
-  const bounds = usdToTokenBounds({
+  const boundsRaw = usdToTokenBounds({
     snap: book,
     quote: quoteTok,
     base: baseTok,
@@ -338,10 +422,18 @@ async function runBotOnceInner(
     position: b.position,
     balances,
   });
-  if ("error" in bounds) {
-    b.pushDecision({ kind: "hold", mode, reason: bounds.error, priceUsd: snap.leefUsd });
-    b.setLastReason(bounds.error);
-    return { kind: "hold", reason: bounds.error };
+  if ("error" in boundsRaw) {
+    b.pushDecision({ kind: "hold", mode, reason: boundsRaw.error, priceUsd: snap.leefUsd });
+    b.setLastReason(boundsRaw.error);
+    return { kind: "hold", reason: boundsRaw.error };
+  }
+  let bounds = boundsRaw;
+  // Learned size ceiling — ACTIVE governor-promoted artifacts only, and it
+  // can only SHRINK the ceiling, never raise it (learning.ts invariant).
+  if (decision.kind === "buy" && "route" in decision && decision.route.poolIds.length > 0) {
+    const v0 = decision.route.legs[0]?.venue ?? "alcor";
+    const mult = learnedSizeCeilingMult(v0, decision.route.poolIds[0]!);
+    if (mult < 1) bounds = { ...boundsRaw, maxIn: boundsRaw.maxIn * mult };
   }
 
   // Last-second re-optimize: USD min is the floor, remaining USD capacity the ceiling.
@@ -357,6 +449,12 @@ async function runBotOnceInner(
       decision.expectedGrossPct ?? Math.max(b.goals.takeProfitPct * 0.5, 0.2);
     const tEdge = Date.now();
     const tSize = Date.now();
+    // Learned slippage override — only when a governor-promoted artifact
+    // covers this route's primary pool; else the deterministic default.
+    const learnPoolVenue = decision.route.legs[0]?.venue ?? "alcor";
+    const learnPoolId = decision.route.poolIds[0];
+    const learnedSlip =
+      learnPoolId != null ? learnedSlippageOverride(learnPoolVenue, learnPoolId) : null;
     const fresh = optimizeEntrySize({
       snap: book,
       tokenIn: quoteTok,
@@ -366,6 +464,7 @@ async function runBotOnceInner(
       minIn: bounds.minIn,
       maxIn: bounds.maxIn,
       volPerSec: realizedVolPerSec(b.series),
+      ...(learnedSlip != null ? { costs: { slippageBufferPct: learnedSlip } } : {}),
     });
     timings.sizeOptimizationMs = Date.now() - tSize;
     timings.netEdgeMs = Date.now() - tEdge;
@@ -412,8 +511,11 @@ async function runBotOnceInner(
         reason: string;
       } | null = null;
       let lastGateReason = "no executable route";
+      let lastNetPct = thesis;
+      let lastCandidate: SwapRoute | null = null;
       for (let i = 0; i < candidates.length; i++) {
         const candidate = candidates[i]!;
+        lastCandidate = candidate;
         const tQuote = Date.now();
         try {
           const verified = await verifyExecutableRoute({
@@ -431,6 +533,8 @@ async function runBotOnceInner(
             journal({
               kind: "gate", gate: "entry", pass: false, attempt: i + 1,
               reason: lastGateReason, verifyMs, strategy: b.strategy, mode,
+              ...routeJournalMeta(candidate, decision.amountWax, bounds.quoteUsd),
+              ...ctxOf(),
               leefUsd: book.leefUsd, waxUsd: book.waxUsd,
             });
             continue;
@@ -445,11 +549,14 @@ async function runBotOnceInner(
             minNetEdgePct: b.risk.minNetEdgePct,
             volPerSec: realizedVolPerSec(b.series),
           });
+          lastNetPct = verdict.netEdgePct;
           journal({
             kind: "gate", gate: "entry", pass: verdict.pass, attempt: i + 1,
             reason: verdict.reason, expectedOut: verified.expectedOut,
             guaranteedOut: verified.guaranteedOut, netPct: verdict.netEdgePct,
             exactness: verified.exactness, verifyMs, strategy: b.strategy, mode,
+            ...routeJournalMeta(candidate, decision.amountWax, bounds.quoteUsd),
+            ...ctxOf(),
             leefUsd: book.leefUsd, waxUsd: book.waxUsd,
           });
           if (!verdict.pass) {
@@ -471,6 +578,8 @@ async function runBotOnceInner(
           journal({
             kind: "gate", gate: "entry", pass: false, attempt: i + 1,
             reason: `error: ${msg}`, strategy: b.strategy, mode,
+            failureClass: classifyTradeError(err).code,
+            ...(lastCandidate ? routeJournalMeta(lastCandidate, decision.amountWax, bounds.quoteUsd) : {}),
           });
           const reason = `Exact-quote gate: ${msg}`;
           b.pushDecision({ kind: "hold", mode, reason, priceUsd: book.leefUsd });
@@ -482,6 +591,27 @@ async function runBotOnceInner(
         const reason = `Exact-quote gate: ${lastGateReason}${
           candidates.length > 1 ? ` (${candidates.length} candidates vetoed)` : ""
         }`;
+        // Counterfactual: the gate vetoed a concrete candidate — judge this
+        // HOLD against the market in CF_HORIZON_MS.
+        registerCounterfactual({
+          cfKind: "entry",
+          horizonMs: CF_HORIZON_MS,
+          strategy: b.strategy,
+          tokenIn: quoteTok,
+          tokenOut: baseTok,
+          amountIn: decision.amountWax,
+          sizeUsd: decision.amountWax * (bounds.quoteUsd || 1),
+          poolIds: lastCandidate?.poolIds ?? [],
+          venues: lastCandidate
+            ? [...new Set(lastCandidate.legs.map((l) => l.venue ?? "alcor"))]
+            : [],
+          routeSig: lastCandidate ? routeSignature(lastCandidate) : undefined,
+          predNetPct: lastNetPct,
+          costsPct: thesis - lastNetPct,
+          entryMarkUsd: usdPriceOf(baseTok, book) || book.leefUsd,
+          holdReasonClass: "EXACT_GATE_ENTRY",
+          ...ctxOf(),
+        });
         b.pushDecision({ kind: "hold", mode, reason, priceUsd: book.leefUsd });
         b.setLastReason(reason);
         return { kind: "hold", reason };
@@ -559,6 +689,23 @@ async function runBotOnceInner(
     });
     if (!governed.allowed) {
       const reason = `Portfolio governor: ${governed.reason}`;
+      registerCounterfactual({
+        cfKind: "swap",
+        horizonMs: CF_HORIZON_MS,
+        strategy: b.strategy,
+        tokenIn: decision.tokenIn,
+        tokenOut: decision.tokenOut,
+        amountIn: decision.amountIn,
+        sizeUsd: decision.amountIn * (usdPriceOf(decision.tokenIn, book) || 0),
+        poolIds: decision.route.poolIds,
+        venues: [...new Set(decision.route.legs.map((l) => l.venue ?? "alcor"))],
+        routeSig: routeSignature(decision.route),
+        predNetPct: decision.minNetPct ?? 0,
+        costsPct: 0,
+        entryMarkUsd: usdPriceOf(decision.tokenOut, book),
+        holdReasonClass: "GOVERNOR",
+        ...ctxOf(),
+      });
       b.pushDecision({ kind: "hold", mode, reason, priceUsd: book.leefUsd });
       b.setLastReason(reason);
       return { kind: "hold", reason };
@@ -615,8 +762,10 @@ async function runBotOnceInner(
       );
       let gated: { route: SwapRoute; quote: AlcorRouteQuote | undefined; expectedOut: number; reason: string } | null = null;
       let lastGateReason = "no executable route";
+      let lastCandidate: SwapRoute | null = null;
       for (let i = 0; i < candidates.length; i++) {
         const candidate = candidates[i]!;
+        lastCandidate = candidate;
         const tQuote = Date.now();
         try {
           const verified = await verifyExecutableRoute({
@@ -634,6 +783,8 @@ async function runBotOnceInner(
             journal({
               kind: "gate", gate: "growth", pass: false, attempt: i + 1,
               reason: lastGateReason, verifyMs, strategy: b.strategy, mode,
+              ...routeJournalMeta(candidate, decision.amountIn, usdPriceOf(decision.tokenIn, book)),
+              ...ctxOf(),
               leefUsd: book.leefUsd, waxUsd: book.waxUsd,
             });
             continue;
@@ -650,6 +801,8 @@ async function runBotOnceInner(
             reason: verdict.reason, expectedOut: verified.expectedOut,
             guaranteedOut: verified.guaranteedOut, exactness: verified.exactness,
             verifyMs, strategy: b.strategy, mode,
+            ...routeJournalMeta(candidate, decision.amountIn, usdPriceOf(decision.tokenIn, book)),
+            ...ctxOf(),
             leefUsd: book.leefUsd, waxUsd: book.waxUsd,
           });
           if (!verdict.pass) {
@@ -668,6 +821,8 @@ async function runBotOnceInner(
           journal({
             kind: "gate", gate: "growth", pass: false, attempt: i + 1,
             reason: `error: ${msg}`, strategy: b.strategy, mode,
+            failureClass: classifyTradeError(err).code,
+            ...(lastCandidate ? routeJournalMeta(lastCandidate, decision.amountIn, usdPriceOf(decision.tokenIn, book)) : {}),
           });
           const reason = `Growth exact-quote gate: ${msg}`;
           b.pushDecision({ kind: "hold", mode, reason, priceUsd: book.leefUsd });
@@ -679,6 +834,25 @@ async function runBotOnceInner(
         const reason = `Growth exact-quote gate: ${lastGateReason}${
           candidates.length > 1 ? ` (${candidates.length} candidates vetoed)` : ""
         }`;
+        if (lastCandidate) {
+          registerCounterfactual({
+            cfKind: "swap",
+            horizonMs: CF_HORIZON_MS,
+            strategy: b.strategy,
+            tokenIn: decision.tokenIn,
+            tokenOut: decision.tokenOut,
+            amountIn: decision.amountIn,
+            sizeUsd: decision.amountIn * (usdPriceOf(decision.tokenIn, book) || 0),
+            poolIds: lastCandidate.poolIds,
+            venues: [...new Set(lastCandidate.legs.map((l) => l.venue ?? "alcor"))],
+            routeSig: routeSignature(lastCandidate),
+            predNetPct: 0,
+            costsPct: 0,
+            entryMarkUsd: usdPriceOf(decision.tokenOut, book),
+            holdReasonClass: "EXACT_GATE_GROWTH",
+            ...ctxOf(),
+          });
+        }
         b.pushDecision({ kind: "hold", mode, reason, priceUsd: book.leefUsd });
         b.setLastReason(reason);
         return { kind: "hold", reason };
@@ -707,8 +881,11 @@ async function runBotOnceInner(
       );
       let gated: { route: SwapRoute; quote: AlcorRouteQuote | undefined; expectedOut: number; reason: string } | null = null;
       let lastGateReason = "no executable route";
+      let lastNetPct = 0;
+      let lastCandidate: SwapRoute | null = null;
       for (let i = 0; i < candidates.length; i++) {
         const candidate = candidates[i]!;
+        lastCandidate = candidate;
         const tQuote = Date.now();
         try {
           const verified = await verifyExecutableRoute({
@@ -726,6 +903,8 @@ async function runBotOnceInner(
             journal({
               kind: "gate", gate: "swap", pass: false, attempt: i + 1,
               reason: lastGateReason, verifyMs, strategy: b.strategy, mode,
+              ...routeJournalMeta(candidate, decision.amountIn, usdPriceOf(decision.tokenIn, book)),
+              ...ctxOf(),
               leefUsd: book.leefUsd, waxUsd: book.waxUsd,
             });
             continue;
@@ -738,12 +917,15 @@ async function runBotOnceInner(
             guaranteedOut: verified.guaranteedOut,
             minNetPct,
           });
+          lastNetPct = verdict.exactNetPct;
           const venueTag = verified.exactness === "exact" ? "" : " · fresh-model venue";
           journal({
             kind: "gate", gate: "swap", pass: verdict.pass, attempt: i + 1,
             reason: verdict.reason, expectedOut: verified.expectedOut,
             guaranteedOut: verified.guaranteedOut, netPct: verdict.exactNetPct,
             exactness: verified.exactness, verifyMs, strategy: b.strategy, mode,
+            ...routeJournalMeta(candidate, decision.amountIn, usdPriceOf(decision.tokenIn, book)),
+            ...ctxOf(),
             leefUsd: book.leefUsd, waxUsd: book.waxUsd,
           });
           if (!verdict.pass) {
@@ -762,6 +944,8 @@ async function runBotOnceInner(
           journal({
             kind: "gate", gate: "swap", pass: false, attempt: i + 1,
             reason: `error: ${msg}`, strategy: b.strategy, mode,
+            failureClass: classifyTradeError(err).code,
+            ...(lastCandidate ? routeJournalMeta(lastCandidate, decision.amountIn, usdPriceOf(decision.tokenIn, book)) : {}),
           });
           const reason = `Exact-quote gate: ${msg}`;
           b.pushDecision({ kind: "hold", mode, reason, priceUsd: book.leefUsd });
@@ -773,6 +957,25 @@ async function runBotOnceInner(
         const reason = `Exact-quote gate: ${lastGateReason}${
           candidates.length > 1 ? ` (${candidates.length} candidates vetoed)` : ""
         }`;
+        if (lastCandidate) {
+          registerCounterfactual({
+            cfKind: "swap",
+            horizonMs: CF_HORIZON_MS,
+            strategy: b.strategy,
+            tokenIn: decision.tokenIn,
+            tokenOut: decision.tokenOut,
+            amountIn: decision.amountIn,
+            sizeUsd: decision.amountIn * (usdPriceOf(decision.tokenIn, book) || 0),
+            poolIds: lastCandidate.poolIds,
+            venues: [...new Set(lastCandidate.legs.map((l) => l.venue ?? "alcor"))],
+            routeSig: routeSignature(lastCandidate),
+            predNetPct: lastNetPct,
+            costsPct: 0,
+            entryMarkUsd: usdPriceOf(decision.tokenOut, book),
+            holdReasonClass: "EXACT_GATE_SWAP",
+            ...ctxOf(),
+          });
+        }
         b.pushDecision({ kind: "hold", mode, reason, priceUsd: book.leefUsd });
         b.setLastReason(reason);
         return { kind: "hold", reason };
@@ -800,6 +1003,23 @@ async function runBotOnceInner(
     timings.riskMs = Date.now() - tRisk;
     if (!governed.allowed) {
       const reason = `Portfolio governor: ${governed.reason}`;
+      registerCounterfactual({
+        cfKind: "entry",
+        horizonMs: CF_HORIZON_MS,
+        strategy: b.strategy,
+        tokenIn: quoteTok,
+        tokenOut: baseTok,
+        amountIn: decision.amountWax,
+        sizeUsd: decision.amountWax * (bounds.quoteUsd || 1),
+        poolIds: decision.route.poolIds,
+        venues: [...new Set(decision.route.legs.map((l) => l.venue ?? "alcor"))],
+        routeSig: routeSignature(decision.route),
+        predNetPct: decision.edge?.netEdgePct ?? 0,
+        costsPct: 0,
+        entryMarkUsd: usdPriceOf(baseTok, book) || book.leefUsd,
+        holdReasonClass: "GOVERNOR",
+        ...ctxOf(),
+      });
       b.pushDecision({ kind: "hold", mode, reason, priceUsd: book.leefUsd });
       b.setLastReason(reason);
       return { kind: "hold", reason };
@@ -961,9 +1181,22 @@ async function runBotOnceInner(
         tokenIn: quoteTok, tokenOut: baseTok,
         amountIn: decision.amountWax, expectedOut: decision.route.amountOut,
         actualOut: amountLeef, txid, status: execStatus,
+        predEdgePct: decision.edge?.netEdgePct,
         latencyMs: live ? Date.now() - tExec : undefined,
+        ...routeJournalMeta(decision.route, decision.amountWax, bounds.quoteUsd),
+        ...ctxOf(),
         leefUsd: snap.leefUsd, waxUsd: book.waxUsd,
       });
+      if (live && (execStatus === "confirmed" || execStatus === "included")) {
+        noteSelfImpact(
+          book,
+          decision.route.poolIds[0],
+          "buy",
+          decision.amountWax * (bounds.quoteUsd || 1),
+          quoteTok,
+          baseTok,
+        );
+      }
       toast({
         title: `${live ? "Live" : "Paper"} buy · ${fmtNum(amountLeef, { compact: true })} LEEF`,
         description: decision.reason + note + (txid ? ` · tx ${txid.slice(0, 10)}…` : ""),
@@ -1047,9 +1280,30 @@ async function runBotOnceInner(
         tokenIn: b.base || "LEEF", tokenOut: b.quote || "WAX",
         amountIn: decision.amountLeef, expectedOut: decision.route.amountOut,
         actualOut: waxOut, txid, status: execStatus, pnlUsd,
+        predEdgePct: position?.predEdgePct ?? undefined,
+        realizedEdgePct:
+          position && position.entryCostUsd > 0
+            ? (pnlUsd / position.entryCostUsd) * 100
+            : undefined,
         latencyMs: live ? Date.now() - t0 : undefined,
+        ...routeJournalMeta(
+          decision.route,
+          decision.amountLeef,
+          usdPriceOf(b.base || "LEEF", book) || book.leefUsd,
+        ),
+        ...ctxOf(),
         leefUsd: snap.leefUsd, waxUsd: book.waxUsd,
       });
+      if (live && (execStatus === "confirmed" || execStatus === "included")) {
+        noteSelfImpact(
+          book,
+          decision.route.poolIds[0],
+          "sell",
+          decision.amountLeef * (usdPriceOf(b.base || "LEEF", book) || book.leefUsd),
+          b.base || "LEEF",
+          b.quote || "WAX",
+        );
+      }
       toast({
         title: `${live ? "Live" : "Paper"} sell · ${fmtNum(waxOut, { digits: 2 })} WAX · ${
           pnlUsd >= 0 ? "+" : ""
@@ -1124,9 +1378,26 @@ async function runBotOnceInner(
         tokenIn: decision.tokenIn, tokenOut: decision.tokenOut,
         amountIn: decision.amountIn, expectedOut: decision.route.amountOut,
         actualOut: outAmt, txid, status: execStatus, pnlUsd: tapePnl,
+        realizedEdgePct: inUsd > 0 ? (tapePnl / inUsd) * 100 : undefined,
         latencyMs: live ? Date.now() - tExec : undefined,
+        ...routeJournalMeta(
+          decision.route,
+          decision.amountIn,
+          usdPriceOf(decision.tokenIn, book) || 0,
+        ),
+        ...ctxOf(),
         leefUsd: snap.leefUsd, waxUsd: book.waxUsd,
       });
+      if (live && (execStatus === "confirmed" || execStatus === "included")) {
+        noteSelfImpact(
+          book,
+          decision.route.poolIds[0],
+          "swap",
+          inUsd,
+          decision.tokenIn,
+          decision.tokenOut,
+        );
+      }
       toast({
         title: `${live ? "Live" : "Unsigned"} ${decision.tokenIn}→${decision.tokenOut}`,
         description: decision.reason + note + (txid ? ` · tx ${txid.slice(0, 10)}…` : ""),
@@ -1270,9 +1541,20 @@ async function runBotOnceInner(
         tokenIn: "WAX", tokenOut: "WAX",
         amountIn: plan.waxIn, expectedOut: plan.waxOut,
         actualOut: realizedWax ?? undefined, txid, status: execStatus, pnlUsd,
+        predEdgePct: plan.profitPct * 100,
+        realizedEdgePct:
+          (realizedWax != null ? realizedWax / plan.waxIn : plan.waxOut / plan.waxIn - 1) * 100,
         latencyMs: live ? Date.now() - t0 : undefined,
+        poolIds: [plan.buyPool.id, plan.sellPool.id],
+        hops: 2,
+        venues: ["alcor"],
+        sizeUsd: plan.waxIn * snap.waxUsd,
+        ...ctxOf(),
         leefUsd: snap.leefUsd, waxUsd: snap.waxUsd,
       });
+      if (live && (execStatus === "confirmed" || execStatus === "included")) {
+        noteSelfImpact(book, plan.buyPool.id, "arb", plan.waxIn * snap.waxUsd, "WAX", "WAX");
+      }
       const diff = realizedWax ?? plan.waxOut - plan.waxIn;
       toast({
         title: `${live ? "Live" : "Paper"} ${isEcho ? "echo" : "arb"} · ${
@@ -1284,6 +1566,25 @@ async function runBotOnceInner(
     }
   } catch (err) {
     const { code, message } = classifyTradeError(err);
+    // Failure-class evidence: the learning layer must see WHAT failed —
+    // infrastructure classes never feed market-model statistics.
+    journal({
+      kind: "execution",
+      action:
+        decision.kind === "buy" || decision.kind === "sell" || decision.kind === "swap" || decision.kind === "arb"
+          ? decision.kind
+          : undefined,
+      strategy: b.strategy,
+      mode,
+      failureClass: code,
+      reason: `${code}: ${message}`,
+      ...("route" in decision && decision.route
+        ? routeJournalMeta(decision.route, "amountWax" in decision ? decision.amountWax : "amountIn" in decision ? decision.amountIn : 0, 0)
+        : {}),
+      ...ctxOf(),
+      leefUsd: snap.leefUsd,
+      waxUsd: snap.waxUsd,
+    });
     if (code === "API_RATE_LIMIT" || code === "QUOTE_FAILURE" || code === "RPC_FAILURE") {
       const backoffSec = code === "API_RATE_LIMIT" ? 180 : 30;
       rateLimitedUntil = Date.now() + backoffSec * 1_000;
@@ -1321,6 +1622,7 @@ async function runBotOnceInner(
     }
     timings.totalTradeCycleMs = Date.now() - cycleT0;
     recordCycleTimings(timings);
+    setJournalCycleId(null);
   }
   return decision;
 }
@@ -1361,6 +1663,7 @@ function seedSeriesFromTape(snap: LeefSnapshot) {
  */
 let lastSeenSnap = "";
 let prevRunning = false;
+let lastProposalRefresh = 0;
 
 export async function botOnSnapshot(snap: LeefSnapshot): Promise<void> {
   const b = useBot.getState();
@@ -1371,6 +1674,17 @@ export async function botOnSnapshot(snap: LeefSnapshot): Promise<void> {
   const isNewSnap = lastSeenSnap !== identity;
   if (isNewSnap) {
     lastSeenSnap = identity;
+    // Learning drivers run even when the bot is stopped: counterfactuals and
+    // self-impact observations must resolve past a mid-window stop.
+    if (!learningBooted()) {
+      void journalAll().then((entries) => bootLearning(entries));
+    }
+    evaluateDueCounterfactuals(snap);
+    measureDueSelfImpact(snap);
+    if (Date.now() - lastProposalRefresh > 10 * 60_000) {
+      lastProposalRefresh = Date.now();
+      refreshProposals();
+    }
     seedSeriesFromTape(snap);
     // The signal series tracks the BASE token's USD mark (LEEF by default,
     // but any configured base) — strategy math is generic over it.

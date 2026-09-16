@@ -1,6 +1,7 @@
 import { create } from "zustand";
 import { persist } from "zustand/middleware";
 import { DEFAULT_AI_GATEWAY } from "@/lib/leef/ai-analyst";
+import { setLearningModeProvider } from "@/lib/leef/learning-store";
 
 /** Book-pull cadence. Live = 10s — fastest that stays polite to Alcor. */
 export const MIN_SYNC_SEC = 10;
@@ -46,6 +47,11 @@ type TerminalState = {
   selectedRouteSig: string | null;
   /** AI analyst master switch — off = zero calls to the gateway. */
   aiEnabled: boolean;
+  /**
+   * Learning mode: SUGGEST = artifacts shadow until a human promotes;
+   * CONTROLLED = the deterministic governor may auto-promote proven artifacts.
+   */
+  learningMode: "suggest" | "controlled";
   poolQuery: string;
   poolSort:
     | "score"
@@ -72,6 +78,7 @@ type TerminalState = {
   setSwapMaxHops: (n: number) => void;
   selectRoute: (id: string | null) => void;
   setAiEnabled: (on: boolean) => void;
+  setLearningMode: (mode: "suggest" | "controlled") => void;
   flipSwap: () => void;
   setPoolQuery: (q: string) => void;
   setPoolSort: (k: TerminalState["poolSort"]) => void;
@@ -93,6 +100,7 @@ export const useTerminal = create<TerminalState>()(
   swapMaxHops: 4,
   selectedRouteSig: null,
   aiEnabled: true,
+  learningMode: "suggest",
   poolQuery: "",
   poolSort: "tvl",
   poolDir: "desc",
@@ -117,18 +125,7 @@ export const useTerminal = create<TerminalState>()(
     set({ swapMaxHops: Math.min(10, Math.max(1, Math.round(n))), selectedRouteSig: null }),
   selectRoute: (selectedRouteSig) => set({ selectedRouteSig }),
   setAiEnabled: (aiEnabled) => set({ aiEnabled }),
-  setPoolQuery: (q) => set({ poolQuery: q }),
-  setPoolSort: (k) =>
-    set((s) => ({
-      poolSort: k,
-      poolDir:
-        s.poolSort === k ? (s.poolDir === "asc" ? "desc" : "asc") : k === "name" ? "asc" : "desc",
-    })),
-  togglePoolDir: () => set((s) => ({ poolDir: s.poolDir === "asc" ? "desc" : "asc" })),
-  setTickPool: (id) => set({ tickPoolId: id }),
-  setSyncSec: (sec) => set({ syncSec: clampSyncSec(sec) }),
-  setAiGatewayUrl: (url) =>
-    set({ aiGatewayUrl: url.trim().replace(/\/+$/, "") || DEFAULT_AI_GATEWAY }),
+  setLearningMode: (learningMode) => set({ learningMode }),
     }),
     {
       name: "leef-terminal-sync",
@@ -138,7 +135,12 @@ export const useTerminal = create<TerminalState>()(
         aiGatewayUrl: s.aiGatewayUrl,
         swapMaxHops: s.swapMaxHops,
         aiEnabled: s.aiEnabled,
+        learningMode: s.learningMode,
       }),
     },
   ),
 );
+
+// The learning store stays import-light (lib layer must not import stores);
+// it reads the mode through this provider.
+setLearningModeProvider(() => useTerminal.getState().learningMode);

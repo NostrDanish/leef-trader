@@ -23,9 +23,16 @@ import {
   type AiTask,
 } from "@/lib/leef/ai-analyst";
 import { fmtNum, timeAgo } from "@/lib/leef/format";
-import { journal, journalStats } from "@/lib/leef/journal";
+import { aggregateEntries, journal, journalAll } from "@/lib/leef/journal";
 import { classifyRegime, dangerScore } from "@/lib/leef/regime";
 import { isEconomicFailureReason } from "@/lib/wallet/trade-error";
+import {
+  bootLearning,
+  getArtifacts,
+  getProfiles,
+  refreshProposals,
+} from "@/lib/leef/learning-store";
+import { bucketMeanEdge, SIZE_BUCKET_LABELS } from "@/lib/leef/learning";
 import type { LeefSnapshot } from "@/lib/leef/types";
 import { useBot } from "@/store/bot";
 import { useTerminal } from "@/store/terminal";
@@ -241,6 +248,43 @@ function AnalysisView({ result }: { result: AiResult }) {
   );
 }
 
+/** evidence_review payload: journal stats + pool learning profiles. */
+async function evidenceContext(): Promise<Record<string, unknown>> {
+  const entries = await journalAll();
+  await bootLearning(entries);
+  refreshProposals();
+  const poolProfiles = Object.values(getProfiles())
+    .filter((p) => p.kind === "pool")
+    .sort((a, b) => b.executions - a.executions)
+    .slice(0, 10)
+    .map((p) => ({
+      pool: p.label,
+      executions: p.executions,
+      confirmed: p.buckets.reduce((s, b) => s + b.confirmed, 0),
+      ewmaSlippagePct: p.ewmaSlipPct,
+      gateFails: p.gateFails,
+      sizeCurve: p.buckets
+        .map((b, i) =>
+          b.confirmed >= 3
+            ? { bucket: SIZE_BUCKET_LABELS[i], meanRealizedEdgePct: bucketMeanEdge(b) }
+            : null,
+        )
+        .filter(Boolean),
+    }));
+  return {
+    stats: aggregateEntries(entries),
+    poolProfiles,
+    artifacts: getArtifacts().map((a) => ({
+      id: a.id,
+      status: a.status,
+      value: a.value,
+      samples: a.samples,
+      confidence: a.confidence,
+      shadowSamples: a.shadow.n,
+    })),
+  };
+}
+
 /* ------------------------------------------------------------------ */
 /* Desk                                                                 */
 /* ------------------------------------------------------------------ */
@@ -312,7 +356,7 @@ export function AiDesk({ snap }: { snap: LeefSnapshot }) {
           ? marketContext(snap)
           : task === "strategy_analysis"
             ? strategyContext()
-            : await journalStats();
+            : await evidenceContext();
       const result = await aiTask(task, data, { url: aiGatewayUrl });
       setRun({ status: "done", task, result, at: Date.now() });
       journal({

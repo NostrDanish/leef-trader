@@ -21,7 +21,24 @@
  */
 import type { BotStrategy } from "./bot-engine";
 
-export type JournalKind = "decision" | "gate" | "execution" | "calibration" | "ai";
+export type JournalKind =
+  | "decision"
+  | "gate"
+  | "execution"
+  | "calibration"
+  | "ai"
+  | "counterfactual"
+  | "learning";
+
+/**
+ * Counterfactual HOLD labels (Phase 2). A HOLD with a concrete candidate is
+ * re-evaluated minutes later against real market data:
+ *   FALSE_HOLD — the opportunity was real; holding was wrong (thesis-wise).
+ *   TRUE_HOLD  — the opportunity evaporated/reversed; holding was right.
+ *   NEUTRAL_HOLD — inside the noise band; no lesson either way.
+ * These judge the THESIS, never the decision's risk correctness.
+ */
+export type CounterfactualLabel = "TRUE_HOLD" | "FALSE_HOLD" | "NEUTRAL_HOLD";
 
 export type JournalEntry = {
   /** ms epoch. */
@@ -63,10 +80,74 @@ export type JournalEntry = {
   predEdgePct?: number;
   realEdgePct?: number;
 
+  /* ---------------- Phase 2: learning-structured fields ---------------- */
+  /** Correlates every entry produced inside one bot evaluation cycle. */
+  cycleId?: string;
+  /** Route pool ids (structured — never parsed out of reason strings). */
+  poolIds?: number[];
+  /** Venue set touched by the route. */
+  venues?: string[];
+  /** Route path signature (kind:pool>pool>…), amount-independent. */
+  routeSig?: string;
+  /** USD notional of the candidate/execution. */
+  sizeUsd?: number;
+  /** Number of route legs. */
+  hops?: number;
+  /** Engine's regime classification at decision time. */
+  regime?: string;
+  /** Realized vol per print at decision time, percent. */
+  volPct?: number;
+  /** Unified danger score at decision time. */
+  dangerScore?: number;
+  /** Modeled execution probability 0–1. */
+  execProb?: number;
+  /** Failure class from the trade taxonomy (RPC_FAILURE, MIN_OUT_FAILED, …). */
+  failureClass?: string;
+  /** Realized slippage: (1 − actualOut/expectedOut) × 100, confirmed fills. */
+  realizedSlipPct?: number;
+  /** Pool spot move around our own confirmed fill, percent (signed). */
+  selfImpactPct?: number;
+
+  /** counterfactual entries */
+  cfLabel?: CounterfactualLabel;
+  /** Counterfactual net outcome of the skipped opportunity, percent. */
+  cfPct?: number;
+  /** How the counterfactual was measured: price mark or local re-quote. */
+  cfModel?: "mark" | "requote";
+  /** The HOLD reason class being judged. */
+  holdReasonClass?: string;
+
+  /** learning entries (artifact lifecycle: proposed/shadow/promoted/rolled_back/expired) */
+  artifactId?: string;
+  artifactType?: string;
+  artifactStatus?: string;
+  artifactValue?: number;
+  previousValue?: number;
+  samples?: number;
+  confidence?: number;
+
   /** compact market context (scalars only) */
   leefUsd?: number;
   waxUsd?: number;
 };
+
+/* ------------------------------------------------------------------ */
+/* Cycle correlation                                                    */
+/* ------------------------------------------------------------------ */
+
+/** Set by the bot loop at the start of each evaluation cycle. */
+let currentCycleId: string | null = null;
+export function setJournalCycleId(id: string | null): void {
+  currentCycleId = id;
+}
+
+/** Live listeners — the learning store folds every entry into profiles. */
+type JournalListener = (e: JournalEntry) => void;
+const listeners = new Set<JournalListener>();
+export function onJournalEntry(fn: JournalListener): () => void {
+  listeners.add(fn);
+  return () => listeners.delete(fn);
+}
 
 const DB_NAME = "leef-evidence";
 const STORE = "journal";
@@ -110,6 +191,8 @@ export type EvidenceStats = {
   byStrategy: StrategyEvidence[];
   /** Normalized gate-failure reasons, most frequent first. */
   topGateFails: { reason: string; count: number }[];
+  /** Counterfactual HOLD tallies (Phase 2). */
+  counterfactuals: { trueHolds: number; falseHolds: number; neutral: number };
 };
 
 /**
@@ -150,6 +233,7 @@ function blankStrategyEvidence(strategy: string): StrategyEvidence {
 export function aggregateEntries(entries: JournalEntry[]): EvidenceStats {
   const byStrategy = new Map<string, StrategyEvidence>();
   const gateFails = new Map<string, number>();
+  const counterfactuals = { trueHolds: 0, falseHolds: 0, neutral: 0 };
   let oldestTs: number | null = null;
   let newestTs: number | null = null;
 
@@ -168,7 +252,14 @@ export function aggregateEntries(entries: JournalEntry[]): EvidenceStats {
     if (newestTs == null || e.ts > newestTs) newestTs = e.ts;
     // Analyst calls stay auditable in the raw log but never become a
     // per-strategy row — they are commentary, not trading performance.
-    if (e.kind === "ai") continue;
+    if (e.kind === "ai" || e.kind === "learning") continue;
+    if (e.kind === "counterfactual") {
+      // Counterfactuals are not decisions — tallied separately.
+      if (e.cfLabel === "TRUE_HOLD") counterfactuals.trueHolds += 1;
+      else if (e.cfLabel === "FALSE_HOLD") counterfactuals.falseHolds += 1;
+      else counterfactuals.neutral += 1;
+      continue;
+    }
     const s = strat(e);
     switch (e.kind) {
       case "decision":
@@ -185,6 +276,8 @@ export function aggregateEntries(entries: JournalEntry[]): EvidenceStats {
         }
         break;
       case "execution":
+        // Self-impact follow-up entries are observations, not new executions.
+        if (e.amountIn == null && e.expectedOut == null && e.selfImpactPct != null) break;
         s.executions += 1;
         if (e.status === "confirmed" || e.status === "included") s.confirmed += 1;
         if (e.status === "unknown") s.unknown += 1;
@@ -214,6 +307,7 @@ export function aggregateEntries(entries: JournalEntry[]): EvidenceStats {
       .map(([reason, count]) => ({ reason, count }))
       .sort((a, b) => b.count - a.count)
       .slice(0, 8),
+    counterfactuals,
   };
 }
 
@@ -286,14 +380,23 @@ function armListeners(): void {
  */
 export function journal(entry: Omit<JournalEntry, "ts"> & { ts?: number }): void {
   try {
+    const stamped: JournalEntry = {
+      ...entry,
+      cycleId: entry.cycleId ?? currentCycleId ?? undefined,
+      reason: entry.reason ? entry.reason.slice(0, MAX_REASON_LEN) : undefined,
+      ts: entry.ts ?? Date.now(),
+    };
+    // Live listeners (learning profiles) run even when IDB is unavailable.
+    for (const l of listeners) {
+      try {
+        l(stamped);
+      } catch {
+        /* a listener must never break the journal */
+      }
+    }
     if (!idbAvailable()) return;
     armListeners();
-    const reason = entry.reason;
-    buffer.push({
-      ...entry,
-      reason: reason ? reason.slice(0, MAX_REASON_LEN) : undefined,
-      ts: entry.ts ?? Date.now(),
-    });
+    buffer.push(stamped);
     if (buffer.length >= FLUSH_AT) void flushJournal();
     else if (!flushTimer) {
       flushTimer = setTimeout(() => void flushJournal(), FLUSH_MS);
@@ -391,6 +494,11 @@ async function allEntries(): Promise<JournalEntry[]> {
 /** Aggregated per-strategy evidence for the Evidence desk. */
 export async function journalStats(): Promise<EvidenceStats> {
   return aggregateEntries(await allEntries());
+}
+
+/** Every entry, oldest first — the learning store rebuilds profiles from this. */
+export async function journalAll(): Promise<JournalEntry[]> {
+  return allEntries();
 }
 
 /** Full export as an NDJSON blob, oldest entry first. */

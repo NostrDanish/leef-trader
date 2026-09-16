@@ -13,12 +13,29 @@ import {
 } from "@/components/ui/table";
 import { fmtNum, fmtUsd, timeAgo } from "@/lib/leef/format";
 import {
+  aggregateEntries,
+  journalAll,
   journalClear,
   journalExportBlob,
-  journalStats,
   MAX_ENTRIES,
   type EvidenceStats,
 } from "@/lib/leef/journal";
+import {
+  bootLearning,
+  getArtifacts,
+  getProfiles,
+  promoteArtifact,
+  refreshProposals,
+  rollbackArtifactById,
+} from "@/lib/leef/learning-store";
+import {
+  bucketMeanEdge,
+  DEFAULT_LEARNING_CONFIG,
+  SIZE_BUCKET_LABELS,
+  type LearningArtifact,
+  type LearningProfiles,
+} from "@/lib/leef/learning";
+import { useTerminal } from "@/store/terminal";
 import { useToast } from "@/hooks/useToast";
 import { cn } from "@/lib/utils";
 
@@ -44,7 +61,11 @@ function spanLabel(stats: EvidenceStats): string {
  */
 export function Evidence() {
   const { toast } = useToast();
+  const learningMode = useTerminal((s) => s.learningMode);
+  const setLearningMode = useTerminal((s) => s.setLearningMode);
   const [stats, setStats] = useState<EvidenceStats | null>(null);
+  const [profiles, setProfiles] = useState<LearningProfiles>({});
+  const [artifacts, setArtifacts] = useState<LearningArtifact[]>([]);
   const [loading, setLoading] = useState(true);
   const [exporting, setExporting] = useState(false);
   const [confirmClear, setConfirmClear] = useState(false);
@@ -52,7 +73,12 @@ export function Evidence() {
   const refresh = useCallback(async () => {
     setLoading(true);
     try {
-      setStats(await journalStats());
+      const entries = await journalAll();
+      await bootLearning(entries);
+      refreshProposals();
+      setStats(aggregateEntries(entries));
+      setProfiles({ ...getProfiles() });
+      setArtifacts(getArtifacts());
     } finally {
       setLoading(false);
     }
@@ -261,6 +287,214 @@ export function Evidence() {
                 })}
               </TableBody>
             </Table>
+          </div>
+        )}
+      </Card>
+
+      {stats && (stats.counterfactuals.trueHolds + stats.counterfactuals.falseHolds + stats.counterfactuals.neutral) > 0 && (
+        <Card className="p-4 sm:p-5">
+          <h3 className="font-semibold mb-1">Counterfactual HOLDs</h3>
+          <p className="text-sm text-muted-foreground mb-4">
+            What happened after the engine said no. Measured against real market data 5 minutes
+            after each veto — <span className="font-medium">labeled model-based</span> (price mark
+            or local re-quote), never a claimed fill. These judge the thesis, not risk policy.
+          </p>
+          <div className="grid grid-cols-3 gap-3">
+            <div className="rounded-lg border bg-card/50 p-3 text-center">
+              <div className="text-2xl font-semibold tabular-nums text-leef">
+                {stats.counterfactuals.trueHolds}
+              </div>
+              <div className="text-xs text-muted-foreground">TRUE_HOLD · holding was right</div>
+            </div>
+            <div className="rounded-lg border bg-card/50 p-3 text-center">
+              <div className="text-2xl font-semibold tabular-nums text-sell">
+                {stats.counterfactuals.falseHolds}
+              </div>
+              <div className="text-xs text-muted-foreground">FALSE_HOLD · opportunity was real</div>
+            </div>
+            <div className="rounded-lg border bg-card/50 p-3 text-center">
+              <div className="text-2xl font-semibold tabular-nums text-muted-foreground">
+                {stats.counterfactuals.neutral}
+              </div>
+              <div className="text-xs text-muted-foreground">Neutral · inside noise band</div>
+            </div>
+          </div>
+        </Card>
+      )}
+
+      <Card className="p-4 sm:p-5">
+        <div className="flex flex-wrap items-center justify-between gap-3 mb-1">
+          <h3 className="font-semibold">Pool learning</h3>
+          <div className="flex items-center gap-2 text-xs">
+            <span className="text-muted-foreground">Learning mode</span>
+            <button
+              type="button"
+              onClick={() => setLearningMode(learningMode === "suggest" ? "controlled" : "suggest")}
+              className={cn(
+                "rounded-full border px-2.5 py-1",
+                learningMode === "controlled"
+                  ? "border-accent/50 bg-accent/15 text-foreground"
+                  : "border-border text-muted-foreground",
+              )}
+            >
+              {learningMode === "controlled" ? "CONTROLLED — governor may auto-promote" : "SUGGEST — human promotes"}
+            </button>
+          </div>
+        </div>
+        <p className="text-sm text-muted-foreground mb-4">
+          Deterministic statistics over the journal, per pool × size bucket. Profiles never touch
+          the engine directly — only governor-promoted artifacts adjust anything (slippage estimate
+          clamped {DEFAULT_LEARNING_CONFIG.slipClampMinPct}–{DEFAULT_LEARNING_CONFIG.slipClampMaxPct}%,
+          size ceilings can only shrink).
+        </p>
+        {Object.values(profiles).filter((p) => p.kind === "pool" && p.executions > 0).length === 0 ? (
+          <div className="rounded-lg border border-dashed py-10 px-8 text-center">
+            <p className="text-muted-foreground max-w-md mx-auto text-sm">
+              No pool evidence yet. Profiles build up as executions with confirmed outcomes land in
+              the journal.
+            </p>
+          </div>
+        ) : (
+          <div className="overflow-x-auto">
+            <Table>
+              <TableHeader>
+                <TableRow>
+                  <TableHead>Pool</TableHead>
+                  <TableHead className="text-right">Samples</TableHead>
+                  <TableHead className="text-right">Realized slip</TableHead>
+                  <TableHead>Size curve (mean realized edge)</TableHead>
+                  <TableHead className="text-right">Gate fails</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {Object.values(profiles)
+                  .filter((p) => p.kind === "pool" && p.executions > 0)
+                  .sort((a, b) => b.executions - a.executions)
+                  .slice(0, 10)
+                  .map((p) => (
+                    <TableRow key={p.key}>
+                      <TableCell className="font-medium">{p.label}</TableCell>
+                      <TableCell className="text-right tabular-nums">
+                        {p.executions}
+                        <span className="text-muted-foreground"> ({p.buckets.reduce((s, b) => s + b.confirmed, 0)}✓)</span>
+                      </TableCell>
+                      <TableCell className="text-right tabular-nums">
+                        {p.ewmaSlipPct != null ? `${p.ewmaSlipPct.toFixed(2)}%` : "—"}
+                      </TableCell>
+                      <TableCell>
+                        <div className="flex flex-wrap gap-1">
+                          {p.buckets.map((b, i) => {
+                            const mean = bucketMeanEdge(b);
+                            if (b.confirmed < DEFAULT_LEARNING_CONFIG.minSamplesBucket || mean == null) {
+                              return null;
+                            }
+                            return (
+                              <span
+                                key={i}
+                                title={`${SIZE_BUCKET_LABELS[i]}: ${b.confirmed} confirmed`}
+                                className={cn(
+                                  "rounded px-1.5 py-0.5 text-[10px] font-mono tabular-nums border",
+                                  mean >= 0
+                                    ? "border-leef/30 bg-leef/10 text-leef"
+                                    : "border-sell/30 bg-sell/10 text-sell",
+                                )}
+                              >
+                                {SIZE_BUCKET_LABELS[i]} {mean >= 0 ? "+" : ""}
+                                {mean.toFixed(2)}%
+                              </span>
+                            );
+                          })}
+                          {p.buckets.every((b) => b.confirmed < DEFAULT_LEARNING_CONFIG.minSamplesBucket) && (
+                            <span className="text-xs text-muted-foreground">
+                              collecting (need ≥{DEFAULT_LEARNING_CONFIG.minSamplesBucket}/bucket)
+                            </span>
+                          )}
+                        </div>
+                      </TableCell>
+                      <TableCell className="text-right tabular-nums text-muted-foreground">
+                        {p.gateFails}
+                      </TableCell>
+                    </TableRow>
+                  ))}
+              </TableBody>
+            </Table>
+          </div>
+        )}
+      </Card>
+
+      <Card className="p-4 sm:p-5">
+        <h3 className="font-semibold mb-1">Learning artifacts</h3>
+        <p className="text-sm text-muted-foreground mb-4">
+          Typed, bounded adjustments proposed from evidence. Shadow = measured against new
+          executions but not applied. Promotion requires the shadow error to beat the baseline over
+          ≥{DEFAULT_LEARNING_CONFIG.shadowMinSamples} samples; rollback always reverts to the
+          deterministic default.
+        </p>
+        {artifacts.length === 0 ? (
+          <div className="rounded-lg border border-dashed py-10 px-8 text-center">
+            <p className="text-muted-foreground max-w-md mx-auto text-sm">
+              No artifacts yet. They appear once a pool crosses the sample floor (
+              {DEFAULT_LEARNING_CONFIG.minSamplesSlippage}+ confirmed fills for slippage,{" "}
+              {DEFAULT_LEARNING_CONFIG.minSamplesSizeCurve}+ for size curves).
+            </p>
+          </div>
+        ) : (
+          <div className="flex flex-col gap-2">
+            {artifacts.map((a) => (
+              <div key={a.id} className="flex flex-wrap items-center gap-3 rounded-lg border bg-card/50 px-3 py-2">
+                <Badge
+                  variant="outline"
+                  className={cn(
+                    a.status === "active" && "border-leef/40 text-leef",
+                    a.status === "shadow" && "border-warn/40 text-warn",
+                    (a.status === "rolled_back" || a.status === "expired" || a.status === "rejected") &&
+                      "border-sell/40 text-sell",
+                  )}
+                >
+                  {a.status}
+                </Badge>
+                <div className="min-w-0 flex-1">
+                  <div className="text-sm font-medium font-mono truncate">{a.id}</div>
+                  <div className="text-xs text-muted-foreground">
+                    value {a.type === "POOL_SIZE_MULTIPLIER" ? `×${a.value.toFixed(2)}` : `${a.value.toFixed(2)}%`}
+                    {" · "}default {a.type === "POOL_SIZE_MULTIPLIER" ? `×${a.previousValue.toFixed(2)}` : `${a.previousValue.toFixed(2)}%`}
+                    {" · "}{a.samples} samples · conf {(a.confidence * 100).toFixed(0)}%
+                    {" · "}shadow {a.shadow.n}
+                    {" · "}expires {timeAgo(new Date(a.expiresAt).toISOString())}
+                  </div>
+                </div>
+                {a.status === "shadow" && learningMode === "suggest" && (
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    onClick={() => {
+                      const r = promoteArtifact(a.id);
+                      toast({
+                        title: r.ok ? "Artifact promoted" : "Promotion refused",
+                        description: r.reason,
+                        variant: r.ok ? "default" : "destructive",
+                      });
+                      setArtifacts(getArtifacts());
+                    }}
+                  >
+                    Promote
+                  </Button>
+                )}
+                {a.status === "active" && (
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    onClick={() => {
+                      rollbackArtifactById(a.id);
+                      toast({ title: "Rolled back", description: `${a.id} reverted to the deterministic default` });
+                      setArtifacts(getArtifacts());
+                    }}
+                  >
+                    Roll back
+                  </Button>
+                )}
+              </div>
+            ))}
           </div>
         )}
       </Card>

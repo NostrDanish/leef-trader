@@ -2,6 +2,42 @@
 
 All notable changes to LEEF Trader. Dates are commit-era, not release tags.
 
+## Unreleased — Phase 2: learning engine (evidence → profiles → governed adjustments)
+
+P0/P1 complete, P2 real-but-minimal, P3 honestly deferred
+(docs/PHASE2_LEARNING_AUDIT.md has the full audit):
+
+- **Learning core** (`lib/leef/learning.ts`): pool+route profiles with USD
+  size buckets, EWMA decay (3-day half-life, 14-day staleness kill), learned
+  slippage estimate (min 8 confirmed samples, clamped 0.02–0.75%), learned
+  size multiplier (≤1 always — learning only shrinks ceilings), counterfactual
+  labeling (TRUE_HOLD / FALSE_HOLD / NEUTRAL), typed LearningArtifact +
+  deterministic LearningGovernor (schema/clamp/evidence/expiry/shadow rules;
+  reject·shadow·promote·rollback·expire).
+- **Learning store** (`lib/leef/learning-store.ts`): profiles rebuilt from
+  the journal at boot + live-folded via a journal listener (works even with
+  no IDB); artifacts persisted to localStorage; counterfactual registry
+  evaluated on fresh snapshots 5 min after each veto; self-impact measurement
+  on the snapshot after a confirmed live fill.
+- **Engine integration (bounded by construction):** the bot's buy path reads
+  ONLY governor-promoted artifacts — slippage override into the cost model,
+  size-ceiling multiplier (≤1) on the band. Shadow scoring per confirmed fill
+  (slippage: baseline-vs-learned prediction error; size: does the destructive
+  bucket stay destructive on fresh evidence). Infra failures never feed
+  market statistics.
+- **Counterfactual HOLDs:** exact-gate vetoes (entry/swap/growth) and
+  governor vetoes register the skipped candidate; 5 minutes later the engine
+  judges it against real market data (price-mark model for entries,
+  local-requote for swaps — labeled model-based, never a claimed fill).
+- **Evidence desk:** pool-learning table (samples, realized slippage, the
+  per-bucket size curve), counterfactual tallies, artifact list with
+  Promote/Rollback (SUGGEST) or governor auto-promotion (CONTROLLED) — mode
+  switch on the card.
+- **AI desk:** evidence_review now includes pool profiles + artifact states.
+  AI still proposes nothing automatically (P3 deferred).
+- Tests: `learning.test.ts` (buckets, EWMA, floors, clamps, labels, governor
+  lifecycle, size-artifact shadow rule, journal rebuild).
+
 ## Unreleased — Rebalancer CPU fix + poisoned-pool guard, route pinning, AI toggle & mixes
 
 - **Sweep CPU revert fixed.** Live rebalances bundled every leg's router
