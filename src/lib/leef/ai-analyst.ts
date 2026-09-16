@@ -127,7 +127,11 @@ export async function aiTask(
     );
   }
   const ctrl = new AbortController();
-  const timeoutMs = opts.timeoutMs ?? 12_000; // worker caps upstream at 10s
+  // Worker caps upstream generation at 30s (ZDR flash runs ~30–60 tok/s, so
+  // a full analysis is 6–25s of pure generation). Client waits 35s. This is
+  // fire-and-forget OFF the trading loop — a long analysis can never stall
+  // a trade.
+  const timeoutMs = opts.timeoutMs ?? 35_000;
   const timer = setTimeout(() => ctrl.abort(), timeoutMs);
   const t0 = Date.now();
   callLog.push(t0);

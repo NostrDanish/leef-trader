@@ -22,7 +22,10 @@ AI desk (browser)                     your Cloudflare Worker              PPQ
 - The worker itself forces `"trade_authorization": false` into every
   response; the desk strips that key before display.
 - Gateway down, slow, CORS-blocked or over budget → the desk shows the error;
-  trading is unaffected. Client timeout 12s (worker caps upstream at 10s).
+  trading is unaffected. Client timeout 35s: the worker caps upstream
+  generation at 30s (ZDR flash generates ~30–60 tok/s; a full analysis is
+  6–25s). AI calls are fire-and-forget outside the trading loop, so the cap
+  only ever bounds the analysis fetch — never a trade.
 - Every AI call is written to the [evidence journal](./EVIDENCE.md)
   (`kind: "ai"`, task + latency + digest) so the analyst's own track record
   is auditable — but AI entries never touch per-strategy trading statistics.
@@ -53,7 +56,7 @@ cannot inject a system prompt or pick a different model.
 ## Troubleshooting
 
 - **`Gateway HTTP 504 — PROVIDER_TIMEOUT`**: the upstream model did not
-  answer within the worker's 10s cap. Check the model id (`PPQ_MODEL` var),
+  answer within the worker's 30s cap. Check the model id (`PPQ_MODEL` var),
   PPQ status, or try a faster model from the `/v1/models` catalog.
 - **`Unreachable / CORS` badge**: DNS/offline, or the origin is not
   allowlisted (see checklist #2).

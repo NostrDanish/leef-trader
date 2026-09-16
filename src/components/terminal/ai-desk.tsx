@@ -130,10 +130,15 @@ function strategyContext(): Record<string, unknown> {
 
 const KEY_TITLES: Record<string, string> = {
   summary: "Summary",
+  assessment: "Assessment",
   analysis: "Analysis",
   market_analysis: "Analysis",
   recommendation: "Recommendation",
   recommendations: "Recommendations",
+  observations: "Observations",
+  warnings: "Warnings",
+  suggestions: "Suggestions",
+  patterns: "Patterns",
   outlook: "Outlook",
   risks: "Risks",
   confidence: "Confidence",
@@ -395,7 +400,7 @@ export function AiDesk({ snap }: { snap: LeefSnapshot }) {
               onClick={() => void runTask(t.id)}
               disabled={run.status === "running" || budget.remaining <= 0}
             >
-              {run.status === "running" && run.task === t.id ? "Analyzing…" : "Run"}
+              {run.status === "running" && run.task === t.id ? "Analyzing (~30s)…" : "Run"}
             </Button>
           </Card>
         ))}

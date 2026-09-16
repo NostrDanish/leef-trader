@@ -14,13 +14,17 @@ All notable changes to LEEF Trader. Dates are commit-era, not release tags.
 - **Analyst, never the engine.** Nothing from the gateway touches the trade
   path — no signing, no gate input; the worker forces
   `trade_authorization: false`. Gateway down/slow/CORS-blocked → the desk
-  shows the error, trading continues deterministically. Client timeout 12s
-  (worker caps upstream at 10s).
+  shows the error, trading continues deterministically. Client timeout 35s
+  (worker caps upstream generation at 30s — ZDR flash is ~30–60 tok/s, so a
+  full analysis is 6–25s; AI calls are fire-and-forget off the trade loop).
 - **Auditable analyst.** Every AI call lands in the evidence journal
   (`kind: "ai"`, task + latency + digest) without polluting per-strategy
   trading stats.
 - **CORS honesty.** Failures name the exact origin to allowlist. Verified
-  against the live gateway: health OK, PPQ key valid.
+  against the live gateway: health OK, PPQ key valid, full
+  `strategy_analysis` returns grounded JSON in ~12s. Worker allowlist covers
+  `leef-trader.vercel.app`, `leef-trader.shakespeare.{wtf,to}` and
+  `https://*.shakespeare.to` (wildcard-subdomain support added worker-side).
 
 ## Unreleased — Evidence journal, gate candidate fallback, LEEF near-tie preference
 
