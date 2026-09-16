@@ -28,6 +28,7 @@ export type TabId =
   | "wallet"
   | "bot"
   | "portfolio"
+  | "evidence"
   | "infra";
 
 type TerminalState = {

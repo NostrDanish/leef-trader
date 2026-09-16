@@ -30,6 +30,11 @@ continuously with no page refresh and no key re-import.
   repair) as one atomic WAX transaction.
 - **Economic discipline**: every entry is sized and gated by a central cost
   model and net-edge engine — see below.
+- **Evidence journal**: every decision, exact-quote gate verdict, execution
+  and predicted-vs-realized edge persists in a compact append-only IndexedDB
+  journal, aggregated on the Evidence desk and exportable as NDJSON. The
+  trader no longer forgets what it learned on reload. See
+  [EVIDENCE](./docs/EVIDENCE.md).
 
 ## The economic core (what makes it a trading system, not a script)
 

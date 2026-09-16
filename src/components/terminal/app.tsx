@@ -5,6 +5,7 @@ import { useTerminal } from "@/store/terminal";
 import { useWallet } from "@/store/wallet";
 import { BotDesk } from "./bot-desk";
 import { Dashboard } from "./dashboard";
+import { Evidence } from "./evidence";
 import { TerminalHeader } from "./header";
 import { IlCalc } from "./il";
 import { ImportKeyDialog } from "./import-key";
@@ -96,6 +97,7 @@ export function TerminalApp() {
         {tab === "wallet" && <WalletDesk snap={snap} />}
         {tab === "bot" && <BotDesk snap={snap} />}
         {tab === "portfolio" && <PortfolioDesk snap={snap} />}
+        {tab === "evidence" && <Evidence />}
         {tab === "infra" && <InfraStatus />}
       </main>
 

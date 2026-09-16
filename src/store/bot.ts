@@ -16,6 +16,7 @@ import {
   type GrowthMode,
   type GrowthTarget,
 } from "@/lib/leef/growth-engine";
+import { journal } from "@/lib/leef/journal";
 
 export type BotDecisionKind = "buy" | "sell" | "arb" | "swap" | "hold" | "skip" | "stop" | "error";
 
@@ -209,7 +210,19 @@ export const useBot = create<BotState>()(
         set((s) => ({
           series: [...s.series, p].slice(-MAX_SERIES),
         })),
-      pushDecision: (d) =>
+      pushDecision: (d) => {
+        // Evidence journal: the full decision trail (incl. HOLD reasons) —
+        // the in-memory log above is capped at MAX_LOG for the UI only.
+        journal({
+          kind: "decision",
+          strategy: get().strategy,
+          mode: d.mode,
+          decision: d.kind,
+          reason: d.reason,
+          priceUsd: d.priceUsd,
+          txid: d.txid,
+          pnlUsd: d.pnlUsd,
+        });
         set((s) => ({
           decisions: [
             {
@@ -219,7 +232,8 @@ export const useBot = create<BotState>()(
             },
             ...s.decisions,
           ].slice(0, MAX_LOG),
-        })),
+        }));
+      },
       markTrade: (cooldownSec) => {
         const now = Date.now();
         const s = get();
@@ -250,7 +264,17 @@ export const useBot = create<BotState>()(
             equity: [...s.stats.equity, { t: Date.now(), usd: equityUsd }].slice(-120),
           },
         })),
-      recordStrategyPerf: (strategy, r) =>
+      recordStrategyPerf: (strategy, r) => {
+        // Evidence journal: per-trade calibration (the store keeps only the
+        // aggregates; the journal keeps each predicted-vs-realized pair).
+        journal({
+          kind: "calibration",
+          strategy,
+          pnlUsd: r.pnlUsd,
+          predEdgePct: r.predEdgePct ?? undefined,
+          realEdgePct: r.realEdgePct,
+          latencyMs: r.latencyMs ?? undefined,
+        });
         set((s) => {
           const prev = s.stats.byStrategy[strategy] ?? {
             trades: 0,
@@ -276,7 +300,8 @@ export const useBot = create<BotState>()(
               },
             },
           };
-        }),
+        });
+      },
       recordVolume: (volumeUsd, costUsd) =>
         set((s) => ({
           stats: {

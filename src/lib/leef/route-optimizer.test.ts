@@ -1,6 +1,11 @@
 import { describe, expect, it } from "vitest";
-import { bestExecutionRoute, rankExecutionRoutes } from "./route-optimizer";
-import type { AuxPool, LeefPool } from "./types";
+import {
+  bestExecutionRoute,
+  preferLeefNearTies,
+  rankExecutionRoutes,
+  routeTouchesLeef,
+} from "./route-optimizer";
+import type { AuxPool, LeefPool, SwapRoute } from "./types";
 
 function leefPool(over: {
   id: number;
@@ -277,5 +282,92 @@ describe("execution router", () => {
     expect(r).not.toBeNull();
     expect(r!.poolIds).toContain(699);
     expect(r!.poolIds).toContain(500);
+  });
+});
+
+describe("LEEF near-tie preference", () => {
+  const route = (id: string, out: number, viaLeef: boolean): SwapRoute => ({
+    id,
+    kind: "hop",
+    label: id,
+    poolIds: [1],
+    legs: [
+      {
+        poolId: 1,
+        pairName: id,
+        tokenIn: viaLeef ? "LEEF" : "USDT",
+        tokenOut: "WAX",
+        amountIn: 1,
+        amountOut: out,
+        feePct: 0.3,
+        priceImpact: 0.01,
+      },
+    ],
+    amountIn: 1,
+    amountOut: out,
+    tokenIn: viaLeef ? "LEEF" : "USDT",
+    tokenOut: "WAX",
+    feePct: 0.3,
+    priceImpact: 0.01,
+    executionPrice: out,
+    spotPrice: out,
+    vsBestPct: 0,
+    tvlUsd: 100,
+    volume24Usd: 10,
+    notes: [],
+  });
+
+  it("pulls a LEEF route ahead when it is within the epsilon band", () => {
+    const nonLeefBest = route("best-noleef", 100, false);
+    const leefNearTie = route("leef-tie", 99.7, true); // within 0.5%
+    const out = preferLeefNearTies([nonLeefBest, leefNearTie]);
+    expect(out[0]!.id).toBe("leef-tie");
+    expect(out[1]!.id).toBe("best-noleef");
+  });
+
+  it("never lets a LEEF route beyond the band leapfrog economics", () => {
+    const nonLeefBest = route("best-noleef", 100, false);
+    const leefWorse = route("leef-worse", 98, true); // 2% worse — outside 0.5%
+    const out = preferLeefNearTies([nonLeefBest, leefWorse]);
+    expect(out[0]!.id).toBe("best-noleef");
+    expect(out[1]!.id).toBe("leef-worse");
+  });
+
+  it("is a no-op when the best route already touches LEEF", () => {
+    const leefBest = route("leef-best", 100, true);
+    const nonLeef = route("noleef", 99.9, false);
+    const out = preferLeefNearTies([leefBest, nonLeef]);
+    expect(out[0]!.id).toBe("leef-best");
+  });
+
+  it("preserves the economic order of routes outside the band", () => {
+    const a = route("a", 100, false);
+    const b = route("b", 99.8, true); // in band → first
+    const c = route("c", 90, false);
+    const d = route("d", 80, false);
+    const out = preferLeefNearTies([a, b, c, d]);
+    expect(out.map((r) => r.id)).toEqual(["b", "a", "c", "d"]);
+  });
+
+  it("handles empty and single-route lists", () => {
+    expect(preferLeefNearTies([])).toEqual([]);
+    const one = route("only", 1, false);
+    expect(preferLeefNearTies([one])).toEqual([one]);
+  });
+
+  it("detects LEEF on any leg, including intermediate hops", () => {
+    const mid = route("mid", 1, false);
+    mid.legs.push({
+      poolId: 2,
+      pairName: "LEEF / USDT",
+      tokenIn: "WAX",
+      tokenOut: "LEEF",
+      amountIn: 1,
+      amountOut: 1,
+      feePct: 0.3,
+      priceImpact: 0,
+    });
+    expect(routeTouchesLeef(mid)).toBe(true);
+    expect(routeTouchesLeef(route("plain", 1, false))).toBe(false);
   });
 });

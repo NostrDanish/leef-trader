@@ -2,6 +2,36 @@
 
 All notable changes to LEEF Trader. Dates are commit-era, not release tags.
 
+## Unreleased — Evidence journal, gate candidate fallback, LEEF near-tie preference
+
+- **Evidence journal (P1).** The bot now has a persistent memory: an
+  append-only IndexedDB journal records every decision (incl. HOLD reasons),
+  every exact-quote gate verdict (pass AND fail, with the fresh venue quote),
+  every execution (chain-observed status, predicted vs actual output, P&L,
+  latency) and every per-trade calibration pair. Compact flat records — never
+  market snapshots — buffered in memory and batch-flushed; storage-capped
+  (60k entries, oldest pruned). Fire-and-forget: the journal can never throw
+  into trading code. New **Evidence desk** (terminal tab) aggregates it per
+  strategy — decisions, HOLDs, trades, win rate, P&L, predicted vs realized
+  edge (calibration error), gate pass/fail — plus the grouped gate-failure
+  signatures that will decide whether tick-level CLMM discovery is worth
+  building. One-click NDJSON export.
+- **Candidate fallback at the exact gate (P2).** A vetoed route no longer
+  ends the tick: up to 3 ranked candidates per decision get their own exact
+  venue quote (winner first, then near-best alternates re-ranked on the
+  refreshed execution book, impact-capped). Infra errors still back off
+  immediately — fallback is for economic vetoes, not venue outages.
+- **LEEF preference as a post-economics tie-break (P3).**
+  `preferLeefNearTies` re-ranks only within a 0.5% near-tie band of the best
+  expected output: LEEF-touching routes get gate attempts first. A route
+  worse than the band never leapfrogs, and the exact-quote gate still vetoes
+  anything uneconomic. For LEEF-terminal pairs every route touches LEEF, so
+  it is a no-op there — it only bites on non-LEEF next-hop/growth pairs. The
+  quotes desk keeps the untouched economic ranking.
+- **Cleanup.** Deleted `lib/market/opportunity-queue.ts` — a dead duplicate
+  opportunity ranker nothing imported (the live one is `leef/opportunity.ts`).
+- **Fix.** Removed a duplicate `AlcorRouteQuote` import in the bot loop.
+
 ## Unreleased — Audit round: sign the gate's quote, hard floors, honest danger input
 
 Dual-audit follow-through (ChatGPT + Grok):

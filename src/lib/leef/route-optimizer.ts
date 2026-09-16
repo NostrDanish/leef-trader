@@ -635,6 +635,82 @@ export function bestExecutionRouteOnGraph(
 /** Alias used by existing desks — same function, size-specific graph search. */
 export const compareAllRoutes = rankExecutionRoutes;
 
+/* ------------------------------------------------------------------ */
+/* LEEF preference — a post-economics tie-break, never an override      */
+/* ------------------------------------------------------------------ */
+
+/**
+ * Routes within this fraction of the best expected output are "near-ties".
+ * With float outputs exact ties never happen; 0.5% is the "indifferent"
+ * band where routing through LEEF costs the trader effectively nothing.
+ */
+export const LEEF_ROUTE_PREFERENCE_PCT = 0.005;
+
+/** Does any leg of this route touch LEEF? */
+export function routeTouchesLeef(route: SwapRoute): boolean {
+  return route.legs.some(
+    (l) =>
+      l.tokenIn.toUpperCase() === LEEF_SYMBOL ||
+      l.tokenOut.toUpperCase() === LEEF_SYMBOL,
+  );
+}
+
+/**
+ * Stable re-rank: LEEF-touching routes inside the near-tie band of the best
+ * expected output move ahead; everything else keeps its economic order. A
+ * route worse than the band NEVER leapfrogs — and the exact-quote gate
+ * downstream still vetoes anything uneconomic. Economics first, always.
+ *
+ * Applied on bot gate-attempt ordering (not in the quotes desk, where the
+ * user sees the untouched economic ranking and picks for themselves).
+ */
+export function preferLeefNearTies(
+  routes: SwapRoute[],
+  epsilonPct = LEEF_ROUTE_PREFERENCE_PCT,
+): SwapRoute[] {
+  if (routes.length < 2) return routes;
+  const best = routes[0]!.amountOut;
+  if (!(best > 0)) return routes;
+  const floor = best * (1 - Math.max(0, epsilonPct));
+  const leefNearTies: SwapRoute[] = [];
+  const rest: SwapRoute[] = [];
+  for (const r of routes) {
+    if (r.amountOut + 1e-12 >= floor && routeTouchesLeef(r)) leefNearTies.push(r);
+    else rest.push(r);
+  }
+  return [...leefNearTies, ...rest];
+}
+
+/**
+ * Ranked routes for this exact size with the LEEF near-tie preference
+ * applied. For LEEF-terminal pairs every route touches LEEF, so this is a
+ * no-op reordering — it only bites on non-LEEF pairs (next-hop / growth).
+ */
+export function rankExecutionRoutesPreferLeef(
+  pools: LeefPool[],
+  aux: AuxPool[],
+  amountIn: number,
+  tokenIn: string,
+  tokenOut: string,
+  maxHops = MAX_ROUTE_HOPS,
+): SwapRoute[] {
+  return preferLeefNearTies(rankExecutionRoutes(pools, aux, amountIn, tokenIn, tokenOut, maxHops));
+}
+
+/** Best route for this size, LEEF near-tie preference applied (bot paths). */
+export function bestExecutionRoutePreferLeef(
+  pools: LeefPool[],
+  aux: AuxPool[],
+  amountIn: number,
+  tokenIn: string,
+  tokenOut: string,
+  maxHops = MAX_ROUTE_HOPS,
+): SwapRoute | null {
+  return (
+    rankExecutionRoutesPreferLeef(pools, aux, amountIn, tokenIn, tokenOut, maxHops)[0] ?? null
+  );
+}
+
 export type SplitSlice = { amountIn: number; tokenIn: string; tokenOut: string; poolId: number };
 
 /** Parallel slices for a split route (live batch / paper multi-fill). */

@@ -10,16 +10,19 @@ import { optimizeEntrySize } from "@/lib/leef/net-edge";
 import { markDeadOpportunity, opportunityFingerprint } from "@/lib/leef/opportunity";
 import { fmtNum } from "@/lib/leef/format";
 import { fetchAlcorRouteCached, verifyExecutableRoute } from "@/lib/leef/quote-verify";
-import type { AlcorRouteQuote } from "@/lib/wallet/alcor-route";
 import { isEconomicFailureReason } from "@/lib/wallet/trade-error";
 import { verifyGrowthExact } from "@/lib/leef/growth-engine";
 import { exactEntryVerdict, exactSwapVerdict } from "@/lib/leef/exact-gate";
 import { exceedsMaxPositionUsd, usdToTokenBounds } from "@/lib/leef/risk-usd";
 import { lastSnapshotTimings } from "@/lib/leef/snapshot";
-import { bestExecutionRoute } from "@/lib/leef/route-optimizer";
+import {
+  bestExecutionRoute,
+  rankExecutionRoutesPreferLeef,
+} from "@/lib/leef/route-optimizer";
+import { journal } from "@/lib/leef/journal";
 import { refreshExecutionState } from "@/lib/market/execution-state";
 import { governTrade, portfolioState } from "@/lib/market/portfolio-governor";
-import type { LeefSnapshot } from "@/lib/leef/types";
+import type { LeefSnapshot, SwapRoute } from "@/lib/leef/types";
 import { parseAssetAmount, type AlcorRouteQuote } from "@/lib/wallet/alcor-route";
 import { WAX_CONTRACT } from "@/lib/leef/types";
 import { waxResourceBlock } from "@/lib/wallet/chain";
@@ -125,6 +128,42 @@ async function quoteArbPlan(
     quotedLeef: leefOut,
     quotedWax: waxOut,
   };
+}
+
+/**
+ * Exact-quote gate attempts per tick: the winner plus bounded ranked
+ * fallbacks. Each attempt is one venue quote (≤ 4s deadline) — 3 attempts
+ * cap the added latency/API load while rescuing ticks where the constant-
+ * product discovery model disagrees with the venue's CLMM math.
+ */
+const MAX_GATE_ATTEMPTS = 3;
+
+/**
+ * Candidate order for an exact-quote gate. The ranked list is rebuilt on
+ * the refreshed execution book (never the stale discovery book) with the
+ * LEEF near-tie preference applied; a route that no longer ranks (e.g. the
+ * governor resized it) still gets its attempt first. Fallbacks that would
+ * move the market past the risk cap are not candidates.
+ */
+function gateCandidates(
+  book: LeefSnapshot,
+  current: SwapRoute,
+  amountIn: number,
+  tokenIn: string,
+  tokenOut: string,
+  maxHops: number,
+  maxImpactPct: number,
+): SwapRoute[] {
+  const ranked = rankExecutionRoutesPreferLeef(
+    book.pools,
+    book.aux,
+    amountIn,
+    tokenIn,
+    tokenOut,
+    maxHops,
+  ).filter((r) => r.priceImpact * 100 <= maxImpactPct);
+  const ordered = ranked.some((r) => r.id === current.id) ? ranked : [current, ...ranked];
+  return ordered.slice(0, MAX_GATE_ATTEMPTS);
 }
 
 let lastHoldReason = "";
@@ -353,60 +392,113 @@ async function runBotOnceInner(
     // Universal exact-quote gate for entries: the size scan priced the book
     // with constant-product math; Alcor is CLMM. Re-run the entry thesis on
     // the venue's exact executable output for this size before the governor.
+    // Candidate fallback: a vetoed winner no longer ends the tick — up to
+    // MAX_GATE_ATTEMPTS ranked alternates get their own exact quote.
     {
-      const tQuote = Date.now();
-      try {
-        const verified = await verifyExecutableRoute({
-          route: decision.route,
-          amountIn: decision.amountWax,
-          slippagePct: b.risk.slippage,
-          account: live ? w.account : "paper.leef",
-          snap: book,
-          deadlineMs: 4_000,
-        });
-        timings.quoteVerifyMs = Date.now() - tQuote;
-        if (verified.trust !== "executable") {
-          const reason = "Exact-quote gate: venue quote is not executable";
-          b.pushDecision({ kind: "hold", mode, reason, priceUsd: book.leefUsd });
-          b.setLastReason(reason);
-          return { kind: "hold", reason };
-        }
-        // The gate approved THIS quote — the signer must use these memos,
-        // not a fresh re-quote (gate quote A ≠ sign quote B race).
-        gateQuote = verified.verified[0]?.alcor;
-        const verdict = exactEntryVerdict({
-          snap: book,
-          route: decision.route,
-          amountIn: decision.amountWax,
-          expectedOut: verified.expectedOut,
-          exitRoute: fresh.best.exitRoute,
-          expectedGrossPct: thesis,
-          minNetEdgePct: b.risk.minNetEdgePct,
-          volPerSec: realizedVolPerSec(b.series),
-        });
-        if (!verdict.pass) {
-          const reason = `Exact-quote gate: ${verdict.reason}`;
-          b.pushDecision({ kind: "hold", mode, reason, priceUsd: book.leefUsd });
-          b.setLastReason(reason);
-          return { kind: "hold", reason };
-        }
-        decision = {
-          ...decision,
-          route: { ...decision.route, amountOut: verified.expectedOut },
-          edge: {
+      const candidates = gateCandidates(
+        book,
+        decision.route,
+        decision.amountWax,
+        quoteTok,
+        baseTok,
+        risk.maxHops,
+        risk.maxImpactPct,
+      );
+      let gated: {
+        route: SwapRoute;
+        quote: AlcorRouteQuote | undefined;
+        expectedOut: number;
+        netEdgePct: number;
+        reason: string;
+      } | null = null;
+      let lastGateReason = "no executable route";
+      for (let i = 0; i < candidates.length; i++) {
+        const candidate = candidates[i]!;
+        const tQuote = Date.now();
+        try {
+          const verified = await verifyExecutableRoute({
+            route: candidate,
+            amountIn: decision.amountWax,
+            slippagePct: b.risk.slippage,
+            account: live ? w.account : "paper.leef",
+            snap: book,
+            deadlineMs: 4_000,
+          });
+          const verifyMs = Date.now() - tQuote;
+          timings.quoteVerifyMs += verifyMs;
+          if (verified.trust !== "executable") {
+            lastGateReason = "venue quote is not executable";
+            journal({
+              kind: "gate", gate: "entry", pass: false, attempt: i + 1,
+              reason: lastGateReason, verifyMs, strategy: b.strategy, mode,
+              leefUsd: book.leefUsd, waxUsd: book.waxUsd,
+            });
+            continue;
+          }
+          const verdict = exactEntryVerdict({
+            snap: book,
+            route: candidate,
+            amountIn: decision.amountWax,
+            expectedOut: verified.expectedOut,
+            exitRoute: fresh.best.exitRoute,
+            expectedGrossPct: thesis,
+            minNetEdgePct: b.risk.minNetEdgePct,
+            volPerSec: realizedVolPerSec(b.series),
+          });
+          journal({
+            kind: "gate", gate: "entry", pass: verdict.pass, attempt: i + 1,
+            reason: verdict.reason, expectedOut: verified.expectedOut,
+            guaranteedOut: verified.guaranteedOut, netPct: verdict.netEdgePct,
+            exactness: verified.exactness, verifyMs, strategy: b.strategy, mode,
+            leefUsd: book.leefUsd, waxUsd: book.waxUsd,
+          });
+          if (!verdict.pass) {
+            lastGateReason = verdict.reason;
+            continue;
+          }
+          gated = {
+            route: candidate,
+            quote: verified.verified[0]?.alcor,
+            expectedOut: verified.expectedOut,
             netEdgePct: verdict.netEdgePct,
-            netProfitUsd: (verdict.netEdgePct / 100) * (decision.amountWax * (bounds.quoteUsd || 1)),
-            score: decision.edge?.score ?? 0,
-          },
-          reason: `${decision.reason} · ${verdict.reason}`,
-        };
-      } catch (err) {
-        const msg = err instanceof Error ? err.message : "exact quote failed";
-        const reason = `Exact-quote gate: ${msg}`;
+            reason: verdict.reason,
+          };
+          break;
+        } catch (err) {
+          // Infra failure (RPC/router down): alternates need the same venue
+          // — back off rather than burn attempts.
+          const msg = err instanceof Error ? err.message : "exact quote failed";
+          journal({
+            kind: "gate", gate: "entry", pass: false, attempt: i + 1,
+            reason: `error: ${msg}`, strategy: b.strategy, mode,
+          });
+          const reason = `Exact-quote gate: ${msg}`;
+          b.pushDecision({ kind: "hold", mode, reason, priceUsd: book.leefUsd });
+          b.setLastReason(reason);
+          return { kind: "hold", reason };
+        }
+      }
+      if (!gated) {
+        const reason = `Exact-quote gate: ${lastGateReason}${
+          candidates.length > 1 ? ` (${candidates.length} candidates vetoed)` : ""
+        }`;
         b.pushDecision({ kind: "hold", mode, reason, priceUsd: book.leefUsd });
         b.setLastReason(reason);
         return { kind: "hold", reason };
       }
+      // The gate approved THIS quote — the signer must use these memos,
+      // not a fresh re-quote (gate quote A ≠ sign quote B race).
+      gateQuote = gated.quote;
+      decision = {
+        ...decision,
+        route: { ...gated.route, amountOut: gated.expectedOut },
+        edge: {
+          netEdgePct: gated.netEdgePct,
+          netProfitUsd: (gated.netEdgePct / 100) * (decision.amountWax * (bounds.quoteUsd || 1)),
+          score: decision.edge?.score ?? 0,
+        },
+        reason: `${decision.reason} · ${gated.reason}`,
+      };
     }
   }
   if (decision.kind === "arb") {
@@ -508,104 +600,191 @@ async function runBotOnceInner(
     // Treasure growth: the graph proposed, now the EXACT venue quote must
     // approve. Re-run the growth thesis on the real executable output for
     // this size — if the fresh quote no longer grows the treasure, HOLD
-    // before any signer is touched.
+    // before any signer is touched. Candidate fallback: up to
+    // MAX_GATE_ATTEMPTS ranked alternates get their own exact quote first.
     if (decision.growthPlan) {
-      const tQuote = Date.now();
-      try {
-        const verified = await verifyExecutableRoute({
-          route: decision.route,
-          amountIn: decision.amountIn,
-          slippagePct: b.risk.slippage,
-          account: live ? w.account : "paper.leef",
-          snap: book,
-          deadlineMs: 4_000,
-        });
-        timings.quoteVerifyMs = Date.now() - tQuote;
-        if (verified.trust !== "executable") {
-          const reason = "Growth exact-quote gate: venue quote is not executable";
-          b.pushDecision({ kind: "hold", mode, reason, priceUsd: book.leefUsd });
-          b.setLastReason(reason);
-          return { kind: "hold", reason };
-        }
-        gateQuote = verified.verified[0]?.alcor;
-        const verdict = verifyGrowthExact(
-          decision.growthPlan,
-          decision.amountIn,
-          verified.expectedOut,
-          book,
-        );
-        const exactTag = verified.exactness === "exact" ? "" : " · fresh-model venue (min-out is the hard guard)";
-          if (!verdict.pass) {
-            const reason = `Growth exact-quote gate: ${verdict.reason}`;
-            b.pushDecision({ kind: "hold", mode, reason, priceUsd: book.leefUsd });
-            b.setLastReason(reason);
-            return { kind: "hold", reason };
-          }
-          decision = {
-            ...decision,
-            // Paper fills and P&L settle from the exact venue quote too.
-            route: { ...decision.route, amountOut: verified.expectedOut },
-            reason: `${decision.reason} · ${verdict.reason}${exactTag}`,
-          };
-        } catch (err) {
-          const msg = err instanceof Error ? err.message : "exact quote failed";
-          const reason = `Growth exact-quote gate: ${msg}`;
-          b.pushDecision({ kind: "hold", mode, reason, priceUsd: book.leefUsd });
-          b.setLastReason(reason);
-          return { kind: "hold", reason };
-        }
-      }
-
-      // Universal exact-quote gate for every other swap (tape / next-hop /
-      // volume-x): the venue must confirm the decision's own net floor.
-      if (!decision.growthPlan && decision.minNetPct != null) {
+      const growthPlan = decision.growthPlan;
+      const candidates = gateCandidates(
+        book,
+        decision.route,
+        decision.amountIn,
+        decision.tokenIn,
+        decision.tokenOut,
+        risk.maxHops,
+        risk.maxImpactPct,
+      );
+      let gated: { route: SwapRoute; quote: AlcorRouteQuote | undefined; expectedOut: number; reason: string } | null = null;
+      let lastGateReason = "no executable route";
+      for (let i = 0; i < candidates.length; i++) {
+        const candidate = candidates[i]!;
         const tQuote = Date.now();
         try {
           const verified = await verifyExecutableRoute({
-            route: decision.route,
+            route: candidate,
             amountIn: decision.amountIn,
             slippagePct: b.risk.slippage,
             account: live ? w.account : "paper.leef",
             snap: book,
             deadlineMs: 4_000,
           });
-          timings.quoteVerifyMs = Date.now() - tQuote;
+          const verifyMs = Date.now() - tQuote;
+          timings.quoteVerifyMs += verifyMs;
           if (verified.trust !== "executable") {
-            const reason = "Exact-quote gate: venue quote is not executable";
-            b.pushDecision({ kind: "hold", mode, reason, priceUsd: book.leefUsd });
-            b.setLastReason(reason);
-            return { kind: "hold", reason };
+            lastGateReason = "venue quote is not executable";
+            journal({
+              kind: "gate", gate: "growth", pass: false, attempt: i + 1,
+              reason: lastGateReason, verifyMs, strategy: b.strategy, mode,
+              leefUsd: book.leefUsd, waxUsd: book.waxUsd,
+            });
+            continue;
           }
-          gateQuote = verified.verified[0]?.alcor;
+          const verdict = verifyGrowthExact(
+            growthPlan,
+            decision.amountIn,
+            verified.expectedOut,
+            book,
+          );
+          const exactTag = verified.exactness === "exact" ? "" : " · fresh-model venue (min-out is the hard guard)";
+          journal({
+            kind: "gate", gate: "growth", pass: verdict.pass, attempt: i + 1,
+            reason: verdict.reason, expectedOut: verified.expectedOut,
+            guaranteedOut: verified.guaranteedOut, exactness: verified.exactness,
+            verifyMs, strategy: b.strategy, mode,
+            leefUsd: book.leefUsd, waxUsd: book.waxUsd,
+          });
+          if (!verdict.pass) {
+            lastGateReason = verdict.reason;
+            continue;
+          }
+          gated = {
+            route: candidate,
+            quote: verified.verified[0]?.alcor,
+            expectedOut: verified.expectedOut,
+            reason: `${verdict.reason}${exactTag}`,
+          };
+          break;
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : "exact quote failed";
+          journal({
+            kind: "gate", gate: "growth", pass: false, attempt: i + 1,
+            reason: `error: ${msg}`, strategy: b.strategy, mode,
+          });
+          const reason = `Growth exact-quote gate: ${msg}`;
+          b.pushDecision({ kind: "hold", mode, reason, priceUsd: book.leefUsd });
+          b.setLastReason(reason);
+          return { kind: "hold", reason };
+        }
+      }
+      if (!gated) {
+        const reason = `Growth exact-quote gate: ${lastGateReason}${
+          candidates.length > 1 ? ` (${candidates.length} candidates vetoed)` : ""
+        }`;
+        b.pushDecision({ kind: "hold", mode, reason, priceUsd: book.leefUsd });
+        b.setLastReason(reason);
+        return { kind: "hold", reason };
+      }
+      gateQuote = gated.quote;
+      decision = {
+        ...decision,
+        // Paper fills and P&L settle from the exact venue quote too.
+        route: { ...gated.route, amountOut: gated.expectedOut },
+        reason: `${decision.reason} · ${gated.reason}`,
+      };
+    }
+
+    // Universal exact-quote gate for every other swap (tape / next-hop /
+    // volume-x): the venue must confirm the decision's own net floor.
+    if (!decision.growthPlan && decision.minNetPct != null) {
+      const minNetPct = decision.minNetPct;
+      const candidates = gateCandidates(
+        book,
+        decision.route,
+        decision.amountIn,
+        decision.tokenIn,
+        decision.tokenOut,
+        risk.maxHops,
+        risk.maxImpactPct,
+      );
+      let gated: { route: SwapRoute; quote: AlcorRouteQuote | undefined; expectedOut: number; reason: string } | null = null;
+      let lastGateReason = "no executable route";
+      for (let i = 0; i < candidates.length; i++) {
+        const candidate = candidates[i]!;
+        const tQuote = Date.now();
+        try {
+          const verified = await verifyExecutableRoute({
+            route: candidate,
+            amountIn: decision.amountIn,
+            slippagePct: b.risk.slippage,
+            account: live ? w.account : "paper.leef",
+            snap: book,
+            deadlineMs: 4_000,
+          });
+          const verifyMs = Date.now() - tQuote;
+          timings.quoteVerifyMs += verifyMs;
+          if (verified.trust !== "executable") {
+            lastGateReason = "venue quote is not executable";
+            journal({
+              kind: "gate", gate: "swap", pass: false, attempt: i + 1,
+              reason: lastGateReason, verifyMs, strategy: b.strategy, mode,
+              leefUsd: book.leefUsd, waxUsd: book.waxUsd,
+            });
+            continue;
+          }
           const verdict = exactSwapVerdict({
             snap: book,
-            route: decision.route,
+            route: candidate,
             amountIn: decision.amountIn,
             expectedOut: verified.expectedOut,
             guaranteedOut: verified.guaranteedOut,
-            minNetPct: decision.minNetPct,
+            minNetPct,
           });
           const venueTag = verified.exactness === "exact" ? "" : " · fresh-model venue";
+          journal({
+            kind: "gate", gate: "swap", pass: verdict.pass, attempt: i + 1,
+            reason: verdict.reason, expectedOut: verified.expectedOut,
+            guaranteedOut: verified.guaranteedOut, netPct: verdict.exactNetPct,
+            exactness: verified.exactness, verifyMs, strategy: b.strategy, mode,
+            leefUsd: book.leefUsd, waxUsd: book.waxUsd,
+          });
           if (!verdict.pass) {
-            const reason = `Exact-quote gate: ${verdict.reason}`;
-            b.pushDecision({ kind: "hold", mode, reason, priceUsd: book.leefUsd });
-            b.setLastReason(reason);
-            return { kind: "hold", reason };
+            lastGateReason = verdict.reason;
+            continue;
           }
-          decision = {
-            ...decision,
-            route: { ...decision.route, amountOut: verified.expectedOut },
-            reason: `${decision.reason} · ${verdict.reason}${venueTag}`,
+          gated = {
+            route: candidate,
+            quote: verified.verified[0]?.alcor,
+            expectedOut: verified.expectedOut,
+            reason: `${verdict.reason}${venueTag}`,
           };
+          break;
         } catch (err) {
           const msg = err instanceof Error ? err.message : "exact quote failed";
+          journal({
+            kind: "gate", gate: "swap", pass: false, attempt: i + 1,
+            reason: `error: ${msg}`, strategy: b.strategy, mode,
+          });
           const reason = `Exact-quote gate: ${msg}`;
           b.pushDecision({ kind: "hold", mode, reason, priceUsd: book.leefUsd });
           b.setLastReason(reason);
           return { kind: "hold", reason };
         }
       }
+      if (!gated) {
+        const reason = `Exact-quote gate: ${lastGateReason}${
+          candidates.length > 1 ? ` (${candidates.length} candidates vetoed)` : ""
+        }`;
+        b.pushDecision({ kind: "hold", mode, reason, priceUsd: book.leefUsd });
+        b.setLastReason(reason);
+        return { kind: "hold", reason };
+      }
+      gateQuote = gated.quote;
+      decision = {
+        ...decision,
+        route: { ...gated.route, amountOut: gated.expectedOut },
+        reason: `${decision.reason} · ${gated.reason}`,
+      };
     }
+  }
 
   if (decision.kind === "buy") {
     const tRisk = Date.now();
@@ -670,6 +849,8 @@ async function runBotOnceInner(
       let amountLeef = minOut;
       let txid: string | undefined;
       let note = "";
+      let execStatus: "confirmed" | "included" | "unknown" | "paper" = live ? "unknown" : "paper";
+      const tExec = Date.now();
       if (live) {
         if (exceedsMaxPositionUsd({
           snap: book,
@@ -711,6 +892,7 @@ async function runBotOnceInner(
             const actual = assetDelta(rec.transfers, w.account, b.base || "LEEF");
             if (actual > 0) amountLeef = actual;
             note = rec.transfers.length ? " · confirmed on-chain" : " · included (transfers pending)";
+            execStatus = rec.transfers.length ? "confirmed" : "included";
             markConfirmed();
             if (rec.transfers.length === 0) {
               void reconcileTransfersLater(txid);
@@ -774,6 +956,14 @@ async function runBotOnceInner(
         priceUsd: snap.leefUsd,
         txid,
       });
+      journal({
+        kind: "execution", action: "buy", strategy: b.strategy, mode,
+        tokenIn: quoteTok, tokenOut: baseTok,
+        amountIn: decision.amountWax, expectedOut: decision.route.amountOut,
+        actualOut: amountLeef, txid, status: execStatus,
+        latencyMs: live ? Date.now() - tExec : undefined,
+        leefUsd: snap.leefUsd, waxUsd: book.waxUsd,
+      });
       toast({
         title: `${live ? "Live" : "Paper"} buy · ${fmtNum(amountLeef, { compact: true })} LEEF`,
         description: decision.reason + note + (txid ? ` · tx ${txid.slice(0, 10)}…` : ""),
@@ -786,6 +976,7 @@ async function runBotOnceInner(
       let waxOut = decision.route.amountOut;
       let txid: string | undefined;
       let note = "";
+      let execStatus: "confirmed" | "included" | "unknown" | "paper" = live ? "unknown" : "paper";
       const t0 = Date.now();
       if (live) {
         if (!beginSigning()) return decision;
@@ -815,6 +1006,7 @@ async function runBotOnceInner(
             const actual = assetDelta(rec.transfers, w.account, "WAX", WAX_CONTRACT);
             if (actual > 0) waxOut = actual;
             note = rec.transfers.length ? " · confirmed on-chain" : " · included (transfers pending)";
+            execStatus = rec.transfers.length ? "confirmed" : "included";
             markConfirmed();
             if (rec.transfers.length === 0) void reconcileTransfersLater(txid);
           } else {
@@ -850,6 +1042,14 @@ async function runBotOnceInner(
         txid,
         pnlUsd,
       });
+      journal({
+        kind: "execution", action: "sell", strategy: position?.strategy ?? b.strategy, mode,
+        tokenIn: b.base || "LEEF", tokenOut: b.quote || "WAX",
+        amountIn: decision.amountLeef, expectedOut: decision.route.amountOut,
+        actualOut: waxOut, txid, status: execStatus, pnlUsd,
+        latencyMs: live ? Date.now() - t0 : undefined,
+        leefUsd: snap.leefUsd, waxUsd: book.waxUsd,
+      });
       toast({
         title: `${live ? "Live" : "Paper"} sell · ${fmtNum(waxOut, { digits: 2 })} WAX · ${
           pnlUsd >= 0 ? "+" : ""
@@ -864,6 +1064,8 @@ async function runBotOnceInner(
       let txid: string | undefined;
       let note = "";
       let outAmt = decision.route.amountOut;
+      let execStatus: "confirmed" | "included" | "unknown" | "paper" = live ? "unknown" : "paper";
+      const tExec = Date.now();
       if (live) {
         if (!beginSigning()) return decision;
         try {
@@ -887,6 +1089,7 @@ async function runBotOnceInner(
           if (rec.status === "confirmed") {
             markConfirmed();
             note = rec.transfers.length ? " · confirmed on-chain" : " · included";
+            execStatus = rec.transfers.length ? "confirmed" : "included";
             if (rec.transfers.length === 0) void reconcileTransfersLater(txid);
           } else {
             markUnknown(txid);
@@ -915,6 +1118,14 @@ async function runBotOnceInner(
         priceUsd: snap.leefUsd,
         txid,
         pnlUsd: tapePnl,
+      });
+      journal({
+        kind: "execution", action: "swap", strategy: b.strategy, mode,
+        tokenIn: decision.tokenIn, tokenOut: decision.tokenOut,
+        amountIn: decision.amountIn, expectedOut: decision.route.amountOut,
+        actualOut: outAmt, txid, status: execStatus, pnlUsd: tapePnl,
+        latencyMs: live ? Date.now() - tExec : undefined,
+        leefUsd: snap.leefUsd, waxUsd: book.waxUsd,
       });
       toast({
         title: `${live ? "Live" : "Unsigned"} ${decision.tokenIn}→${decision.tokenOut}`,
@@ -984,6 +1195,7 @@ async function runBotOnceInner(
       }
       let txid: string | undefined;
       let note = "";
+      let execStatus: "confirmed" | "included" | "unknown" | "paper" = live ? "unknown" : "paper";
       /** Net WAX delta read from the confirmed transaction (null = estimate). */
       let realizedWax: number | null = null;
       const t0 = Date.now();
@@ -1012,6 +1224,7 @@ async function runBotOnceInner(
           if (rec.status === "confirmed") {
             realizedWax = assetDelta(rec.transfers, w.account, "WAX", WAX_CONTRACT);
             note = rec.transfers.length ? " · confirmed on-chain" : " · included (transfers pending)";
+            execStatus = rec.transfers.length ? "confirmed" : "included";
             markConfirmed();
             if (rec.transfers.length === 0) void reconcileTransfersLater(txid);
           } else {
@@ -1051,6 +1264,14 @@ async function runBotOnceInner(
         priceUsd: snap.leefUsd,
         txid,
         pnlUsd,
+      });
+      journal({
+        kind: "execution", action: "arb", strategy: b.strategy, mode,
+        tokenIn: "WAX", tokenOut: "WAX",
+        amountIn: plan.waxIn, expectedOut: plan.waxOut,
+        actualOut: realizedWax ?? undefined, txid, status: execStatus, pnlUsd,
+        latencyMs: live ? Date.now() - t0 : undefined,
+        leefUsd: snap.leefUsd, waxUsd: snap.waxUsd,
       });
       const diff = realizedWax ?? plan.waxOut - plan.waxIn;
       toast({

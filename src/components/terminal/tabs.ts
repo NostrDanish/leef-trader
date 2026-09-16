@@ -2,6 +2,7 @@ import {
   Activity,
   Bot,
   Calculator,
+  FlaskConical,
   GitCompare,
   Layers,
   LayoutDashboard,
@@ -27,5 +28,6 @@ export const TABS: TabDef[] = [
   { id: "pool", label: "Pool desk", short: "LP", icon: LineChart },
   { id: "il", label: "IL calc", short: "IL", icon: Calculator },
   { id: "tape", label: "Tape", short: "Tape", icon: Activity },
+  { id: "evidence", label: "Evidence", short: "Proof", icon: FlaskConical },
   { id: "infra", label: "Infrastructure", short: "Infra", icon: ServerCog },
 ];
