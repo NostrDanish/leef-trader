@@ -2,6 +2,35 @@
 
 All notable changes to LEEF Trader. Dates are commit-era, not release tags.
 
+## Unreleased — Phase 3 seed: market memory (fixtures) + decision replay
+
+- **wax.eosusa.io is now the primary RPC + Hyperion default** (no rate
+  limits per operator policy). The health-scored pool keeps failover on
+  downtime, latency, block lag and chain-id checks — priority only breaks
+  ties. NOTE: a saved custom endpoint list (localStorage) overrides defaults
+  — hit "reset" on the Infra desk to pick up the new order.
+- **Market-memory fixtures.** Gate vetoes and executions now capture a
+  route-scoped fixture: just the candidate routes' pools, involved prices,
+  and market context (~1–2 KB, capped at 2000, pruned oldest-first). A
+  full-book snapshot would be ~11 MB and is deliberately NOT what we store.
+  Fixtures live in the evidence DB (v2) and are wiped only via Evidence →
+  Clear.
+- **Decision replay** (`lib/leef/replay.ts` + Evidence desk card): today's
+  router and gate math re-run against recorded fixtures. Swap/cycle gate
+  fixtures replay the full verdict (recorded venue outputs are historical
+  truth; verdict logic is today's code). Entry/growth fixtures replay route
+  ranking only — the venue-side thesis needs the live router and is never
+  faked. Verdicts: same / flipped / route_changed / not_replayable. This is
+  decision-logic regression, explicitly NOT a P&L backtest.
+- **Regime sub-profiles:** pool/route profiles now break evidence down by
+  market regime — a pool no longer has one behavior across all tapes.
+- **Drift-corrected self-impact:** LEEF-pool measurements subtract the
+  aggregate market move over the fill window (raw upper bound still journaled
+  for aux pools, labeled).
+- Tests: `replay.test.ts` (fixture→snapshot fidelity vs the original CP book,
+  identical-verdict replay, route-change detection, entry-fixture honesty,
+  batch summary) + regime-isolation test in `learning.test.ts`.
+
 ## Unreleased — Phase 2b: AI-proposed artifacts + extended learning coverage
 
 - **AI pattern discovery closes the loop (P3, honestly).** The AI desk's

@@ -151,6 +151,10 @@ export function onJournalEntry(fn: JournalListener): () => void {
 
 const DB_NAME = "leef-evidence";
 const STORE = "journal";
+/** Route-scoped market fixtures for replay (Phase 3 seed). */
+const FIXTURE_STORE = "fixtures";
+/** Fixtures are ~1–2KB each; 2000 ≈ a few MB — bounded like the journal. */
+export const MAX_FIXTURES = 2_000;
 /** Hard storage bound. ~60k compact entries ≈ 15–25 MB worst case. */
 export const MAX_ENTRIES = 60_000;
 /** Prune target once MAX_ENTRIES is exceeded (batch delete, not per-write). */
@@ -346,10 +350,15 @@ function openDb(): Promise<IDBDatabase | null> {
       }
     };
     try {
-      const req = indexedDB.open(DB_NAME, 1);
+      const req = indexedDB.open(DB_NAME, 2);
       req.onupgradeneeded = () => {
         try {
           req.result.createObjectStore(STORE, { autoIncrement: true });
+        } catch {
+          /* store exists */
+        }
+        try {
+          req.result.createObjectStore(FIXTURE_STORE, { autoIncrement: true });
         } catch {
           /* store exists */
         }
@@ -515,8 +524,9 @@ export async function journalClear(): Promise<void> {
     if (!db) return;
     await new Promise<void>((resolve) => {
       try {
-        const tx = db.transaction(STORE, "readwrite");
+        const tx = db.transaction([STORE, FIXTURE_STORE], "readwrite");
         tx.objectStore(STORE).clear();
+        tx.objectStore(FIXTURE_STORE).clear();
         tx.oncomplete = () => resolve();
         tx.onerror = () => resolve();
         tx.onabort = () => resolve();
@@ -526,5 +536,147 @@ export async function journalClear(): Promise<void> {
     });
   } catch {
     /* ignore */
+  }
+}
+
+/* ------------------------------------------------------------------ */
+/* Market fixtures — route-scoped decision snapshots for replay          */
+/* ------------------------------------------------------------------ */
+
+/**
+ * Everything the decision path knew about the CANDIDATE ROUTES' pools at
+ * decision time. Deliberately route-scoped: a full universe snapshot is
+ * ~11 MB and would kill storage within days; a fixture of the 1–6 involved
+ * pools is ~1–2 KB and is sufficient to replay the decision path.
+ */
+export type FixturePool = {
+  id: number;
+  venue: string;
+  aSym: string;
+  aContract: string;
+  aQty: number;
+  aDec: number;
+  bSym: string;
+  bContract: string;
+  bQty: number;
+  bDec: number;
+  feePct: number;
+  tvlUsd: number;
+};
+
+export type FixtureCandidate = {
+  routeSig: string;
+  poolIds: number[];
+  amountOut: number;
+  /** Gate verdict when this candidate reached the exact gate. */
+  pass?: boolean;
+  netPct?: number;
+};
+
+export type MarketFixture = {
+  ts: number;
+  cycleId?: string;
+  kind: "execution" | "gate_veto";
+  strategy: string;
+  mode: "paper" | "live";
+  tokenIn: string;
+  tokenOut: string;
+  amountIn: number;
+  /** Gate context when the fixture comes from a gate veto. */
+  gate?: {
+    /** Swap gates replay fully; entry gates replay route ranking only. */
+    kind: "swap" | "entry" | "growth";
+    expectedOut: number;
+    guaranteedOut?: number;
+    minNetPct?: number;
+    pass: boolean;
+    netPct: number;
+  };
+  candidates: FixtureCandidate[];
+  pools: FixturePool[];
+  /** symbol → USD price for involved tokens + WAX/LEEF. */
+  prices: Record<string, number>;
+  waxUsd: number;
+  leefUsd: number;
+  regime?: string;
+  volPct?: number;
+  dangerScore?: number;
+  reason: string;
+};
+
+/** Write one fixture (fire-and-forget; fixtures are rarer than entries). */
+export function journalFixture(fx: Omit<MarketFixture, "ts"> & { ts?: number }): void {
+  try {
+    if (!idbAvailable()) return;
+    const stamped = { ...fx, cycleId: fx.cycleId ?? currentCycleId ?? undefined, ts: fx.ts ?? Date.now() };
+    void (async () => {
+      const db = await openDb();
+      if (!db) return;
+      await new Promise<void>((resolve) => {
+        try {
+          const tx = db.transaction(FIXTURE_STORE, "readwrite");
+          tx.objectStore(FIXTURE_STORE).add(stamped);
+          tx.oncomplete = () => resolve();
+          tx.onerror = () => resolve();
+          tx.onabort = () => resolve();
+        } catch {
+          resolve();
+        }
+      });
+      // Prune occasionally (amortized — count is cheap).
+      if (Math.random() < 0.05) {
+        try {
+          const count = await new Promise<number>((resolve) => {
+            const req = db.transaction(FIXTURE_STORE, "readonly").objectStore(FIXTURE_STORE).count();
+            req.onsuccess = () => resolve(req.result);
+            req.onerror = () => resolve(0);
+          });
+          if (count > MAX_FIXTURES) {
+            const excess = count - MAX_FIXTURES + 250;
+            await new Promise<void>((resolve) => {
+              const tx = db.transaction(FIXTURE_STORE, "readwrite");
+              const cursorReq = tx.objectStore(FIXTURE_STORE).openCursor();
+              let seen = 0;
+              cursorReq.onsuccess = () => {
+                const c = cursorReq.result;
+                if (!c || seen >= excess) return;
+                c.delete();
+                seen += 1;
+                c.continue();
+              };
+              tx.oncomplete = () => resolve();
+              tx.onerror = () => resolve();
+              tx.onabort = () => resolve();
+            });
+          }
+        } catch {
+          /* ignore */
+        }
+      }
+    })();
+  } catch {
+    /* fixtures must never break trading */
+  }
+}
+
+/** Newest-first fixtures for the replay desk. */
+export async function listFixtures(limit = 50): Promise<MarketFixture[]> {
+  try {
+    const db = await openDb();
+    if (!db) return [];
+    return await new Promise<MarketFixture[]>((resolve) => {
+      try {
+        const req = db.transaction(FIXTURE_STORE, "readonly").objectStore(FIXTURE_STORE).getAll();
+        req.onsuccess = () => {
+          const all = (req.result as MarketFixture[]) ?? [];
+          resolve(all.sort((a, b) => b.ts - a.ts).slice(0, Math.max(1, limit)));
+        };
+        req.onerror = () => resolve([]);
+      } catch {
+        resolve([]);
+      }
+    });
+  } catch {
+    return [];
   }
 }

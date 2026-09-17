@@ -17,9 +17,12 @@ import {
   journalAll,
   journalClear,
   journalExportBlob,
+  listFixtures,
   MAX_ENTRIES,
   type EvidenceStats,
+  type MarketFixture,
 } from "@/lib/leef/journal";
+import { replayAll, type ReplayResult, type ReplaySummary } from "@/lib/leef/replay";
 import {
   bootLearning,
   getArtifacts,
@@ -66,6 +69,8 @@ export function Evidence() {
   const [stats, setStats] = useState<EvidenceStats | null>(null);
   const [profiles, setProfiles] = useState<LearningProfiles>({});
   const [artifacts, setArtifacts] = useState<LearningArtifact[]>([]);
+  const [fixtures, setFixtures] = useState<MarketFixture[]>([]);
+  const [replay, setReplay] = useState<{ summary: ReplaySummary; results: (ReplayResult & { ts: number })[] } | null>(null);
   const [loading, setLoading] = useState(true);
   const [exporting, setExporting] = useState(false);
   const [confirmClear, setConfirmClear] = useState(false);
@@ -79,6 +84,9 @@ export function Evidence() {
       setStats(aggregateEntries(entries));
       setProfiles({ ...getProfiles() });
       setArtifacts(getArtifacts());
+      const fx = await listFixtures(30);
+      setFixtures(fx);
+      setReplay(fx.length > 0 ? replayAll(fx) : null);
     } finally {
       setLoading(false);
     }
@@ -498,6 +506,67 @@ export function Evidence() {
           </div>
         )}
       </Card>
+
+      {replay && replay.summary.total > 0 && (
+        <Card className="p-4 sm:p-5">
+          <h3 className="font-semibold mb-1">Decision replay</h3>
+          <p className="text-sm text-muted-foreground mb-4">
+            Today's router + gate math re-run against recorded route-scoped market fixtures.
+            This is <span className="font-medium">decision-logic regression</span> — it proves
+            whether a code change would have decided differently on the same book. It is NOT a
+            P&amp;L backtest: the historical venue quote is gone; replay uses the recorded one.
+          </p>
+          <div className="mb-4 grid grid-cols-2 gap-3 sm:grid-cols-4">
+            {[
+              { label: "Identical", value: replay.summary.same, cls: "text-leef" },
+              { label: "Verdict flipped", value: replay.summary.flipped, cls: "text-warn" },
+              { label: "Route changed", value: replay.summary.routeChanged, cls: "text-accent" },
+              { label: "Not replayable", value: replay.summary.notReplayable, cls: "text-muted-foreground" },
+            ].map((c) => (
+              <div key={c.label} className="rounded-lg border bg-card/50 p-3 text-center">
+                <div className={cn("text-2xl font-semibold tabular-nums", c.cls)}>{c.value}</div>
+                <div className="text-xs text-muted-foreground">{c.label}</div>
+              </div>
+            ))}
+          </div>
+          <div className="flex flex-col gap-1.5">
+            {replay.results.slice(0, 12).map((r, i) => {
+              const fx = fixtures.find((f) => f.ts === r.ts);
+              return (
+                <div key={i} className="flex flex-wrap items-center gap-2 rounded-lg border bg-card/50 px-3 py-2 text-xs">
+                  <span className="text-muted-foreground tabular-nums">{timeAgo(new Date(r.ts).toISOString())}</span>
+                  <Badge variant="outline">{fx?.kind === "gate_veto" ? "gate veto" : "execution"}</Badge>
+                  <span className="font-mono">
+                    {fx ? `${fx.tokenIn}→${fx.tokenOut} ${fmtNum(fx.amountIn, { compact: true })}` : "—"}
+                  </span>
+                  <span className="ml-auto flex items-center gap-2">
+                    {r.thenPass != null && (
+                      <span className={r.thenPass ? "text-leef" : "text-sell"}>
+                        then {r.thenPass ? "PASS" : "FAIL"} {r.thenNetPct != null ? `(${r.thenNetPct.toFixed(2)}%)` : ""}
+                      </span>
+                    )}
+                    {r.nowPass != null && (
+                      <span className={r.nowPass ? "text-leef" : "text-sell"}>
+                        now {r.nowPass ? "PASS" : "FAIL"} {r.nowNetPct != null ? `(${r.nowNetPct.toFixed(2)}%)` : ""}
+                      </span>
+                    )}
+                    <Badge
+                      variant="outline"
+                      className={cn(
+                        r.verdict === "same" && "border-leef/40 text-leef",
+                        r.verdict === "flipped" && "border-warn/40 text-warn",
+                        r.verdict === "route_changed" && "border-accent/40 text-accent",
+                      )}
+                    >
+                      {r.verdict.replace("_", " ")}
+                    </Badge>
+                  </span>
+                </div>
+              );
+            })}
+          </div>
+        </Card>
+      )}
 
       {stats && stats.topGateFails.length > 0 && (
         <Card className="p-4 sm:p-5">

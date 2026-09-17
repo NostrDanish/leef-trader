@@ -29,11 +29,13 @@ export type WaxEndpoint = {
  * providers — a dead node here must never kill the engine.
  */
 export const DEFAULT_RPC_ENDPOINTS: WaxEndpoint[] = [
-  { url: "https://wax.greymass.com", kind: "rpc", priority: 1, enabled: true },
-  { url: "https://wax.eosrio.io", kind: "rpc", priority: 2, enabled: true },
-  { url: "https://api.waxsweden.org", kind: "rpc", priority: 3, enabled: true },
-  { url: "https://wax.eosphere.io", kind: "rpc", priority: 4, enabled: true },
-  { url: "https://wax.eosusa.io", kind: "rpc", priority: 5, enabled: true },
+  // EOSUSA first: no rate limits (operator policy) — the health-scored pool
+  // still fails over on downtime, latency, block lag or a bad chain id.
+  { url: "https://wax.eosusa.io", kind: "rpc", priority: 1, enabled: true },
+  { url: "https://wax.greymass.com", kind: "rpc", priority: 2, enabled: true },
+  { url: "https://wax.eosrio.io", kind: "rpc", priority: 3, enabled: true },
+  { url: "https://api.waxsweden.org", kind: "rpc", priority: 4, enabled: true },
+  { url: "https://wax.eosphere.io", kind: "rpc", priority: 5, enabled: true },
   { url: "https://wax.cryptolions.io", kind: "rpc", priority: 6, enabled: true },
   { url: "https://wax.blokcrafters.io", kind: "rpc", priority: 7, enabled: true },
   { url: "https://hyperion.wax.eosdetroit.io", kind: "rpc", priority: 8, enabled: true },
@@ -41,10 +43,10 @@ export const DEFAULT_RPC_ENDPOINTS: WaxEndpoint[] = [
 
 /** Default Hyperion history pool (also serves /v2/state/get_tokens). */
 export const DEFAULT_HISTORY_ENDPOINTS: WaxEndpoint[] = [
-  { url: "https://wax.eosrio.io", kind: "history", priority: 1, enabled: true },
-  { url: "https://api.waxsweden.org", kind: "history", priority: 2, enabled: true },
-  { url: "https://wax.eosphere.io", kind: "history", priority: 3, enabled: true },
-  { url: "https://wax.eosusa.io", kind: "history", priority: 4, enabled: true },
+  { url: "https://wax.eosusa.io", kind: "history", priority: 1, enabled: true },
+  { url: "https://wax.eosrio.io", kind: "history", priority: 2, enabled: true },
+  { url: "https://api.waxsweden.org", kind: "history", priority: 3, enabled: true },
+  { url: "https://wax.eosphere.io", kind: "history", priority: 4, enabled: true },
   { url: "https://wax.cryptolions.io", kind: "history", priority: 5, enabled: true },
 ];
 

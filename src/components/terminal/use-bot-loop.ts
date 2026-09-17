@@ -20,7 +20,13 @@ import {
   rankExecutionRoutesPreferLeef,
   routeSignature,
 } from "@/lib/leef/route-optimizer";
-import { journal, journalAll, setJournalCycleId } from "@/lib/leef/journal";
+import {
+  journal,
+  journalAll,
+  journalFixture,
+  setJournalCycleId,
+  type MarketFixture,
+} from "@/lib/leef/journal";
 import {
   bootLearning,
   evaluateDueCounterfactuals,
@@ -221,6 +227,82 @@ function routeJournalMeta(route: SwapRoute, amountIn: number, pxIn: number) {
 }
 
 /**
+ * Capture a route-scoped market fixture (Phase 3 market memory): just the
+ * pools on the candidate routes, the involved prices, and the market context
+ * — ~1–2 KB, enough to replay the decision path later. A full-book snapshot
+ * would be ~11 MB and is deliberately NOT what we store.
+ */
+function captureFixture(opts: {
+  kind: MarketFixture["kind"];
+  book: LeefSnapshot;
+  strategy: string;
+  mode: "paper" | "live";
+  tokenIn: string;
+  tokenOut: string;
+  amountIn: number;
+  routes: SwapRoute[];
+  gate?: MarketFixture["gate"];
+  reason: string;
+  ctx?: { regime: string; volPct: number; dangerScore: number };
+}): void {
+  try {
+    const wanted = new Set<number>();
+    for (const r of opts.routes) for (const id of r.poolIds) wanted.add(id);
+    const pools: MarketFixture["pools"] = [];
+    for (const p of opts.book.pools) {
+      if (!wanted.has(p.id)) continue;
+      pools.push({
+        id: p.id, venue: "alcor",
+        aSym: p.leef.symbol, aContract: p.leef.contract, aQty: p.leef.quantity, aDec: p.leef.decimals,
+        bSym: p.pair.symbol, bContract: p.pair.contract, bQty: p.pair.quantity, bDec: p.pair.decimals,
+        feePct: p.feePct, tvlUsd: p.tvlUsd,
+      });
+    }
+    for (const p of opts.book.aux) {
+      if (!wanted.has(p.id)) continue;
+      pools.push({
+        id: p.id, venue: p.venue ?? "alcor",
+        aSym: p.tokenA.symbol, aContract: p.tokenA.contract, aQty: p.tokenA.quantity, aDec: p.tokenA.decimals,
+        bSym: p.tokenB.symbol, bContract: p.tokenB.contract, bQty: p.tokenB.quantity, bDec: p.tokenB.decimals,
+        feePct: p.feePct, tvlUsd: p.tvlUsd,
+      });
+    }
+    const prices: Record<string, number> = { WAX: opts.book.waxUsd, LEEF: opts.book.leefUsd };
+    const pxIn = usdPriceOf(opts.tokenIn, opts.book);
+    const pxOut = usdPriceOf(opts.tokenOut, opts.book);
+    if (pxIn > 0) prices[opts.tokenIn.toUpperCase()] = pxIn;
+    if (pxOut > 0) prices[opts.tokenOut.toUpperCase()] = pxOut;
+    journalFixture({
+      kind: opts.kind,
+      cycleId: undefined, // stamped by the journal's cycle context
+      strategy: opts.strategy,
+      mode: opts.mode,
+      tokenIn: opts.tokenIn,
+      tokenOut: opts.tokenOut,
+      amountIn: opts.amountIn,
+      gate: opts.gate,
+      candidates: opts.routes.slice(0, 4).map((r) => ({
+        routeSig: routeSignature(r),
+        poolIds: r.poolIds,
+        amountOut: r.amountOut,
+        pass: opts.gate?.pass,
+        netPct: opts.gate?.netPct,
+      })),
+      pools,
+      prices,
+      waxUsd: opts.book.waxUsd,
+      leefUsd: opts.book.leefUsd,
+      regime: opts.ctx?.regime,
+      volPct: opts.ctx?.volPct,
+      dangerScore: opts.ctx?.dangerScore,
+      reason: opts.reason.slice(0, 200),
+    });
+  } catch {
+    /* fixtures never break trading */
+  }
+}
+
+/**
  * Register a self-impact measurement after a confirmed live fill: the next
  * snapshot's pool spot is compared against this pre-trade spot. LEEF pools
  * and WAX-sided aux pools are measurable.
@@ -240,6 +322,7 @@ function noteSelfImpact(
     poolId,
     aux: !book.pools.some((p) => p.id === poolId),
     preSpotUsd: pre,
+    preMarketUsd: book.leefUsd,
     sizeUsd,
     action,
     tokenIn,
@@ -511,6 +594,7 @@ async function runBotOnceInner(
       } | null = null;
       let lastGateReason = "no executable route";
       let lastNetPct = thesis;
+      let lastExpectedOut = 0;
       let lastCandidate: SwapRoute | null = null;
       for (let i = 0; i < candidates.length; i++) {
         const candidate = candidates[i]!;
@@ -549,6 +633,7 @@ async function runBotOnceInner(
             volPerSec: realizedVolPerSec(b.series),
           });
           lastNetPct = verdict.netEdgePct;
+          lastExpectedOut = verified.expectedOut;
           journal({
             kind: "gate", gate: "entry", pass: verdict.pass, attempt: i + 1,
             reason: verdict.reason, expectedOut: verified.expectedOut,
@@ -591,7 +676,8 @@ async function runBotOnceInner(
           candidates.length > 1 ? ` (${candidates.length} candidates vetoed)` : ""
         }`;
         // Counterfactual: the gate vetoed a concrete candidate — judge this
-        // HOLD against the market in CF_HORIZON_MS.
+        // HOLD against the market in CF_HORIZON_MS. And capture the book
+        // fixture so the veto is replayable against future logic.
         registerCounterfactual({
           cfKind: "entry",
           horizonMs: CF_HORIZON_MS,
@@ -610,6 +696,25 @@ async function runBotOnceInner(
           entryMarkUsd: usdPriceOf(baseTok, book) || book.leefUsd,
           holdReasonClass: "EXACT_GATE_ENTRY",
           ...ctxOf(),
+        });
+        captureFixture({
+          kind: "gate_veto",
+          book,
+          strategy: b.strategy,
+          mode,
+          tokenIn: quoteTok,
+          tokenOut: baseTok,
+          amountIn: decision.amountWax,
+          routes: candidates,
+          gate: {
+            kind: "entry",
+            expectedOut: lastExpectedOut,
+            minNetPct: b.risk.minNetEdgePct,
+            pass: false,
+            netPct: lastNetPct,
+          },
+          reason,
+          ctx: ctxOf(),
         });
         b.pushDecision({ kind: "hold", mode, reason, priceUsd: book.leefUsd });
         b.setLastReason(reason);
@@ -880,6 +985,24 @@ async function runBotOnceInner(
             holdReasonClass: "EXACT_GATE_GROWTH",
             ...ctxOf(),
           });
+          captureFixture({
+            kind: "gate_veto",
+            book,
+            strategy: b.strategy,
+            mode,
+            tokenIn: decision.tokenIn,
+            tokenOut: decision.tokenOut,
+            amountIn: decision.amountIn,
+            routes: candidates,
+            gate: {
+              kind: "growth",
+              expectedOut: 0,
+              pass: false,
+              netPct: 0,
+            },
+            reason,
+            ctx: ctxOf(),
+          });
         }
         b.pushDecision({ kind: "hold", mode, reason, priceUsd: book.leefUsd });
         b.setLastReason(reason);
@@ -910,6 +1033,8 @@ async function runBotOnceInner(
       let gated: { route: SwapRoute; quote: AlcorRouteQuote | undefined; expectedOut: number; reason: string } | null = null;
       let lastGateReason = "no executable route";
       let lastNetPct = 0;
+      let lastExpectedOut = 0;
+      let lastGuaranteedOut = 0;
       let lastCandidate: SwapRoute | null = null;
       for (let i = 0; i < candidates.length; i++) {
         const candidate = candidates[i]!;
@@ -946,6 +1071,8 @@ async function runBotOnceInner(
             minNetPct,
           });
           lastNetPct = verdict.exactNetPct;
+          lastExpectedOut = verified.expectedOut;
+          lastGuaranteedOut = verified.guaranteedOut;
           const venueTag = verified.exactness === "exact" ? "" : " · fresh-model venue";
           journal({
             kind: "gate", gate: "swap", pass: verdict.pass, attempt: i + 1,
@@ -1002,6 +1129,26 @@ async function runBotOnceInner(
             entryMarkUsd: usdPriceOf(decision.tokenOut, book),
             holdReasonClass: "EXACT_GATE_SWAP",
             ...ctxOf(),
+          });
+          captureFixture({
+            kind: "gate_veto",
+            book,
+            strategy: b.strategy,
+            mode,
+            tokenIn: decision.tokenIn,
+            tokenOut: decision.tokenOut,
+            amountIn: decision.amountIn,
+            routes: candidates,
+            gate: {
+              kind: "swap",
+              expectedOut: lastExpectedOut,
+              guaranteedOut: lastGuaranteedOut,
+              minNetPct,
+              pass: false,
+              netPct: lastNetPct,
+            },
+            reason,
+            ctx: ctxOf(),
           });
         }
         b.pushDecision({ kind: "hold", mode, reason, priceUsd: book.leefUsd });
@@ -1225,6 +1372,18 @@ async function runBotOnceInner(
           baseTok,
         );
       }
+      captureFixture({
+        kind: "execution",
+        book,
+        strategy: b.strategy,
+        mode,
+        tokenIn: quoteTok,
+        tokenOut: baseTok,
+        amountIn: decision.amountWax,
+        routes: [decision.route],
+        reason: decision.reason,
+        ctx: ctxOf(),
+      });
       toast({
         title: `${live ? "Live" : "Paper"} buy · ${fmtNum(amountLeef, { compact: true })} LEEF`,
         description: decision.reason + note + (txid ? ` · tx ${txid.slice(0, 10)}…` : ""),
@@ -1332,6 +1491,18 @@ async function runBotOnceInner(
           b.quote || "WAX",
         );
       }
+      captureFixture({
+        kind: "execution",
+        book,
+        strategy: position?.strategy ?? b.strategy,
+        mode,
+        tokenIn: b.base || "LEEF",
+        tokenOut: b.quote || "WAX",
+        amountIn: decision.amountLeef,
+        routes: [decision.route],
+        reason: decision.reason,
+        ctx: ctxOf(),
+      });
       toast({
         title: `${live ? "Live" : "Paper"} sell · ${fmtNum(waxOut, { digits: 2 })} WAX · ${
           pnlUsd >= 0 ? "+" : ""
@@ -1426,6 +1597,18 @@ async function runBotOnceInner(
           decision.tokenOut,
         );
       }
+      captureFixture({
+        kind: "execution",
+        book,
+        strategy: b.strategy,
+        mode,
+        tokenIn: decision.tokenIn,
+        tokenOut: decision.tokenOut,
+        amountIn: decision.amountIn,
+        routes: [decision.route],
+        reason: decision.reason,
+        ctx: ctxOf(),
+      });
       toast({
         title: `${live ? "Live" : "Unsigned"} ${decision.tokenIn}→${decision.tokenOut}`,
         description: decision.reason + note + (txid ? ` · tx ${txid.slice(0, 10)}…` : ""),

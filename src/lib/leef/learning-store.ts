@@ -399,6 +399,8 @@ type PendingImpact = {
   /** True when the pool lives in snap.aux (Defibox/Taco/Alcor aux), not snap.pools. */
   aux: boolean;
   preSpotUsd: number;
+  /** Aggregate LEEF/USD mark at registration — the drift reference. */
+  preMarketUsd: number;
   sizeUsd: number;
   action: string;
   tokenIn: string;
@@ -456,7 +458,14 @@ export function measureDueSelfImpact(snap: LeefSnapshot, now = Date.now()): void
   const post = poolSpotUsd(snap.pools, snap.aux, p.poolId, snap.waxUsd);
   if (!(post > 0) || !(p.preSpotUsd > 0)) return;
   pendingImpact = null;
-  const selfImpactPct = ((post - p.preSpotUsd) / p.preSpotUsd) * 100;
+  const rawPct = ((post - p.preSpotUsd) / p.preSpotUsd) * 100;
+  // Drift correction (LEEF pools only): subtract the aggregate market move
+  // over the same window. Aux pools keep the raw upper bound (labeled).
+  const marketPct =
+    !p.aux && p.preMarketUsd > 0 && snap.leefUsd > 0
+      ? ((snap.leefUsd - p.preMarketUsd) / p.preMarketUsd) * 100
+      : null;
+  const selfImpactPct = marketPct != null ? rawPct - marketPct : rawPct;
   journal({
     kind: "execution",
     action: p.action as JournalEntry["action"],
@@ -467,7 +476,10 @@ export function measureDueSelfImpact(snap: LeefSnapshot, now = Date.now()): void
     routeSig: p.routeSig,
     tokenIn: p.tokenIn,
     tokenOut: p.tokenOut,
-    reason: `self-impact (upper bound, incl. drift): ${p.aux ? "aux " : ""}pool #${p.poolId} spot ${selfImpactPct >= 0 ? "+" : ""}${selfImpactPct.toFixed(3)}% after our ${p.action}`,
+    reason:
+      marketPct != null
+        ? `self-impact (drift-corrected): pool #${p.poolId} moved ${rawPct >= 0 ? "+" : ""}${rawPct.toFixed(3)}%, market ${marketPct >= 0 ? "+" : ""}${marketPct.toFixed(3)}% → ours ≈ ${selfImpactPct >= 0 ? "+" : ""}${selfImpactPct.toFixed(3)}% after our ${p.action}`
+        : `self-impact (upper bound, incl. drift): ${p.aux ? "aux " : ""}pool #${p.poolId} spot ${selfImpactPct >= 0 ? "+" : ""}${selfImpactPct.toFixed(3)}% after our ${p.action}`,
     leefUsd: snap.leefUsd,
     waxUsd: snap.waxUsd,
   });

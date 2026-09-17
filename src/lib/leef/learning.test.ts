@@ -95,6 +95,21 @@ describe("profiles", () => {
     expect(p["route:direct:217"]!.executions).toBe(2);
   });
 
+  it("regime dimension: high-vol and range tapes never mix", () => {
+    const p: LearningProfiles = {};
+    for (let i = 0; i < 3; i++) {
+      applyEntry(p, execEntry({ ts: T0 + i * 60_000, regime: "high_vol", actualOut: 97 }), CFG);
+    }
+    for (let i = 0; i < 3; i++) {
+      applyEntry(p, execEntry({ ts: T0 + (10 + i) * 60_000, regime: "range", actualOut: 99.8 }), CFG);
+    }
+    const prof = p["pool:alcor:217"]!;
+    expect(prof.byRegime["high_vol"]!.confirmed).toBe(3);
+    expect(prof.byRegime["high_vol"]!.slipPctSum).toBeCloseTo(9, 4); // 3% each
+    expect(prof.byRegime["range"]!.slipPctSum).toBeCloseTo(0.6, 4); // 0.2% each
+    expect(prof.byRegime["range"]!.confirmed).toBe(3);
+  });
+
   it("EWMA decays old evidence toward new", () => {
     const p: LearningProfiles = {};
     applyEntry(p, execEntry({ ts: T0, actualOut: 99 }), CFG); // 1% slip

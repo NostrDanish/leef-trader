@@ -125,11 +125,36 @@ vetoes are deliberately NOT counterfactualed (no honest mark for a spread).
 | AI boundary (import graph) | WRITTEN (from Phase 1) |
 | existing engine suites (route-optimizer, net-edge, exact-gate, growth, rebalance, …) | previously green; unchanged behavior |
 
+## Phase 3 addendum — market memory + decision replay
+
+Added after this audit, addressing its gap #1 and the self-impact purity note:
+
+- **Market-memory fixtures** (`journal.ts::MarketFixture`, IDB v2 `fixtures`
+  store, cap 2000): route-scoped snapshots captured at gate vetoes and
+  executions. Route-scoped by design — the decision path needs the candidate
+  routes' pools, not the 11 MB universe.
+- **Decision replay** (`replay.ts::replayFixture/replayAll` + Evidence desk
+  "Decision replay" card): swap/cycle gate fixtures replay the full gate
+  verdict (recorded venue outputs + today's logic); entry/growth fixtures
+  replay route ranking only. Verdicts: same / flipped / route_changed /
+  not_replayable. Decision-logic regression — NOT a P&L backtest.
+- **Regime sub-profiles** (`Profile.byRegime`): pool/route behavior split by
+  market regime.
+- **Drift-corrected self-impact**: LEEF-pool measurements subtract the
+  aggregate market move; aux pools keep the labeled upper bound.
+- Tests: `replay.test.ts`, regime isolation in `learning.test.ts`.
+
+Still deferred (unchanged): full-tick historical book database (storage
+design mismatch), continuous response-curve fitting (buckets suffice until
+they measurably don't), learned size increases (ceilings are shrink-only by
+deliberate invariant), 24/7 backend.
+
 ## Remaining gaps (honest)
 
-1. No replay engine — the journal stores decision context, not full books.
-2. Self-impact is an upper bound (includes market drift); non-WAX-sided aux
-   pools and non-primary legs aren't measured.
+1. ~~No replay engine~~ → decision-logic replay IMPLEMENTED (route-scoped
+   fixtures; full-tick historical book DB remains deferred by design).
+2. Self-impact: drift-corrected for LEEF pools; aux pools remain upper-bound;
+   non-primary legs unmeasured.
 3. Counterfactual horizons are 5m + 30m — no intraday trend.
 4. Profiles rebuild from the full journal on boot — fine to ~60k entries;
    needs incremental checkpointing beyond that.
