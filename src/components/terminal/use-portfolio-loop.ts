@@ -8,6 +8,14 @@ import {
 } from "@/lib/leef/rebalance";
 import { fmtUsd } from "@/lib/leef/format";
 import { journal } from "@/lib/leef/journal";
+import { PLATFORM_FEE_MEMO, PLATFORM_FEE_PCT, platformFeeOn } from "@/lib/leef/platform-fee";
+import { executionCostPct } from "@/lib/leef/cost-model";
+import { bestExecutionRoute } from "@/lib/leef/route-optimizer";
+import {
+  chooseRebalanceSize,
+  rebalanceImpactBudgetPct,
+} from "@/lib/leef/rebalance-sizing";
+import { learnedSizeCeilingMult } from "@/lib/leef/learning-store";
 import type { LeefSnapshot } from "@/lib/leef/types";
 import { parseAssetAmount } from "@/lib/wallet/alcor-route";
 import { waxResourceBlock } from "@/lib/wallet/chain";
@@ -118,8 +126,63 @@ export async function runRebalancer(snap: LeefSnapshot, opts?: { force?: boolean
       }
     }
 
+    // Market-aware sizing: TARGET GAP ≠ ORDER SIZE. Each leg is re-sized
+    // against the live book under an urgency-scaled marginal impact budget —
+    // partial convergence instead of slamming a thin pool with the full gap.
+    const gapTotalUsd = legs.reduce((s, l) => s + l.estUsd, 0);
+    const gapFrac = plan.totalUsd > 0 ? gapTotalUsd / plan.totalUsd : 0;
+    const { budgetPct, urgency } = rebalanceImpactBudgetPct(gapFrac, p.settings.maxImpactPct);
+    const sizedLegs: PlannedLeg[] = [];
+    for (const leg of legs) {
+      const pxIn = leg.from.usdPrice;
+      if (!(pxIn > 0)) continue;
+      const probe = bestExecutionRoute(snap.pools, snap.aux, leg.amountIn, leg.from.symbol, leg.to.symbol);
+      const venue0 = probe?.legs[0]?.venue ?? "alcor";
+      const mult = probe?.poolIds[0] != null ? learnedSizeCeilingMult(venue0, probe.poolIds[0]) : 1;
+      const decision = chooseRebalanceSize({
+        gapUsd: leg.estUsd,
+        minUsd: Math.max(p.settings.minDustUsd, 0.5),
+        maxUsd: Math.min(leg.estUsd, leg.amountIn * pxIn) * mult,
+        budgetPct,
+        quoteAt: (sizeUsd) => {
+          const route = bestExecutionRoute(snap.pools, snap.aux, sizeUsd / pxIn, leg.from.symbol, leg.to.symbol);
+          if (!route) return null;
+          return {
+            impactPct: route.priceImpact * 100,
+            costPct: executionCostPct(route, snap) + PLATFORM_FEE_PCT,
+          };
+        },
+      });
+      if (decision.action === "WAIT" || decision.action === "NO_ACTION") {
+        p.pushLog({
+          mode,
+          status: "skipped",
+          summary: `${leg.from.symbol} → ${leg.to.symbol} · ${decision.action} (${urgency} urgency)`,
+          legs: [leg.reason, decision.reason],
+          totalUsd: leg.estUsd,
+        });
+        continue;
+      }
+      sizedLegs.push({
+        ...leg,
+        amountIn: decision.sizeUsd / pxIn,
+        estUsd: decision.sizeUsd,
+        reason: `${leg.reason} · ${decision.action === "EXECUTE_PARTIAL" ? "PARTIAL" : "FULL"}: ${decision.reason}`,
+      });
+    }
+    const legsFinal = sizedLegs;
+    if (legsFinal.length === 0) {
+      p.markRun();
+      p.setLastPlanNote(
+        legs.length > 0
+          ? `Market-aware sizing: every leg said WAIT/NO_ACTION (${urgency} urgency, budget ${budgetPct.toFixed(2)}%)`
+          : "Planned legs had no route this cycle",
+      );
+      return;
+    }
+
     const account = mode === "live" ? w.account : "paper.leef";
-    const quoted = await quoteLegs(legs, account, p.settings.slippage, p.settings.maxImpactPct);
+    const quoted = await quoteLegs(legsFinal, account, p.settings.slippage, p.settings.maxImpactPct);
     const quotedOk = quoted.filter((l) => l.quote);
     const dropped = quoted.filter((l) => !l.quote);
     for (const d of dropped) {
@@ -181,7 +244,8 @@ export async function runRebalancer(snap: LeefSnapshot, opts?: { force?: boolean
           });
           continue;
         }
-        w.applyPaperFill(leg.from.symbol, leg.amountIn, leg.to.symbol, out);
+        const fee = platformFeeOn(out * (1 - p.settings.slippage / 100), leg.to);
+        w.applyPaperFill(leg.from.symbol, leg.amountIn, leg.to.symbol, out - (fee?.amount ?? 0));
         filled.push(leg);
       }
       if (filled.length === 0) {
@@ -267,6 +331,27 @@ export async function runRebalancer(snap: LeefSnapshot, opts?: { force?: boolean
         })),
       );
       const tag = chunks.length > 1 ? `chunk ${ci + 1}/${chunks.length} · ` : "";
+      // Platform fee: one transfer per swept conversion (each leg is its own
+      // conversion), on the leg's guaranteed output, inside the same atomic
+      // transaction — a reverted sweep collects nothing.
+      const feeLegs: BatchLeg[] = [];
+      let feeTotalUsd = 0;
+      for (const leg of chunk) {
+        const g =
+          parseAssetAmount(leg.quote!.minReceived) ||
+          parseAssetAmount(leg.quote!.output) * (1 - p.settings.slippage / 100);
+        const fee = platformFeeOn(g, leg.to);
+        if (fee) {
+          feeLegs.push({
+            contract: fee.token.contract,
+            quantity: fee.quantity,
+            memo: PLATFORM_FEE_MEMO,
+            to: fee.recipient,
+          });
+          feeTotalUsd += fee.amount * (leg.to.usdPrice || 0);
+        }
+      }
+      const allLegs = [...batchLegs, ...feeLegs];
       try {
         const coordinated = await coordinateCapitalMovement({
           owner: "rebalancer",
@@ -274,7 +359,7 @@ export async function runRebalancer(snap: LeefSnapshot, opts?: { force?: boolean
             signAndPushBatch({
               account: w.account,
               permission: w.permission,
-              legs: batchLegs,
+              legs: allLegs,
               snap,
             }),
           onSettled: async (result) => {
@@ -291,6 +376,10 @@ export async function runRebalancer(snap: LeefSnapshot, opts?: { force?: boolean
               : `${tag}${chunk.length} leg${chunk.length === 1 ? "" : "s"} · ${fmtUsd(chunkUsd, 2)}`,
           status: reconciliation.status === "confirmed" ? "confirmed" : reconciliation.status === "failed" ? undefined : "unknown",
           txid, latencyMs: Date.now() - t0, waxUsd: snap.waxUsd, leefUsd: snap.leefUsd,
+          platformFeeAmount: feeLegs.length > 0 ? feeTotalUsd : undefined,
+          platformFeeToken: feeLegs.length > 0 ? "USD" : undefined,
+          platformFeeCollected:
+            reconciliation.status === "confirmed" && feeLegs.length > 0 ? true : undefined,
         });
         if (reconciliation.status === "failed") {
           halted = reconciliation.error;

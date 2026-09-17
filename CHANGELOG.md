@@ -2,6 +2,38 @@
 
 All notable changes to LEEF Trader. Dates are commit-era, not release tags.
 
+## Unreleased — Platform fee (0.001% → smart.ass) + market-aware rebalancer
+
+**Platform fee** (`lib/leef/platform-fee.ts`, docs/PLATFORM_FEE.md):
+- 0.001% of every successful trade's GUARANTEED output to `smart.ass`, one
+  transfer action inside the same atomic transaction — reverted trades pay
+  nothing, UNKNOWN never pretends collected, no second transaction ever.
+- Output-token denominated, precision-floored (skipped below one unit —
+  never rounds up past the rate), exactly once per logical trade (never per
+  hop/split; sweeps charge per conversion and count fee actions toward the
+  per-tx CPU cap).
+- Economics count it exactly once: cost model (round trip), one-shot exact
+  gate (expected AND guaranteed sides), arb floor enforced net-of-fee,
+  paper fills pay it too. Quotes desk previews show the fee line.
+- Firewall: recipient pinned to the compile-time constant, canonical memo,
+  verified token+precision, amount ≤ vouched bound. AI/learning/routes/APIs
+  can never touch rate or recipient (boundary test extended).
+- Tests: math/precision/dust/never-over-rate + firewall allow/reject paths.
+
+**Market-aware rebalancer** (`lib/leef/rebalance-sizing.ts`):
+- TARGET GAP ≠ ORDER SIZE. Each sweep leg is re-sized against the live book:
+  adaptive size ladder → cheap local quotes → viable = under an
+  urgency-scaled marginal impact budget (0.5–2.0% by gap fraction, never
+  above the hard cap) → EXECUTE_FULL / EXECUTE_PARTIAL / WAIT / NO_ACTION.
+  On a CP book impact is monotone in size, so the budget crossing IS the
+  marginal knee — the rebalancer takes the largest economically sane chunk
+  and leaves the rest for later instead of slamming $20 into a thin pool.
+- Learned size ceilings apply to rebalance sizing; the exact venue gate
+  still re-quotes the chosen size before signing; WAIT/PARTIAL decisions log
+  human-readable reasons to the sweep log.
+- Tests: synthetic deep/thin/hostile books prove FULL/PARTIAL/WAIT/NO_ACTION,
+  knee selection, dust protection, budget scaling + hard-cap clamp.
+
 ## Unreleased — Any-pair trading + AI auto-review + two real bug fixes
 
 - **Fix: CPU staking was 100% broken.** `signAndPushStakeCpu` built its

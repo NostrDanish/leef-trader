@@ -35,6 +35,10 @@ continuously with no page refresh and no key re-import.
   journal, aggregated on the Evidence desk and exportable as NDJSON. The
   trader no longer forgets what it learned on reload. See
   [EVIDENCE](./docs/EVIDENCE.md).
+- **Platform fee**: 0.001% of every successful trade's guaranteed output to
+  `smart.ass` — one transfer inside the same atomic transaction (reverted
+  trades pay nothing), precision-floored, fee-aware economics before any
+  gate approves. See [PLATFORM FEE](./docs/PLATFORM_FEE.md).
 
 ## The economic core (what makes it a trading system, not a script)
 

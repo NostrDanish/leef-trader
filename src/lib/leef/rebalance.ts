@@ -2,6 +2,7 @@ import type { LeefSnapshot } from "./types";
 import { findToken, type UniverseToken } from "./universe";
 import { fetchAlcorRouteCached } from "@/lib/leef/quote-verify";
 import { parseAssetAmount, type AlcorRouteQuote } from "@/lib/wallet/alcor-route";
+import { platformFeeOn } from "./platform-fee";
 import { balanceAmount, canonicalBalanceEntries } from "@/lib/wallet/balances";
 import { tokenPrice, type TokenPrice } from "@/lib/market/price-oracle";
 
@@ -110,7 +111,14 @@ export function chunkSweepLegs(
   let cur: PlannedLeg[] = [];
   let curActions = 0;
   for (const leg of legs) {
-    const actions = leg.quote?.swaps.length ?? 1;
+    // Every conversion carries its platform-fee action when it's above dust —
+    // count it toward the per-tx CPU budget.
+    const g = leg.quote
+      ? parseAssetAmount(leg.quote.minReceived) || parseAssetAmount(leg.quote.output)
+      : 0;
+    const feeActions =
+      leg.quote && platformFeeOn(g, leg.to) ? 1 : 0;
+    const actions = (leg.quote?.swaps.length ?? 1) + feeActions;
     if (actions > maxActions) {
       dropped.push(leg);
       continue;

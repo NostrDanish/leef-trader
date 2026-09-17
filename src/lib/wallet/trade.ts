@@ -1,6 +1,7 @@
 import { rankExecutionRoutes, routeSignature, splitSlices } from "@/lib/leef/route-optimizer";
 import { exactSwapVerdict } from "@/lib/leef/exact-gate";
 import { journal } from "@/lib/leef/journal";
+import { PLATFORM_FEE_MEMO, platformFeeOn } from "@/lib/leef/platform-fee";
 import { verifyExecutableRoute } from "@/lib/leef/quote-verify";
 import type { SwapRoute } from "@/lib/leef/types";
 import { refreshExecutionState } from "@/lib/market/execution-state";
@@ -208,6 +209,7 @@ export async function executeSwap(opts: {
     if (slices) {
       const legs: BatchLeg[] = [];
       let expectedOut = 0;
+      let guaranteedOut = 0;
       for (const sl of slices) {
         const tin = metaOf(sl.tokenIn, book);
         const tout = metaOf(sl.tokenOut, book);
@@ -220,6 +222,7 @@ export async function executeSwap(opts: {
           decimalsIn: tin.decimals,
         });
         expectedOut += parseAssetAmount(quote.output);
+        guaranteedOut += parseAssetAmount(quote.minReceived) || parseAssetAmount(quote.output) * (1 - opts.slippage / 100);
         for (const s of quote.swaps) {
           legs.push({
             contract: tin.contract,
@@ -227,6 +230,17 @@ export async function executeSwap(opts: {
             memo: s.memo,
           });
         }
+      }
+      // One fee per TRADE — a split is one trade. Charged once on the summed
+      // guaranteed output, in the output token, inside the same atomic tx.
+      const fee = platformFeeOn(guaranteedOut, metaOf(opts.tokenOut, book));
+      if (fee) {
+        legs.push({
+          contract: fee.token.contract,
+          quantity: fee.quantity,
+          memo: PLATFORM_FEE_MEMO,
+          to: fee.recipient,
+        });
       }
       if (legs.length > MAX_MANUAL_SWAP_ACTIONS) {
         throw new Error(
@@ -309,23 +323,33 @@ export async function executeSwap(opts: {
 
   if (slices) {
     let out = 0;
+    let guaranteed = 0;
     for (const sl of slices) {
       const sliceOut =
         route.legs.find((l) => l.poolId === sl.poolId && l.amountIn === sl.amountIn)?.amountOut ?? 0;
       const min = sliceOut * (1 - opts.slippage / 100);
+      guaranteed += min;
       w.applyPaperFill(sl.tokenIn, sl.amountIn, sl.tokenOut, min);
       out += min;
+    }
+    const fee = platformFeeOn(guaranteed, metaOf(opts.tokenOut, book));
+    if (fee) {
+      out -= fee.amount;
+      // Debit the fee out of the wallet (credit nothing — it left for the fee account).
+      w.applyPaperFill(opts.tokenOut, fee.amount, opts.tokenOut, 0);
     }
     journal({
       kind: "execution", action: "swap", strategy: "manual", mode: "paper",
       tokenIn: opts.tokenIn, tokenOut: opts.tokenOut, amountIn: opts.amountIn,
       expectedOut: route.amountOut, actualOut: out, status: "paper",
+      platformFeeAmount: fee?.amount, platformFeeToken: fee?.token.symbol,
       leefUsd: book.leefUsd, waxUsd: book.waxUsd,
     });
     return { mode: "paper", amountOut: out, routeLabel: route.label };
   }
   const minOut = route.amountOut * (1 - opts.slippage / 100);
-  w.applyPaperFill(route.tokenIn, opts.amountIn, route.tokenOut, minOut);
+  const feeSingle = platformFeeOn(minOut, metaOf(route.tokenOut, book));
+  w.applyPaperFill(route.tokenIn, opts.amountIn, route.tokenOut, minOut - (feeSingle?.amount ?? 0));
   journal({
     kind: "execution", action: "swap", strategy: "manual", mode: "paper",
     tokenIn: opts.tokenIn, tokenOut: opts.tokenOut, amountIn: opts.amountIn,

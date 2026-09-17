@@ -103,6 +103,11 @@ export type JournalEntry = {
   execProb?: number;
   /** Failure class from the trade taxonomy (RPC_FAILURE, MIN_OUT_FAILED, …). */
   failureClass?: string;
+  /** Platform fee (0.001% to smart.ass) appended to this execution's tx. */
+  platformFeeAmount?: number;
+  platformFeeToken?: string;
+  /** True ONLY once the chain confirms; absent on unknown/failed/paper. */
+  platformFeeCollected?: boolean;
   /** Realized slippage: (1 − actualOut/expectedOut) × 100, confirmed fills. */
   realizedSlipPct?: number;
   /** Pool spot move around our own confirmed fill, percent (signed). */

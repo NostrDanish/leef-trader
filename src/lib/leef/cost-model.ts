@@ -28,6 +28,7 @@
  * the current book/series or a documented, configurable CostConfig value.
  */
 import type { LeefSnapshot, SwapRoute } from "./types";
+import { PLATFORM_FEE_PCT } from "./platform-fee";
 import { tokenPrice } from "@/lib/market/price-oracle";
 
 export type CostConfig = {
@@ -41,6 +42,11 @@ export type CostConfig = {
   latencySec: number;
   /** Fraction of 1σ price drift over the latency window assumed adverse. */
   decaySigma: number;
+  /**
+   * Platform fee per executed trade, percent of the guaranteed output
+   * (0.001% = "0.001"). A round trip pays it on entry AND exit.
+   */
+  platformFeePct: number;
 };
 
 /**
@@ -58,6 +64,7 @@ export const DEFAULT_COSTS: CostConfig = {
   slippageBufferPct: 0.05,
   latencySec: 4,
   decaySigma: 1,
+  platformFeePct: PLATFORM_FEE_PCT,
 };
 
 export type CostBreakdown = {
@@ -150,6 +157,8 @@ export function estimateRoundTripCosts(opts: {
   const decayPct = Math.max(0, opts.volPerSec * cfg.latencySec * cfg.decaySigma * 100);
   const resourceUsd = Math.max(0, cfg.txCostUsd) * 2; // entry + exit
   const failureUsd = cfg.failureProb * cfg.txCostUsd * 2;
+  // Platform fee: charged on the guaranteed output of entry AND exit.
+  const platformFeePct = Math.max(0, cfg.platformFeePct) * 2;
   return {
     execInPct,
     execOutPct,
@@ -157,7 +166,7 @@ export function estimateRoundTripCosts(opts: {
     decayPct,
     resourceUsd,
     failureUsd,
-    totalPct: execInPct + execOutPct + slippagePct + decayPct,
+    totalPct: execInPct + execOutPct + slippagePct + decayPct + platformFeePct,
     fixedUsd: resourceUsd + failureUsd,
   };
 }

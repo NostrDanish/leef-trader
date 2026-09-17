@@ -24,6 +24,10 @@
  */
 import { LEEF_CONTRACT, LEEF_SYMBOL, WAX_CONTRACT, WAX_SYMBOL } from "@/lib/leef/types";
 import type { LeefSnapshot } from "@/lib/leef/types";
+import {
+  PLATFORM_FEE_ACCOUNT,
+  PLATFORM_FEE_MEMO,
+} from "@/lib/leef/platform-fee";
 import { DEFIBOX_SWAP, TACO_SWAP } from "@/lib/leef/venues";
 import { isAccountName, parseAsset, tokenCatalog } from "./tokens";
 
@@ -53,6 +57,13 @@ export type PolicyContext = {
   snap?: Pick<LeefSnapshot, "pools" | "aux" | "universe">;
   /** Extra tokens the caller vouches for (e.g. the two sides of an LP pool). */
   extraTokens?: PolicyToken[];
+  /**
+   * Platform-fee transfers present in this action list: max allowed amount
+   * per "SYMBOL@contract". The recipient is NOT read from here — the rule
+   * checks the compile-time constant directly, so no caller, quote, API
+   * response or AI can redirect the fee.
+   */
+  platformFee?: { maxByKey: Record<string, number> };
 };
 
 /** One parsed `swapexactin#<pools>#<receiver>#<minOut SYM@contract>#<flags>` memo. */
@@ -118,6 +129,7 @@ function checkTransfer(
   action: PolicyAction,
   account: string,
   tokens: Map<string, PolicyToken>,
+  feeCtx?: { maxByKey: Record<string, number> },
 ): void {
   const from = String(action.plain.from ?? "");
   const to = String(action.plain.to ?? "");
@@ -125,6 +137,29 @@ function checkTransfer(
   const memo = String(action.plain.memo ?? "");
 
   if (from !== account) fail(`transfer from "${from}" but the signer is "${account}"`);
+
+  // Platform fee: a transfer to the canonical fee account with the canonical
+  // memo, a known token at the right contract+precision, and an amount within
+  // the caller-vouched bound. Anything else to a non-AMM is rejected below.
+  if (to === PLATFORM_FEE_ACCOUNT) {
+    if (memo !== PLATFORM_FEE_MEMO) fail("fee transfer must carry the canonical fee memo");
+    const asset = parseAsset(quantity);
+    if (!asset || !(asset.amount > 0)) fail(`bad fee quantity "${quantity}"`);
+    const known = tokens.get(asset!.symbol);
+    if (!known) fail(`unknown fee token ${asset!.symbol}`);
+    if (known!.contract !== action.contract) {
+      fail(`fee token ${asset!.symbol} lives at ${known!.contract}, not ${action.contract}`);
+    }
+    const frac = quantity.trim().split(/\s+/)[0]?.split(".")[1] ?? "";
+    if (frac.length !== known!.decimals) fail(`fee precision mismatch for ${asset!.symbol}`);
+    const max = feeCtx?.maxByKey[`${asset!.symbol}@${action.contract}`];
+    if (max == null) fail("fee transfer without a platform-fee policy context");
+    if (asset!.amount > max + 1e-12) {
+      fail(`fee ${asset!.amount} exceeds the vouched maximum ${max}`);
+    }
+    return;
+  }
+
   if (!ALLOWED_SWAP_TO.has(to)) {
     fail(`transfers may only go to allowlisted AMMs, not "${to}"`);
   }
@@ -222,7 +257,7 @@ export function assertActionPolicy(
     if (action.name !== "transfer") {
       fail(`only token transfers + AMM liquidity actions are allowed — got ${action.contract}::${action.name}`);
     }
-    checkTransfer(action, account, tokens);
+    checkTransfer(action, account, tokens, ctx?.platformFee);
   }
 }
 

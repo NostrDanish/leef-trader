@@ -64,6 +64,8 @@ import {
   unknownBlockReason,
 } from "@/lib/wallet/trade-cycle";
 import { classifyTradeError, toastTitleFor } from "@/lib/wallet/trade-error";
+import { platformFeeOn } from "@/lib/leef/platform-fee";
+import { metaOf } from "@/lib/wallet/tokens";
 import { useBot } from "@/store/bot";
 import { clampSyncSec, DEFAULT_SYNC_SEC, useTerminal } from "@/store/terminal";
 import { useWallet } from "@/store/wallet";
@@ -1245,6 +1247,7 @@ async function runBotOnceInner(
       let amountLeef = minOut;
       let txid: string | undefined;
       let note = "";
+      let feeInfo: { amount: number; symbol: string } | undefined;
       let execStatus: "confirmed" | "included" | "unknown" | "paper" = live ? "unknown" : "paper";
       const tExec = Date.now();
       if (live) {
@@ -1275,6 +1278,7 @@ async function runBotOnceInner(
           timings.signMs = Date.now() - tSign;
           timings.broadcastMs = timings.signMs;
           txid = exec.txid;
+          feeInfo = exec.platformFee;
           markBroadcast(txid);
           amountLeef = exec.expectedOut > 0 ? exec.expectedOut : minOut;
           const tConf = Date.now();
@@ -1303,6 +1307,9 @@ async function runBotOnceInner(
           throw err;
         }
       } else {
+        // Paper fills pay the platform fee too — paper P&L must match live economics.
+        const feeSpec = platformFeeOn(amountLeef, metaOf(baseTok, book));
+        if (feeSpec) amountLeef -= feeSpec.amount;
         w.applyPaperFill(b.quote || "WAX", decision.amountWax, b.base || "LEEF", amountLeef);
       }
       // Average into an existing position (DCA) or open a fresh one.
@@ -1359,6 +1366,10 @@ async function runBotOnceInner(
         actualOut: amountLeef, txid, status: execStatus,
         predEdgePct: decision.edge?.netEdgePct,
         latencyMs: live ? Date.now() - tExec : undefined,
+        platformFeeAmount: feeInfo?.amount,
+        platformFeeToken: feeInfo?.symbol,
+        platformFeeCollected:
+          live && execStatus === "confirmed" && feeInfo ? true : undefined,
         ...routeJournalMeta(decision.route, decision.amountWax, bounds.quoteUsd),
         ...ctxOf(),
         leefUsd: snap.leefUsd, waxUsd: book.waxUsd,
@@ -1397,6 +1408,7 @@ async function runBotOnceInner(
       let waxOut = decision.route.amountOut;
       let txid: string | undefined;
       let note = "";
+      let feeInfo: { amount: number; symbol: string } | undefined;
       let execStatus: "confirmed" | "included" | "unknown" | "paper" = live ? "unknown" : "paper";
       const t0 = Date.now();
       if (live) {
@@ -1414,6 +1426,7 @@ async function runBotOnceInner(
           timings.signMs = Date.now() - tSign;
           timings.broadcastMs = timings.signMs;
           txid = exec.txid;
+          feeInfo = exec.platformFee;
           markBroadcast(txid);
           if (exec.expectedOut > 0) waxOut = exec.expectedOut;
           const tConf = Date.now();
@@ -1440,6 +1453,8 @@ async function runBotOnceInner(
           throw err;
         }
       } else {
+        const feeSpec = platformFeeOn(waxOut, metaOf(quoteTok, book));
+        if (feeSpec) waxOut -= feeSpec.amount;
         w.applyPaperFill(b.base || "LEEF", decision.amountLeef, b.quote || "WAX", waxOut);
       }
       const pnlUsd = position ? waxOut * bounds.quoteUsd - position.entryCostUsd : 0;
@@ -1468,6 +1483,10 @@ async function runBotOnceInner(
         tokenIn: b.base || "LEEF", tokenOut: b.quote || "WAX",
         amountIn: decision.amountLeef, expectedOut: decision.route.amountOut,
         actualOut: waxOut, txid, status: execStatus, pnlUsd,
+        platformFeeAmount: feeInfo?.amount,
+        platformFeeToken: feeInfo?.symbol,
+        platformFeeCollected:
+          live && execStatus === "confirmed" && feeInfo ? true : undefined,
         predEdgePct: position?.predEdgePct ?? undefined,
         realizedEdgePct:
           position && position.entryCostUsd > 0
@@ -1518,6 +1537,7 @@ async function runBotOnceInner(
       let txid: string | undefined;
       let note = "";
       let outAmt = decision.route.amountOut;
+      let feeInfo: { amount: number; symbol: string } | undefined;
       let execStatus: "confirmed" | "included" | "unknown" | "paper" = live ? "unknown" : "paper";
       const tExec = Date.now();
       if (live) {
@@ -1533,6 +1553,7 @@ async function runBotOnceInner(
             preQuoted: gateQuote,
           });
           txid = exec.txid;
+          feeInfo = exec.platformFee;
           markBroadcast(txid);
           if (exec.expectedOut > 0) outAmt = exec.expectedOut;
           const rec = await waitForTransaction(txid, { budgetMs: 1_200, attempts: 3, delayMs: 200 });
@@ -1555,6 +1576,8 @@ async function runBotOnceInner(
           throw err;
         }
       } else {
+        const feeSpec = platformFeeOn(outAmt, metaOf(decision.tokenOut, book));
+        if (feeSpec) outAmt -= feeSpec.amount;
         w.applyPaperFill(decision.tokenIn, decision.amountIn, decision.tokenOut, outAmt);
       }
       const inUsd = decision.amountIn * (usdPriceOf(decision.tokenIn, book) || 0);
@@ -1578,6 +1601,10 @@ async function runBotOnceInner(
         tokenIn: decision.tokenIn, tokenOut: decision.tokenOut,
         amountIn: decision.amountIn, expectedOut: decision.route.amountOut,
         actualOut: outAmt, txid, status: execStatus, pnlUsd: tapePnl,
+        platformFeeAmount: feeInfo?.amount,
+        platformFeeToken: feeInfo?.symbol,
+        platformFeeCollected:
+          live && execStatus === "confirmed" && feeInfo ? true : undefined,
         realizedEdgePct: inUsd > 0 ? (tapePnl / inUsd) * 100 : undefined,
         latencyMs: live ? Date.now() - tExec : undefined,
         ...routeJournalMeta(
@@ -1678,6 +1705,7 @@ async function runBotOnceInner(
       }
       let txid: string | undefined;
       let note = "";
+      let feeInfo: { amount: number; symbol: string } | undefined;
       let execStatus: "confirmed" | "included" | "unknown" | "paper" = live ? "unknown" : "paper";
       /** Net WAX delta read from the confirmed transaction (null = estimate). */
       let realizedWax: number | null = null;
@@ -1696,6 +1724,7 @@ async function runBotOnceInner(
           timings.signMs = Date.now() - tSign;
           timings.broadcastMs = timings.signMs;
           txid = res.txid;
+          feeInfo = res.platformFee;
           markBroadcast(txid);
           const tConf = Date.now();
           const rec = await waitForTransaction(txid, { budgetMs: 1_200, attempts: 3, delayMs: 200 });
@@ -1721,7 +1750,8 @@ async function runBotOnceInner(
         }
       } else {
         // Same symbol in and out — the fill nets the profit onto the balance.
-        w.applyPaperFill("WAX", plan.waxIn, "WAX", plan.waxOut);
+        const feeSpec = platformFeeOn(plan.waxOut, metaOf("WAX", book));
+        w.applyPaperFill("WAX", plan.waxIn, "WAX", plan.waxOut - (feeSpec?.amount ?? 0));
       }
       const pnlUsd =
         realizedWax != null
@@ -1756,6 +1786,10 @@ async function runBotOnceInner(
         predEdgePct: plan.profitPct * 100,
         realizedEdgePct:
           (realizedWax != null ? realizedWax / plan.waxIn : plan.waxOut / plan.waxIn - 1) * 100,
+        platformFeeAmount: feeInfo?.amount,
+        platformFeeToken: feeInfo?.symbol,
+        platformFeeCollected:
+          live && execStatus === "confirmed" && feeInfo ? true : undefined,
         latencyMs: live ? Date.now() - t0 : undefined,
         poolIds: [plan.buyPool.id, plan.sellPool.id],
         hops: 2,

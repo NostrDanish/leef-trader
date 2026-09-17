@@ -5,6 +5,7 @@ import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { pairTokens, MIN_LEEF_BACKING } from "@/lib/leef/amm";
+import { platformFeeOn } from "@/lib/leef/platform-fee";
 import { rankExecutionRoutes, routeSignature } from "@/lib/leef/route-optimizer";
 import { fmtNum, fmtPct } from "@/lib/leef/format";
 import { executeSwap, type SwapOutcome } from "@/lib/wallet/trade";
@@ -263,6 +264,21 @@ export function Quotes({
                 <Row
                   label="Min received"
                   value={`${fmtNum(active.amountOut * (1 - slippage / 100))} ${tokenOut}`}
+                />
+                <Row
+                  label="Platform fee"
+                  value={(() => {
+                    const meta = snap.universe.find(
+                      (u) => u.symbol === tokenOut.toUpperCase(),
+                    );
+                    const fee = platformFeeOn(
+                      active.amountOut * (1 - slippage / 100),
+                      meta ?? { symbol: tokenOut, contract: "", decimals: 4 },
+                    );
+                    return fee
+                      ? `${fee.quantity} → smart.ass (0.001%)`
+                      : "0.001% — below token dust";
+                  })()}
                 />
                 {!pinned && edge > 0.001 && runner && (
                   <Row

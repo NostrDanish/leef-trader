@@ -137,6 +137,9 @@ function strategyContext(): Record<string, unknown> {
       growthMode: b.growthMode,
       goals: b.goals,
       risk: b.risk,
+      // Informational only — the AI can read the fee, never change it.
+      platformFeePct: 0.001,
+      platformFeeRecipient: "smart.ass",
     },
     session: {
       startedAt: new Date(b.stats.startedAt).toISOString(),

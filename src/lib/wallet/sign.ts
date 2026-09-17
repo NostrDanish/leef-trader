@@ -1,6 +1,6 @@
 import type { ArbPlan } from "@/lib/leef/bot-engine";
 import type { LeefSnapshot, SwapRoute } from "@/lib/leef/types";
-import { LEEF_CONTRACT, WAX_CONTRACT } from "@/lib/leef/types";
+import { LEEF_CONTRACT, WAX_CONTRACT, WAX_SYMBOL } from "@/lib/leef/types";
 import { swapContractOf, venueOfPoolId } from "@/lib/leef/venues";
 import { verifyExecutableRoute } from "@/lib/leef/quote-verify";
 import { TradeError } from "./trade-error";
@@ -30,8 +30,14 @@ import {
   ALCOR_SWAP_CONTRACT,
   arbFloorViolation,
   assertActionPolicy,
+  memoMinOutSum,
   type PolicyContext,
 } from "./policy";
+import {
+  PLATFORM_FEE_ACCOUNT,
+  PLATFORM_FEE_MEMO,
+  platformFeeOn,
+} from "@/lib/leef/platform-fee";
 import { hasSecret, signDigest } from "./secret";
 import { walletSession } from "./session";
 import { formatAsset, parseAsset, metaOf } from "./tokens";
@@ -44,6 +50,8 @@ export type SwapExecution = {
   txid: string;
   /** Total expected output in tokenOut units (router quote — see note in trade.ts). */
   expectedOut: number;
+  /** The platform fee appended to this transaction (absent when it floors to 0). */
+  platformFee?: { amount: number; symbol: string; contract: string };
 };
 
 function allAlcor(route: SwapRoute): boolean {
@@ -67,7 +75,7 @@ async function buildTransfers(opts: {
    * the gate approved quote A but the chain sees quote B.
    */
   preQuoted?: AlcorRouteQuote;
-}): Promise<{ transfers: TransferSpec[]; expectedOut: number }> {
+}): Promise<{ transfers: TransferSpec[]; expectedOut: number; guaranteedOut: number }> {
   const tokenIn = metaOf(opts.route.tokenIn, opts.snap);
   const tokenOut = metaOf(opts.route.tokenOut, opts.snap);
 
@@ -111,7 +119,9 @@ async function buildTransfers(opts: {
         `Output rounds to 0 ${tokenOut.symbol} — trade too small to execute`,
       );
     }
-    return { transfers, expectedOut };
+    const guaranteedOut =
+      parseAssetAmount(quote.minReceived) || expectedOut * (1 - opts.slippagePct / 100);
+    return { transfers, expectedOut, guaranteedOut };
   }
 
   const verified = await verifyExecutableRoute({
@@ -157,7 +167,7 @@ async function buildTransfers(opts: {
       memo,
     });
   }
-  return { transfers, expectedOut: verified.expectedOut };
+  return { transfers, expectedOut: verified.expectedOut, guaranteedOut: verified.guaranteedOut };
 }
 
 /** An action in both worlds: plain fields for wallet UIs, packed bytes for the local signer. */
@@ -297,22 +307,54 @@ export async function signAndPushSwap(opts: {
   /** Gate-approved quote — sign these memos, not a fresh re-quote. */
   preQuoted?: AlcorRouteQuote;
 }): Promise<SwapExecution> {
-  const { transfers, expectedOut } = await buildTransfers(opts);
+  const { transfers, expectedOut, guaranteedOut } = await buildTransfers(opts);
+  // Platform fee: once, on the guaranteed output, inside the same atomic
+  // transaction (a reverted trade reverts the fee too). Precision-floored;
+  // skipped when it rounds to zero units.
+  const tokenOut = metaOf(opts.route.tokenOut, opts.snap);
+  const fee = platformFeeOn(guaranteedOut, tokenOut);
+  const feeTransfers = fee
+    ? [
+        {
+          contract: fee.token.contract,
+          data: {
+            from: opts.account,
+            to: fee.recipient,
+            quantity: fee.quantity,
+            memo: PLATFORM_FEE_MEMO,
+          },
+        },
+      ]
+    : [];
   const { txid } = await signAndPushTransfers({
     account: opts.account,
     permission: opts.permission,
-    transfers: transfers.map((t) => ({
-      contract: t.tokenContract,
-      data: {
-        from: opts.account,
-        to: t.to,
-        quantity: t.quantity,
-        memo: t.memo,
-      },
-    })),
-    policy: { snap: opts.snap },
+    transfers: [
+      ...transfers.map((t) => ({
+        contract: t.tokenContract,
+        data: {
+          from: opts.account,
+          to: t.to,
+          quantity: t.quantity,
+          memo: t.memo,
+        },
+      })),
+      ...feeTransfers,
+    ],
+    policy: {
+      snap: opts.snap,
+      platformFee: fee
+        ? { maxByKey: { [`${fee.token.symbol.toUpperCase()}@${fee.token.contract}`]: fee.amount } }
+        : undefined,
+    },
   });
-  return { txid, expectedOut };
+  return {
+    txid,
+    expectedOut,
+    platformFee: fee
+      ? { amount: fee.amount, symbol: fee.token.symbol.toUpperCase(), contract: fee.token.contract }
+      : undefined,
+  };
 }
 
 export type BatchLeg = {
@@ -322,12 +364,16 @@ export type BatchLeg = {
   quantity: string;
   /** Ready swap.alcor memo from the Alcor router. */
   memo: string;
+  /** Transfer target — defaults to the Alcor swap contract; fee legs target the fee account. */
+  to?: string;
 };
 
 /**
  * Broadcast several independent swap transfers as ONE atomic transaction.
  * Used by the rebalancer: every leg spends tokens the wallet already holds,
- * and if any leg's min-out fails, the whole batch reverts.
+ * and if any leg's min-out fails, the whole batch reverts. Platform-fee legs
+ * (to = the fee account, canonical memo) travel in the same transaction —
+ * a reverted sweep collects nothing.
  */
 export async function signAndPushBatch(opts: {
   account: string;
@@ -337,6 +383,17 @@ export async function signAndPushBatch(opts: {
   snap: LeefSnapshot;
 }): Promise<{ txid: string }> {
   if (opts.legs.length === 0) throw new Error("Nothing to execute");
+  // Vouch the fee amounts the caller computed via platformFeeOn: the firewall
+  // pins recipient + memo + token identity + precision against this context.
+  const maxByKey: Record<string, number> = {};
+  let hasFee = false;
+  for (const l of opts.legs) {
+    if (l.to !== PLATFORM_FEE_ACCOUNT) continue;
+    const a = parseAsset(l.quantity);
+    if (!a) continue;
+    maxByKey[`${a.symbol}@${l.contract}`] = a.amount;
+    hasFee = true;
+  }
   return await signAndPushTransfers({
     account: opts.account,
     permission: opts.permission,
@@ -344,12 +401,12 @@ export async function signAndPushBatch(opts: {
       contract: l.contract,
       data: {
         from: opts.account,
-        to: ALCOR_SWAP_CONTRACT,
+        to: l.to ?? ALCOR_SWAP_CONTRACT,
         quantity: l.quantity,
-        memo: l.memo.replaceAll("<receiver>", opts.account),
+        memo: l.to === PLATFORM_FEE_ACCOUNT ? l.memo : l.memo.replaceAll("<receiver>", opts.account),
       },
     })),
-    policy: { snap: opts.snap },
+    policy: { snap: opts.snap, platformFee: hasFee ? { maxByKey } : undefined },
   });
 }
 
@@ -388,8 +445,22 @@ export async function signAndPushArb(opts: {
     );
   }
 
+  // Platform fee on the GUARANTEED sell-side output (min-out sum) — the
+  // number the chain enforces, not the quote. The profit floor is then
+  // enforced NET of fee: the guaranteed output must cover stake + fee +
+  // floor, or nothing is signed.
+  const guaranteedWax = memoMinOutSum(
+    plan.sellLegs.map((l) => ({ input: l.input, memo: l.memo })),
+    opts.account,
+  );
+  const fee = platformFeeOn(guaranteedWax, {
+    symbol: WAX_SYMBOL,
+    contract: WAX_CONTRACT,
+    decimals: 8,
+  });
+
   const violation = arbFloorViolation({
-    waxIn: plan.waxIn,
+    waxIn: plan.waxIn + (fee?.amount ?? 0),
     minProfitPct: opts.minProfitPct,
     buyLegs: plan.buyLegs,
     sellLegs: plan.sellLegs,
@@ -416,13 +487,33 @@ export async function signAndPushArb(opts: {
         memo: l.memo.replaceAll("<receiver>", opts.account),
       },
     })),
+    ...(fee
+      ? [
+          {
+            contract: WAX_CONTRACT,
+            data: {
+              from: opts.account,
+              to: fee.recipient,
+              quantity: fee.quantity,
+              memo: PLATFORM_FEE_MEMO,
+            },
+          },
+        ]
+      : []),
   ];
-  return await signAndPushTransfers({
+  const { txid } = await signAndPushTransfers({
     account: opts.account,
     permission: opts.permission,
     transfers,
-    policy: { snap: opts.snap },
+    policy: {
+      snap: opts.snap,
+      platformFee: fee ? { maxByKey: { [`WAX@${WAX_CONTRACT}`]: fee.amount } } : undefined,
+    },
   });
+  return {
+    txid,
+    platformFee: fee ? { amount: fee.amount, symbol: WAX_SYMBOL, contract: WAX_CONTRACT } : undefined,
+  };
 }
 
 /* ------------------------------------------------------------------ */

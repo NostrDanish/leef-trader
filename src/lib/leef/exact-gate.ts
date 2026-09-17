@@ -18,6 +18,7 @@
  *   protected    — the on-chain floor enforced by the memo
  */
 import { estimateRoundTripCosts, executionCostPct, usdPriceOf } from "./cost-model";
+import { PLATFORM_FEE_RATE } from "./platform-fee";
 import type { LeefSnapshot, SwapRoute } from "./types";
 
 export type ExactGateOpts = {
@@ -42,11 +43,14 @@ export function exactOneShot(opts: ExactGateOpts): {
     return { exactNetUsd: 0, exactNetPct: -100, exactExecCostPct: 100 };
   }
   const usdIn = opts.amountIn * pxIn;
+  // The platform fee rides the guaranteed output (never the optimistic
+  // quote); the precision-floored on-chain fee is ≤ this estimate.
+  const feeUsd = (opts.guaranteedOut ?? opts.expectedOut) * PLATFORM_FEE_RATE * pxOut;
   const usdOut = opts.expectedOut * pxOut;
   const exactRoute = { ...opts.route, amountOut: opts.expectedOut };
   return {
-    exactNetUsd: usdOut - usdIn,
-    exactNetPct: usdIn > 0 ? ((usdOut - usdIn) / usdIn) * 100 : -100,
+    exactNetUsd: usdOut - feeUsd - usdIn,
+    exactNetPct: usdIn > 0 ? ((usdOut - feeUsd - usdIn) / usdIn) * 100 : -100,
     exactExecCostPct: executionCostPct(exactRoute, opts.snap),
   };
 }
@@ -106,7 +110,8 @@ export function exactSwapVerdict(opts: ExactGateOpts & {
     const pxIn = usdPriceOf(opts.route.tokenIn, opts.snap);
     const pxOut = usdPriceOf(opts.route.tokenOut, opts.snap);
     if (pxIn > 0 && pxOut > 0 && opts.amountIn > 0) {
-      const gUsd = opts.guaranteedOut * pxOut;
+      // Worst case = guaranteed output minus the platform fee it carries.
+      const gUsd = opts.guaranteedOut * (1 - PLATFORM_FEE_RATE) * pxOut;
       const inUsd = opts.amountIn * pxIn;
       guaranteedPct = inUsd > 0 ? ((gUsd - inUsd) / inUsd) * 100 : -100;
     }
