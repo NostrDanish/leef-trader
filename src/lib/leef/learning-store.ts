@@ -336,7 +336,7 @@ export function evaluateDueCounterfactuals(snap: LeefSnapshot, now = Date.now())
     if (now - cf.registeredAt < cf.horizonMs) continue;
     pendingCf.delete(id);
     let result: { cfPct: number; label: "TRUE_HOLD" | "FALSE_HOLD" | "NEUTRAL_HOLD" } | null = null;
-    let model: "mark" | "requote" = "mark";
+    let model: "mark" | "requote" | "tape" = "mark";
     if (cf.cfKind === "swap") {
       // Swap/cycle: does the same pair/size still clear the net floor?
       const route = rankExecutionRoutes(snap.pools, snap.aux, cf.amountIn, cf.tokenIn, cf.tokenOut)[0];
@@ -351,9 +351,28 @@ export function evaluateDueCounterfactuals(snap: LeefSnapshot, now = Date.now())
       }
     }
     if (!result && cf.cfKind === "entry") {
-      const nowMark = usdPriceOf(cf.tokenOut, snap);
-      result = counterfactualFromMark(cf, nowMark);
-      model = "mark";
+      // Strongest evidence first: REAL FILLS printed on the pool inside the
+      // veto window (Alcor swaps tape). A thesis judged by the tape is not a
+      // model — it's what the market actually paid someone else.
+      const tape = cf.poolIds.length > 0
+        ? snap.trades.filter(
+            (t) =>
+              t.poolId === cf.poolIds[0] &&
+              t.timestamp >= cf.registeredAt &&
+              t.timestamp <= now &&
+              t.priceWax > 0,
+          )
+        : [];
+      if (tape.length > 0 && snap.waxUsd > 0) {
+        const tapeMarkUsd = tape[0]!.priceWax * snap.waxUsd; // newest real fill
+        result = counterfactualFromMark(cf, tapeMarkUsd);
+        model = "tape";
+      }
+      if (!result) {
+        const nowMark = usdPriceOf(cf.tokenOut, snap);
+        result = counterfactualFromMark(cf, nowMark);
+        model = "mark";
+      }
     }
     if (!result) continue;
     judged += 1;

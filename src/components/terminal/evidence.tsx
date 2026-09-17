@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
-import { Download, FlaskConical, Loader2, RefreshCw, Trash2 } from "lucide-react";
+import { DatabaseZap, Download, FlaskConical, Loader2, RefreshCw, Trash2 } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
@@ -39,6 +39,8 @@ import {
   type LearningProfiles,
 } from "@/lib/leef/learning";
 import { useTerminal } from "@/store/terminal";
+import { useWallet } from "@/store/wallet";
+import { backfillAccountHistory } from "@/lib/wallet/history-backfill";
 import { useToast } from "@/hooks/useToast";
 import { cn } from "@/lib/utils";
 
@@ -73,7 +75,24 @@ export function Evidence() {
   const [replay, setReplay] = useState<{ summary: ReplaySummary; results: (ReplayResult & { ts: number })[] } | null>(null);
   const [loading, setLoading] = useState(true);
   const [exporting, setExporting] = useState(false);
+  const [backfilling, setBackfilling] = useState(false);
   const [confirmClear, setConfirmClear] = useState(false);
+  const account = useWallet((s) => s.account);
+
+  const doBackfill = async () => {
+    if (!account) return;
+    setBackfilling(true);
+    try {
+      const r = await backfillAccountHistory({ account });
+      toast({
+        title: "Chain backfill",
+        description: `${r.note} · scanned ${fmtNum(r.scanned, { digits: 0 })} actions, ${r.skippedDupe} already known, ${r.skippedShape} non-swap shaped`,
+      });
+      await refresh();
+    } finally {
+      setBackfilling(false);
+    }
+  };
 
   const refresh = useCallback(async () => {
     setLoading(true);
@@ -154,7 +173,9 @@ export function Evidence() {
               <p className="text-sm text-muted-foreground max-w-prose">
                 Append-only record of every decision, exact-quote gate verdict, execution and
                 predicted-vs-realized edge. Persists in this browser across sessions; export it
-                before clearing site data.
+                before clearing site data. "Backfill chain" imports your past swaps from Hyperion
+                (EOSUSA-first history pool) — labeled <code>backfill</code>, never fed into
+                learning profiles (hindsight carries no predictions).
               </p>
             </div>
           </div>
@@ -162,6 +183,16 @@ export function Evidence() {
             <Button variant="outline" size="sm" onClick={() => void refresh()} disabled={loading}>
               {loading ? <Loader2 className="size-4 animate-spin" /> : <RefreshCw className="size-4" />}
               Refresh
+            </Button>
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => void doBackfill()}
+              disabled={backfilling || !account}
+              title="Import your past swaps from Hyperion (EOSUSA-first history pool). Backfilled rows are labeled and never feed learning profiles."
+            >
+              {backfilling ? <Loader2 className="size-4 animate-spin" /> : <DatabaseZap className="size-4" />}
+              Backfill chain
             </Button>
             <Button
               variant="outline"

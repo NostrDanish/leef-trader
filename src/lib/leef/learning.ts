@@ -252,6 +252,8 @@ function labelsFor(e: JournalEntry): { poolLabel: string; routeLabel: string } {
  * are context. Infrastructure failures update failure counts ONLY.
  */
 export function applyEntry(profiles: LearningProfiles, e: JournalEntry, cfg: LearningConfig): void {
+  // Backfilled history has no predictions — it must never teach profiles.
+  if (e.source === "backfill") return;
   const now = e.ts;
   if (e.kind === "execution" && e.poolIds?.length) {
     const { poolLabel } = labelsFor(e);

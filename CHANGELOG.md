@@ -2,6 +2,30 @@
 
 All notable changes to LEEF Trader. Dates are commit-era, not release tags.
 
+## Unreleased — EOSUSA-powered history: backfill + tape-witnessed counterfactuals
+
+Division of labor per venue docs: Alcor's swaps API remains the trade-tape
+source; EOSUSA's no-rate-limit Hyperion (already the primary default in both
+pools) now powers account history:
+
+- **Backfill chain** (Evidence desk): imports the wallet's own past swaps
+  from Hyperion `get_actions` — venue-contract filtered (swap.alcor /
+  swap.box / swap.taco), swap-shaped only (one sent kind + one received kind;
+  same-token round trips land as arbs via gross legs; LP adds/removes and
+  plain transfers excluded by shape), deduped by txid, capped at 400 actions
+  / 30 days. Backfilled rows carry `source: "backfill"` and NEVER feed
+  learning profiles — hindsight carries no predictions, so it can't
+  fabricate calibration. They land in the journal for the audit trail, the
+  desk and the AI's evidence review.
+- **Tape-witnessed counterfactuals:** veto judgments now prefer REAL fills
+  printed on the veto'd pool inside the window (someone else got paid — the
+  thesis was real) over the price-mark model. cfModel gains "tape"; the
+  requote/mark models remain as fallbacks.
+- Tests: `history-backfill.test.ts` (net/swap shape classification incl.
+  same-token round trips, LP/transfer rejection) and
+  `learning-store.test.ts` (tape beats mark, mark fallback, horizon gating,
+  dual-horizon re-registration).
+
 ## Unreleased — Phase 3 seed: market memory (fixtures) + decision replay
 
 - **wax.eosusa.io is now the primary RPC + Hyperion default** (no rate

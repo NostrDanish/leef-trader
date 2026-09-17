@@ -112,8 +112,8 @@ export type JournalEntry = {
   cfLabel?: CounterfactualLabel;
   /** Counterfactual net outcome of the skipped opportunity, percent. */
   cfPct?: number;
-  /** How the counterfactual was measured: price mark or local re-quote. */
-  cfModel?: "mark" | "requote";
+  /** How the counterfactual was measured: price mark, local re-quote, or the real trade tape. */
+  cfModel?: "mark" | "requote" | "tape";
   /** The HOLD reason class being judged. */
   holdReasonClass?: string;
 
@@ -129,6 +129,13 @@ export type JournalEntry = {
   /** compact market context (scalars only) */
   leefUsd?: number;
   waxUsd?: number;
+
+  /**
+   * "backfill" = imported from chain history, not observed live. Carries no
+   * predicted values (unknowable in hindsight) and never feeds learning
+   * profiles — it exists for the audit trail, the desk and the AI review.
+   */
+  source?: "backfill";
 };
 
 /* ------------------------------------------------------------------ */

@@ -49,6 +49,30 @@ rate / P&L / predicted vs realized edge (calibration error) / gate pass-fail,
 plus top gate-failure signatures and storage span. Refresh is manual — the
 desk never polls in the background.
 
+## Counterfactuals get the tape when it exists
+
+Veto judgments pick the strongest available evidence, in order:
+
+1. **tape** — real fills printed on the veto'd pool inside the window
+   (someone else got paid; the thesis was real). From the Alcor swaps tape.
+2. **requote** — the same pair/size re-ranked on the current book (swaps).
+3. **mark** — the oracle price move (entries).
+
+Labels judge the thesis, never the decision's risk correctness.
+
+## Chain backfill (Hyperion, EOSUSA-first)
+
+Evidence desk → "Backfill chain" imports the wallet's own past swaps from
+Hyperion (`get_actions`, venue-contract filtered, swap-shaped only: exactly
+one sent kind + one received kind — LP adds/removes and plain transfers are
+excluded by shape; same-token round trips land as arbs via their gross legs).
+Deduped by txid against already-journaled executions.
+
+Backfilled rows carry `source: "backfill"` and **never feed learning
+profiles** — hindsight has no predicted edge, so they can't fabricate
+calibration. They exist for the audit trail, the desk, and the AI's
+evidence review.
+
 ## What it is NOT
 
 - Not a backtester. Recorded decisions can later feed a **decision replay**
