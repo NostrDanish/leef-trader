@@ -2,6 +2,26 @@
 
 All notable changes to LEEF Trader. Dates are commit-era, not release tags.
 
+## Unreleased — Phase 2b: AI-proposed artifacts + extended learning coverage
+
+- **AI pattern discovery closes the loop (P3, honestly).** The AI desk's
+  evidence_review now ships pool profiles (with scope keys) + artifact states
+  and invites `learning_artifacts` proposals. `extractLearningArtifacts`
+  parses defensively: typed schema only, scope must be a pool with real
+  evidence, values clamped, size multipliers dropped without a destructive
+  bucket. Every AI proposal is **governor-pre-validated** and enters SHADOW —
+  identical rules to deterministic proposals. The AI discovers; statistics
+  decide.
+- **Unified AI mode control** on the AI desk: OFF / SUGGEST /
+  CONTROLLED_LEARNING (drives aiEnabled × learningMode).
+- **Learned size ceilings now cover swaps too** (auto/growth/tape paths) —
+  still shrink-only, still active-artifacts-only. Exits are never
+  learning-gated, by design.
+- **Multi-horizon counterfactuals:** every veto is judged at 5 minutes and
+  again at 30 minutes — label flips between horizons are themselves evidence.
+- **Self-impact coverage extended** to WAX-sided aux pools (Defibox/Taco/
+  Alcor aux), via `poolSpotUsd`.
+
 ## Unreleased — Phase 2: learning engine (evidence → profiles → governed adjustments)
 
 P0/P1 complete, P2 real-but-minimal, P3 honestly deferred

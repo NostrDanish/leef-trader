@@ -304,10 +304,12 @@ export function refreshProposals(now = Date.now()): number {
 /* ------------------------------------------------------------------ */
 
 const pendingCf = new Map<string, PendingCounterfactual>();
-const MAX_PENDING_CF = 30;
 
 /** How long after a HOLD we judge the skipped opportunity. */
 export const CF_HORIZON_MS = 5 * 60_000;
+/** Second read: the 30-minute trend view of the same veto. */
+export const CF_HORIZON_LONG_MS = 30 * 60_000;
+const MAX_PENDING_CF = 60;
 
 export function registerCounterfactual(cf: Omit<PendingCounterfactual, "id" | "registeredAt">): void {
   if (pendingCf.size >= MAX_PENDING_CF) {
@@ -355,6 +357,13 @@ export function evaluateDueCounterfactuals(snap: LeefSnapshot, now = Date.now())
     }
     if (!result) continue;
     judged += 1;
+    // Dual horizon: after the short-horizon read, re-register the same veto
+    // for the long-horizon trend read (labels may legitimately flip — that
+    // flip is itself evidence).
+    if (cf.horizonMs <= CF_HORIZON_MS) {
+      const id2 = `${id}-long`;
+      pendingCf.set(id2, { ...cf, id: id2, horizonMs: CF_HORIZON_LONG_MS });
+    }
     journal({
       kind: "counterfactual",
       strategy: cf.strategy,
@@ -387,6 +396,8 @@ export function evaluateDueCounterfactuals(snap: LeefSnapshot, now = Date.now())
 
 type PendingImpact = {
   poolId: number;
+  /** True when the pool lives in snap.aux (Defibox/Taco/Alcor aux), not snap.pools. */
+  aux: boolean;
   preSpotUsd: number;
   sizeUsd: number;
   action: string;
@@ -404,6 +415,33 @@ export function registerSelfImpact(p: PendingImpact): void {
 }
 
 /**
+ * USD spot of a pool's priced token: LEEF pools via waxPerLeef; aux pools
+ * via the WAX side's reserve ratio. 0 when not derivable.
+ */
+export function poolSpotUsd(
+  pools: LeefSnapshot["pools"],
+  aux: LeefSnapshot["aux"],
+  poolId: number,
+  waxUsd: number,
+): number {
+  if (!(waxUsd > 0)) return 0;
+  const main = pools.find((x) => x.id === poolId);
+  if (main) {
+    const waxPerLeef = main.waxPerLeef ?? (main.leefPerPair > 0 ? 1 / main.leefPerPair : 0);
+    return waxPerLeef > 0 ? waxPerLeef * waxUsd : 0;
+  }
+  const a = aux.find((x) => x.id === poolId);
+  if (!a) return 0;
+  const waxIsA = a.tokenA.symbol.toUpperCase() === "WAX" && a.tokenA.contract === "eosio.token";
+  const waxIsB = a.tokenB.symbol.toUpperCase() === "WAX" && a.tokenB.contract === "eosio.token";
+  if (!waxIsA && !waxIsB) return 0;
+  const waxQty = waxIsA ? a.tokenA.quantity : a.tokenB.quantity;
+  const tokQty = waxIsA ? a.tokenB.quantity : a.tokenA.quantity;
+  if (!(waxQty > 0) || !(tokQty > 0)) return 0;
+  return (waxQty / tokQty) * waxUsd;
+}
+
+/**
  * On the next fresh snapshot, measure the primary pool's spot move around
  * our fill. Upper-bound estimate (includes market drift) — labeled as such.
  */
@@ -415,10 +453,7 @@ export function measureDueSelfImpact(snap: LeefSnapshot, now = Date.now()): void
     pendingImpact = null;
     return;
   }
-  const pool = snap.pools.find((x) => x.id === p.poolId);
-  if (!pool || !(snap.waxUsd > 0)) return;
-  const waxPerLeef = pool.waxPerLeef ?? (pool.leefPerPair > 0 ? 1 / pool.leefPerPair : 0);
-  const post = waxPerLeef > 0 ? waxPerLeef * snap.waxUsd : 0;
+  const post = poolSpotUsd(snap.pools, snap.aux, p.poolId, snap.waxUsd);
   if (!(post > 0) || !(p.preSpotUsd > 0)) return;
   pendingImpact = null;
   const selfImpactPct = ((post - p.preSpotUsd) / p.preSpotUsd) * 100;
@@ -432,10 +467,52 @@ export function measureDueSelfImpact(snap: LeefSnapshot, now = Date.now()): void
     routeSig: p.routeSig,
     tokenIn: p.tokenIn,
     tokenOut: p.tokenOut,
-    reason: `self-impact (upper bound, incl. drift): pool #${p.poolId} spot ${selfImpactPct >= 0 ? "+" : ""}${selfImpactPct.toFixed(3)}% after our ${p.action}`,
+    reason: `self-impact (upper bound, incl. drift): ${p.aux ? "aux " : ""}pool #${p.poolId} spot ${selfImpactPct >= 0 ? "+" : ""}${selfImpactPct.toFixed(3)}% after our ${p.action}`,
     leefUsd: snap.leefUsd,
     waxUsd: snap.waxUsd,
   });
+}
+
+/**
+ * Inject externally-proposed artifacts (AI pattern discovery). The governor
+ * pre-validates every proposal — rejections never reach the desk. Accepted
+ * proposals enter as SHADOW; promotion follows the same rules as
+ * deterministic proposals. Discovery is the AI's role; authority is the
+ * governor's.
+ */
+export function injectArtifacts(list: LearningArtifact[]): { added: number; rejected: number } {
+  let added = 0;
+  let rejected = 0;
+  for (const a of list) {
+    const existing = artifacts[a.id];
+    if (existing && (existing.status === "shadow" || existing.status === "active")) continue;
+    const decision = governArtifact(a, Date.now(), cfg);
+    if (decision.action === "reject" || decision.action === "expire") {
+      rejected += 1;
+      journal({
+        kind: "learning",
+        artifactId: a.id,
+        artifactType: a.type,
+        artifactStatus: "rejected",
+        reason: `AI proposal rejected by governor: ${decision.reason}`,
+      });
+      continue;
+    }
+    artifacts[a.id] = a;
+    added += 1;
+    journal({
+      kind: "learning",
+      artifactId: a.id,
+      artifactType: a.type,
+      artifactStatus: "shadow",
+      artifactValue: a.value,
+      samples: a.samples,
+      confidence: a.confidence,
+      reason: "AI-proposed artifact → shadow (governor-validated)",
+    });
+  }
+  if (added > 0) schedulePersist();
+  return { added, rejected };
 }
 
 /* ------------------------------------------------------------------ */

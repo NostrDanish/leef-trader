@@ -28,6 +28,7 @@ import {
   learnedSlippageOverride,
   learningBooted,
   measureDueSelfImpact,
+  poolSpotUsd,
   refreshProposals,
   registerCounterfactual,
   registerSelfImpact,
@@ -222,7 +223,7 @@ function routeJournalMeta(route: SwapRoute, amountIn: number, pxIn: number) {
 /**
  * Register a self-impact measurement after a confirmed live fill: the next
  * snapshot's pool spot is compared against this pre-trade spot. LEEF pools
- * only (their spot is derivable from the book); aux pools are skipped.
+ * and WAX-sided aux pools are measurable.
  */
 function noteSelfImpact(
   book: LeefSnapshot,
@@ -233,13 +234,11 @@ function noteSelfImpact(
   tokenOut: string,
 ): void {
   if (poolId == null) return;
-  const pool = book.pools.find((p) => p.id === poolId);
-  if (!pool) return;
-  const waxPerLeef = pool.waxPerLeef ?? (pool.leefPerPair > 0 ? 1 / pool.leefPerPair : 0);
-  const pre = waxPerLeef > 0 ? waxPerLeef * book.waxUsd : 0;
+  const pre = poolSpotUsd(book.pools, book.aux, poolId, book.waxUsd);
   if (!(pre > 0)) return;
   registerSelfImpact({
     poolId,
+    aux: !book.pools.some((p) => p.id === poolId),
     preSpotUsd: pre,
     sizeUsd,
     action,
@@ -678,6 +677,35 @@ async function runBotOnceInner(
   // unusable concentration. It may resize a buy to the actually deployable
   // amount; strategy decides WHAT, governor decides HOW MUCH.
   if (decision.kind === "swap") {
+    // Learned size ceiling — ACTIVE artifacts only, can only shrink. Applies
+    // to swaps (incl. growth/tape); exits are never learning-gated.
+    {
+      const lv0 = decision.route.legs[0]?.venue ?? "alcor";
+      const lp0 = decision.route.poolIds[0];
+      const mult = lp0 != null ? learnedSizeCeilingMult(lv0, lp0) : 1;
+      if (mult < 1) {
+        const shrunk = decision.amountIn * mult;
+        const rerouted = bestExecutionRoute(
+          book.pools,
+          book.aux,
+          shrunk,
+          decision.tokenIn,
+          decision.tokenOut,
+        );
+        if (!rerouted) {
+          const reason = `Learned ceiling ×${mult.toFixed(2)} left no viable route — sitting out`;
+          b.pushDecision({ kind: "hold", mode, reason, priceUsd: book.leefUsd });
+          b.setLastReason(reason);
+          return { kind: "hold", reason };
+        }
+        decision = {
+          ...decision,
+          amountIn: shrunk,
+          route: rerouted,
+          reason: `${decision.reason} · learned ceiling ×${mult.toFixed(2)}`,
+        };
+      }
+    }
     const governed = governTrade(book, balances, {
       tokenIn: decision.tokenIn,
       tokenOut: decision.tokenOut,

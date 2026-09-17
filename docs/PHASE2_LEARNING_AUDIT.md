@@ -52,9 +52,12 @@ market → strategies → size/route optimization ──▶ exact gate → … �
 | Shadow mode | shadow error sums updated per confirmed fill (`learning-store.ts::onEntry`), journaled per sample | IMPLEMENTED |
 | Promotion | SUGGEST: human button (governor still validates). CONTROLLED: auto on govern=promote | IMPLEMENTED |
 | Rollback | `rollbackArtifact` (reverts to deterministic default) + auto-rollback on shadow/active regression + human button | IMPLEMENTED |
-| AI batch artifact generation | — | DEFERRED (P3 — proposals are deterministic for now; the AI desk's evidence_review receives profiles/artifacts as context) |
-| Replay engine | — | DEFERRED (decision replay needs snapshot fixtures; the journal records context, not full books) |
-| CONTROLLED_LEARNING with AI-proposed artifacts | — | DEFERRED (P3; the mode switch exists and governs deterministic artifacts today) |
+| AI batch artifact generation | `learning.ts::extractLearningArtifacts` + `learning-store.ts::injectArtifacts` + `ai-desk.tsx` evidence_review flow | IMPLEMENTED (typed-only, evidence-scoped, governor-pre-validated, shadow-first; the AI discovers, statistics decide) |
+| Replay engine | — | DEFERRED (decision replay needs book fixtures; the journal records context, not books — a separate storage design) |
+| AI modes OFF / SUGGEST / CONTROLLED | `ai-desk.tsx` 3-state control → `terminal.aiEnabled` × `terminal.learningMode` | IMPLEMENTED (CONTROLLED governs deterministic AND AI-proposed artifacts identically) |
+| Learned adjustments beyond buy path | swap/growth decisions get the size ceiling (`use-bot-loop.ts` swap block); exits are never learning-gated by design | IMPLEMENTED (sells untouched deliberately) |
+| Multi-horizon counterfactuals | `CF_HORIZON_LONG_MS` (30m) re-registration after the 5m read | IMPLEMENTED |
+| Self-impact beyond LEEF pools | `learning-store.ts::poolSpotUsd` (WAX-sided aux pools) | IMPLEMENTED |
 
 ## Data flow (proof of the feedback loop)
 
@@ -124,19 +127,18 @@ vetoes are deliberately NOT counterfactualed (no honest mark for a spread).
 
 ## Remaining gaps (honest)
 
-1. No AI-generated artifacts yet (P3) — proposals are deterministic
-   statistics; the AI desk only RECEIVES profile context.
-2. No replay engine — the journal stores decision context, not full books.
-3. Self-impact is an upper bound (includes market drift); split legs and
-   non-LEEF primary pools aren't measured.
-4. Learned size adjustment applies to the buy path ceiling only; sell/swap
-   paths read slippage override only via… (not wired — buy path only).
-5. Counterfactual horizon is fixed at 5 minutes; no multi-horizon analysis.
-6. Profiles rebuild from the full journal on boot — fine to ~60k entries;
+1. No replay engine — the journal stores decision context, not full books.
+2. Self-impact is an upper bound (includes market drift); non-WAX-sided aux
+   pools and non-primary legs aren't measured.
+3. Counterfactual horizons are 5m + 30m — no intraday trend.
+4. Profiles rebuild from the full journal on boot — fine to ~60k entries;
    needs incremental checkpointing beyond that.
-7. ~~Shadow scoring covers slippage artifacts only~~ — FIXED during the
-   audit: size-multiplier artifacts shadow-watch their destructive bucket
-   (`watchBucket`) and promote only if fresh confirmed fills keep it
-   negative; a recovered bucket voids the proposal (or rolls back an active
-   one). Test: `learning.test.ts::learning governor::size artifacts promote
-   only when the watched bucket stays destructive…`.
+5. Learned slippage override feeds the buy path's cost model; the swap gate's
+   floor comparison uses exact venue quotes already — learned slippage there
+   would be redundant shading, deliberately skipped.
+6. Size-multiplier artifacts shadow-watch a single bucket (the first
+   destructive one); multi-bucket destructive patterns promote conservatively.
+7. Shadow scoring for size artifacts: `learning.test.ts::learning governor::
+   size artifacts promote only when the watched bucket stays destructive…`
+   — promotes only if fresh confirmed fills keep the bucket negative; a
+   recovered bucket voids the proposal (or rolls back an active one).

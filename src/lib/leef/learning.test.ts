@@ -9,6 +9,7 @@ import {
   counterfactualFromMark,
   counterfactualFromNetPct,
   DEFAULT_LEARNING_CONFIG,
+  extractLearningArtifacts,
   governArtifact,
   labelCounterfactual,
   learnedSizeMultiplier,
@@ -307,6 +308,93 @@ describe("learning governor", () => {
     const rolled = rollbackArtifact({ ...base, status: "active", value: 0.4 });
     expect(rolled.status).toBe("rolled_back");
     expect(rolled.value).toBe(base.previousValue);
+  });
+});
+
+describe("AI-proposed artifacts (defensive parse)", () => {
+  const profilesWith = (n: number, over: Partial<JournalEntry> = {}) => fillProfiles(n, over);
+
+  it("parses a valid, evidence-scoped slippage proposal into shadow", () => {
+    const profiles = profilesWith(CFG.minSamplesSlippage);
+    const out = extractLearningArtifacts(
+      {
+        learning_artifacts: [
+          { type: "POOL_SLIPPAGE_PROFILE", scopeKey: "pool:alcor:217", value: 0.3, confidence: 0.8 },
+        ],
+      },
+      profiles,
+      T0 + 86_400_000,
+      CFG,
+      { slippagePct: 0.05 },
+    );
+    expect(out).toHaveLength(1);
+    expect(out[0]!.status).toBe("shadow");
+    expect(out[0]!.value).toBe(0.3);
+    expect(out[0]!.id).toBe("POOL_SLIPPAGE_PROFILE:pool:alcor:217");
+  });
+
+  it("drops unknown scope, wrong type, and non-finite values", () => {
+    const profiles = profilesWith(CFG.minSamplesSlippage);
+    const out = extractLearningArtifacts(
+      {
+        learning_artifacts: [
+          { type: "POOL_SLIPPAGE_PROFILE", scopeKey: "pool:alcor:999", value: 0.3 }, // no evidence
+          { type: "DISABLE_RISK", scopeKey: "pool:alcor:217", value: 1 }, // not a type
+          { type: "POOL_SLIPPAGE_PROFILE", scopeKey: "pool:alcor:217", value: "lots" },
+          { type: "POOL_SLIPPAGE_PROFILE", scopeKey: "pool:alcor:217", value: NaN },
+        ],
+      },
+      profiles,
+      T0 + 86_400_000,
+      CFG,
+      { slippagePct: 0.05 },
+    );
+    expect(out).toHaveLength(0);
+    expect(extractLearningArtifacts({ summary: "no artifacts" }, profiles, T0, CFG, { slippagePct: 0.05 })).toEqual([]);
+  });
+
+  it("clamps out-of-range values (the governor still validates after)", () => {
+    const profiles = profilesWith(CFG.minSamplesSlippage);
+    const out = extractLearningArtifacts(
+      { learning_artifacts: [{ type: "POOL_SLIPPAGE_PROFILE", scopeKey: "pool:alcor:217", value: 42 }] },
+      profiles,
+      T0 + 86_400_000,
+      CFG,
+      { slippagePct: 0.05 },
+    );
+    expect(out[0]!.value).toBe(CFG.slipClampMaxPct);
+  });
+
+  it("drops size multipliers for pools with no destructive bucket", () => {
+    const healthy = profilesWith(CFG.minSamplesSizeCurve, { sizeUsd: 0.6, predEdgePct: 1, realizedEdgePct: 0.5 });
+    const out = extractLearningArtifacts(
+      { learning_artifacts: [{ type: "POOL_SIZE_MULTIPLIER", scopeKey: "pool:alcor:217", value: 0.7 }] },
+      healthy,
+      T0 + 86_400_000,
+      CFG,
+      { slippagePct: 0.05 },
+    );
+    expect(out).toHaveLength(0);
+  });
+
+  it("accepts a size multiplier with a destructive bucket and sets watchBucket", () => {
+    const p: LearningProfiles = {};
+    for (let i = 0; i < 8; i++) {
+      applyEntry(p, execEntry({ ts: T0 + i * 60_000, sizeUsd: 1.5, predEdgePct: 1, realizedEdgePct: 0.4 }), CFG);
+    }
+    for (let i = 0; i < 4; i++) {
+      applyEntry(p, execEntry({ ts: T0 + (10 + i) * 60_000, sizeUsd: 6, predEdgePct: 1, realizedEdgePct: -1 }), CFG);
+    }
+    const out = extractLearningArtifacts(
+      { learning_artifacts: [{ type: "POOL_SIZE_MULTIPLIER", scopeKey: "pool:alcor:217", value: 0.6 }] },
+      p,
+      T0 + 86_400_000,
+      CFG,
+      { slippagePct: 0.05 },
+    );
+    expect(out).toHaveLength(1);
+    expect(out[0]!.watchBucket).toBe(5);
+    expect(out[0]!.value).toBe(0.6);
   });
 });
 

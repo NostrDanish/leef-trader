@@ -12,7 +12,6 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
-import { Switch } from "@/components/ui/switch";
 import {
   aiBudget,
   aiHealth,
@@ -30,9 +29,15 @@ import {
   bootLearning,
   getArtifacts,
   getProfiles,
+  injectArtifacts,
   refreshProposals,
 } from "@/lib/leef/learning-store";
-import { bucketMeanEdge, SIZE_BUCKET_LABELS } from "@/lib/leef/learning";
+import {
+  bucketMeanEdge,
+  DEFAULT_LEARNING_CONFIG,
+  extractLearningArtifacts,
+  SIZE_BUCKET_LABELS,
+} from "@/lib/leef/learning";
 import type { LeefSnapshot } from "@/lib/leef/types";
 import { useBot } from "@/store/bot";
 import { useTerminal } from "@/store/terminal";
@@ -258,6 +263,7 @@ async function evidenceContext(): Promise<Record<string, unknown>> {
     .sort((a, b) => b.executions - a.executions)
     .slice(0, 10)
     .map((p) => ({
+      key: p.key, // the AI must reference this exact scopeKey in proposals
       pool: p.label,
       executions: p.executions,
       confirmed: p.buckets.reduce((s, b) => s + b.confirmed, 0),
@@ -272,6 +278,13 @@ async function evidenceContext(): Promise<Record<string, unknown>> {
         .filter(Boolean),
     }));
   return {
+    instruction:
+      "Review the evidence. If — and only if — the data supports it, you may add a " +
+      "`learning_artifacts` array of {type, scopeKey, value, confidence, reason}. " +
+      "type must be POOL_SLIPPAGE_PROFILE (expected realized slippage %, 0.02–0.75) or " +
+      "POOL_SIZE_MULTIPLIER (size-ceiling factor, 0.5–1.0; 1 = no constraint). scopeKey " +
+      "must be a `key` from poolProfiles. Every proposal is shadow-tested by the " +
+      "deterministic LearningGovernor before it can affect anything.",
     stats: aggregateEntries(entries),
     poolProfiles,
     artifacts: getArtifacts().map((a) => ({
@@ -327,7 +340,23 @@ export function AiDesk({ snap }: { snap: LeefSnapshot }) {
   const setAiGatewayUrl = useTerminal((s) => s.setAiGatewayUrl);
   const aiEnabled = useTerminal((s) => s.aiEnabled);
   const setAiEnabled = useTerminal((s) => s.setAiEnabled);
+  const learningMode = useTerminal((s) => s.learningMode);
+  const setLearningMode = useTerminal((s) => s.setLearningMode);
   const strategy = useBot((s) => s.strategy);
+
+  /** Unified 3-state: OFF / SUGGEST / CONTROLLED_LEARNING. */
+  const aiMode: "off" | "suggest" | "controlled" = !aiEnabled
+    ? "off"
+    : learningMode === "controlled"
+      ? "controlled"
+      : "suggest";
+  const setAiMode = (m: "off" | "suggest" | "controlled") => {
+    if (m === "off") setAiEnabled(false);
+    else {
+      setAiEnabled(true);
+      setLearningMode(m === "controlled" ? "controlled" : "suggest");
+    }
+  };
 
   const [urlDraft, setUrlDraft] = useState(aiGatewayUrl);
   const [health, setHealth] = useState<"unknown" | "checking" | "ok" | "down">("unknown");
@@ -364,6 +393,33 @@ export function AiDesk({ snap }: { snap: LeefSnapshot }) {
         reason: `${task}: ok · ${result.raw.slice(0, 180)}`,
         latencyMs: Date.now() - t0,
       });
+      if (task === "evidence_review") {
+        // AI pattern discovery: typed proposals only, governor-validated,
+        // shadow-first. The analyst discovers; statistics decide.
+        const proposed = extractLearningArtifacts(
+          result.content,
+          getProfiles(),
+          Date.now(),
+          DEFAULT_LEARNING_CONFIG,
+          { slippagePct: 0.05 },
+        );
+        if (proposed.length > 0) {
+          const r = injectArtifacts(proposed);
+          if (r.added > 0) {
+            toast({
+              title: `AI proposed ${r.added} learning artifact${r.added === 1 ? "" : "s"}`,
+              description: "Shadow-testing on the Evidence desk — nothing is applied without proof.",
+            });
+          }
+          if (r.rejected > 0) {
+            toast({
+              title: `Governor rejected ${r.rejected} AI proposal${r.rejected === 1 ? "" : "s"}`,
+              description: "Failed schema, clamp, evidence or scope checks.",
+              variant: "destructive",
+            });
+          }
+        }
+      }
     } catch (err) {
       const msg = err instanceof Error ? err.message : "AI call failed";
       const failure = err instanceof AiError ? err.failure : undefined;
@@ -398,14 +454,31 @@ export function AiDesk({ snap }: { snap: LeefSnapshot }) {
             </div>
           </div>
           <div className="flex items-center gap-3">
-            <label className="flex items-center gap-2 text-sm text-muted-foreground cursor-pointer select-none">
-              <Switch
-                checked={aiEnabled}
-                onCheckedChange={setAiEnabled}
-                aria-label="Enable AI analyst"
-              />
-              {aiEnabled ? "AI on" : "AI off"}
-            </label>
+            <div className="flex rounded-lg border border-border overflow-hidden" role="radiogroup" aria-label="AI mode">
+              {(
+                [
+                  ["off", "OFF"],
+                  ["suggest", "SUGGEST"],
+                  ["controlled", "CONTROLLED"],
+                ] as const
+              ).map(([m, label]) => (
+                <button
+                  key={m}
+                  type="button"
+                  role="radio"
+                  aria-checked={aiMode === m}
+                  onClick={() => setAiMode(m)}
+                  className={cn(
+                    "px-2.5 py-1.5 text-xs transition-colors",
+                    aiMode === m
+                      ? "bg-accent/15 text-foreground"
+                      : "text-muted-foreground hover:text-foreground",
+                  )}
+                >
+                  {label}
+                </button>
+              ))}
+            </div>
             <Badge
               variant="outline"
               className={cn(
@@ -436,8 +509,11 @@ export function AiDesk({ snap }: { snap: LeefSnapshot }) {
 
         {!aiEnabled ? (
           <div className="mt-4 rounded-lg border border-dashed p-4 text-sm text-muted-foreground">
-            AI is off — zero calls leave this browser. Flip the switch to enable the analyst.
-            Trading never depends on it either way.
+            AI is OFF — zero calls leave this browser. <span className="font-medium">SUGGEST</span>:
+            analyst on demand, learning artifacts shadow until you promote them.{" "}
+            <span className="font-medium">CONTROLLED</span>: the deterministic governor may
+            auto-promote artifacts that beat their baseline on fresh evidence. Trading never
+            depends on any of it.
           </div>
         ) : (
           <div className="mt-4 flex flex-wrap items-center gap-2">

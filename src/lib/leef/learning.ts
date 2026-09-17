@@ -676,3 +676,76 @@ export function governArtifact(
 export function rollbackArtifact(a: LearningArtifact): LearningArtifact {
   return { ...a, value: a.previousValue, status: "rolled_back" };
 }
+
+/* ------------------------------------------------------------------ */
+/* AI-proposed artifacts (defensive parse — discovery, never authority) */
+/* ------------------------------------------------------------------ */
+
+const AI_ARTIFACT_TYPES = new Set<ArtifactType>([
+  "POOL_SLIPPAGE_PROFILE",
+  "POOL_SIZE_MULTIPLIER",
+]);
+
+/**
+ * Extract typed artifact proposals from an analyst's JSON response. The AI
+ * may ONLY propose within the typed schema, only for pools that have real
+ * evidence (scopeKey must be an existing profile), and only finite values —
+ * every result still goes through governArtifact, which enforces clamps,
+ * sample floors and expiry. Garbage in → nothing out.
+ */
+export function extractLearningArtifacts(
+  content: unknown,
+  profiles: LearningProfiles,
+  now: number,
+  cfg: LearningConfig,
+  defaults: { slippagePct: number },
+): LearningArtifact[] {
+  const list = (content as { learning_artifacts?: unknown } | null)?.learning_artifacts;
+  if (!Array.isArray(list)) return [];
+  const out: LearningArtifact[] = [];
+  for (const raw of list) {
+    const o = raw as {
+      type?: unknown;
+      scopeKey?: unknown;
+      value?: unknown;
+      confidence?: unknown;
+      reason?: unknown;
+    };
+    if (typeof o?.type !== "string" || !AI_ARTIFACT_TYPES.has(o.type as ArtifactType)) continue;
+    const type = o.type as ArtifactType;
+    const scopeKey = typeof o.scopeKey === "string" ? o.scopeKey : "";
+    const profile = profiles[scopeKey];
+    if (!profile) continue; // AI may only scope to pools with real evidence
+    if (typeof o.value !== "number" || !Number.isFinite(o.value)) continue;
+    const value =
+      type === "POOL_SIZE_MULTIPLIER"
+        ? Math.min(cfg.sizeMultMax, Math.max(cfg.sizeMultMin, o.value))
+        : Math.min(cfg.slipClampMaxPct, Math.max(cfg.slipClampMinPct, o.value));
+    const samples = profile.buckets.reduce((s, b) => s + b.confirmed, 0);
+    let watchBucket: number | undefined;
+    if (type === "POOL_SIZE_MULTIPLIER") {
+      const idx = profile.buckets.findIndex(
+        (b, i) => i > 0 && b.confirmed >= cfg.minSamplesBucket && (bucketMeanEdge(b) ?? 0) < 0,
+      );
+      if (idx < 0) continue; // no destructive bucket — nothing to shadow-watch
+      watchBucket = idx;
+    }
+    out.push({
+      id: `${type}:${scopeKey}`,
+      type,
+      scopeKey,
+      value,
+      previousValue: type === "POOL_SIZE_MULTIPLIER" ? 1 : defaults.slippagePct,
+      maxAllowedChange:
+        type === "POOL_SIZE_MULTIPLIER" ? 1 - cfg.sizeMultMin : cfg.slipClampMaxPct,
+      samples,
+      confidence: confidenceFromSamples(samples, cfg.minSamplesSlippage),
+      createdAt: now,
+      expiresAt: now + cfg.artifactTtlMs,
+      status: "shadow",
+      shadow: { n: 0, baselineErrSum: 0, learnedErrSum: 0 },
+      watchBucket,
+    });
+  }
+  return out;
+}
