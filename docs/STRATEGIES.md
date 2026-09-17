@@ -8,6 +8,27 @@ that ranks already-scored opportunities by expected value
 (`net × execProb × freshness × inventory × calibration`) — not by headline
 percent. Exits are never edge-gated (risk actions must always fire).
 
+**Any pair is tradable.** Base and quote accept any liquid universe token
+(WAX as base, LEEF as quote, TACO/WUF — whatever books exist). LEEF is the
+default beneficiary — LEEF-touching routes win near-ties
+(`preferLeefNearTies`, 0.5% band) and the volume engine prefers it when
+costs allow — never a requirement, never at a loss, never at market-crashing
+impact (the depth guard splits or skips). The manual Quotes desk swaps any
+liquid universe token, including same-token round trips (cycles) which are
+venue-verified with a guaranteed-no-loss floor before signing.
+
+**Learning-aware sizing.** Governor-promoted artifacts from the evidence
+journal can adjust the deterministic math within hard clamps: realized
+slippage estimates (0.02–0.75%) feed the cost model, and size ceilings can
+shrink (never grow) when a size bucket is proven destructive. Details:
+[PHASE2_LEARNING_AUDIT](./PHASE2_LEARNING_AUDIT.md).
+
+**AI assistance.** The analyst reviews strategy config on demand (AI desk)
+and auto-reviews the evidence journal every N trades (default 8, settable
+5/10/20), proposing typed learning artifacts that shadow-test before they
+can affect anything. It never signs, never gates, never trades. Details:
+[AI](./AI.md).
+
 ## Regime engine + exact-quote gate (Strategy V2 layer)
 
 **Regime engine** (`src/lib/leef/regime.ts`): one deterministic

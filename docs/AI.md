@@ -47,11 +47,26 @@ gates as everything else.
 The worker pairs `data` with its own server-side system prompt — the client
 cannot inject a system prompt or pick a different model.
 
-## Master switch
+## Master switch + modes
 
-The AI desk has an **AI on/off toggle** (persisted per browser). Off means
-exactly zero calls leave the browser — no health ping, no tasks. Trading
-never depends on the analyst either way.
+The AI desk has a three-state mode control (persisted per browser):
+
+- **OFF** — exactly zero calls leave the browser. Trading is unaffected.
+- **SUGGEST** (default) — on-demand analyses; learning artifacts shadow until
+  a human promotes them on the Evidence desk.
+- **CONTROLLED** — the deterministic LearningGovernor may auto-promote
+  artifacts that beat their baseline on fresh evidence. Still no AI
+  signature authority anywhere.
+
+## Auto-review (AI live helper)
+
+When the bot is running and AI isn't OFF, the analyst reads the evidence
+journal **every N trades** (default 8; 5/10/20 selectable on the AI desk)
+and may propose typed `learning_artifacts`. Every proposal is parsed
+defensively (typed schema, evidence-scoped, clamped) and governor-validated
+before entering shadow — auto-review can never touch the trade path
+directly. Failures are journal lines, never incidents; the engine trades on
+while a review is in flight.
 
 ## Setup checklist
 

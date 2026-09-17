@@ -179,19 +179,20 @@ export const useBot = create<BotState>()(
         set({ strategy, gridAnchor: null, lastReason: `Strategy: ${strategy}` }),
       setBase: (base) => {
         const next = base.toUpperCase();
-        if (next === "WAX") return;
+        // Any token may be base — LEEF is the default bias, never a
+        // requirement. Picking the current quote just flips the pair.
         set((s) => ({
           base: next,
-          quote: s.quote === next ? (next === "LEEF" ? "WAX" : s.quote) : s.quote,
+          quote: s.quote === next ? s.base : s.quote,
           gridAnchor: null,
           lastReason: `Base: ${next}`,
         }));
       },
       setQuote: (quote) => {
         const next = quote.toUpperCase();
-        if (next === "LEEF") return;
         set((s) => ({
-          quote: next === s.base ? s.quote : next,
+          quote: next,
+          base: s.base === next ? s.quote : s.base,
           gridAnchor: null,
           lastReason: `Quote: ${next}`,
         }));

@@ -6,6 +6,7 @@ import { verifyExecutableRoute } from "@/lib/leef/quote-verify";
 import { TradeError } from "./trade-error";
 import { fetchAlcorRoute, parseAssetAmount, type AlcorRouteQuote } from "./alcor-route";
 import {
+  delegateBwData,
   packAddLiquid,
   packCollect,
   packDelegateBw,
@@ -19,7 +20,6 @@ import {
   type AddLiquidData,
   type ChainInfo,
   type CollectData,
-  type DelegateBwData,
   type SubLiquidData,
   type TransferActionData,
 } from "./antelope";
@@ -71,11 +71,15 @@ async function buildTransfers(opts: {
   const tokenIn = metaOf(opts.route.tokenIn, opts.snap);
   const tokenOut = metaOf(opts.route.tokenOut, opts.snap);
 
-  if (allAlcor(opts.route)) {
+  const isCycle =
+    opts.route.tokenIn.toUpperCase() === opts.route.tokenOut.toUpperCase();
+  if (allAlcor(opts.route) && !isCycle) {
     // Sign the gate-approved quote when we have it; otherwise fetch fresh.
     // A cached memo can carry a min-out the market no longer clears, which
     // the chain reverts — but a quote the gate approved seconds ago IS the
     // economically evaluated one.
+    // Cycles never take this path: the Alcor router rejects input===output
+    // (403), so cycles verify + build leg-by-leg below.
     const quote =
       opts.preQuoted ??
       (await fetchAlcorRoute({
@@ -436,13 +440,7 @@ export async function signAndPushStakeCpu(opts: {
   waxAmount: number;
 }): Promise<{ txid: string }> {
   const owner = walletSession() ? String(walletSession()!.actor) : opts.account;
-  const data: DelegateBwData = {
-    from: owner,
-    receiver: owner,
-    stakeNetQuantity: "0.00000000 WAX",
-    stakeCpuQuantity: `${opts.waxAmount.toFixed(8)} WAX`,
-    transfer: false,
-  };
+  const data = delegateBwData(owner, opts.waxAmount);
   return await dispatchActions({
     account: owner,
     permission: opts.permission,

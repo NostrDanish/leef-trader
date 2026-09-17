@@ -52,6 +52,8 @@ type TerminalState = {
    * CONTROLLED = the deterministic governor may auto-promote proven artifacts.
    */
   learningMode: "suggest" | "controlled";
+  /** Auto evidence review cadence: the AI reviews every N trades (5/10/20). */
+  aiReviewEveryTrades: number;
   poolQuery: string;
   poolSort:
     | "score"
@@ -79,6 +81,7 @@ type TerminalState = {
   selectRoute: (id: string | null) => void;
   setAiEnabled: (on: boolean) => void;
   setLearningMode: (mode: "suggest" | "controlled") => void;
+  setAiReviewEveryTrades: (n: number) => void;
   flipSwap: () => void;
   setPoolQuery: (q: string) => void;
   setPoolSort: (k: TerminalState["poolSort"]) => void;
@@ -101,6 +104,7 @@ export const useTerminal = create<TerminalState>()(
   selectedRouteSig: null,
   aiEnabled: true,
   learningMode: "suggest",
+  aiReviewEveryTrades: 8,
   poolQuery: "",
   poolSort: "tvl",
   poolDir: "desc",
@@ -126,6 +130,8 @@ export const useTerminal = create<TerminalState>()(
   selectRoute: (selectedRouteSig) => set({ selectedRouteSig }),
   setAiEnabled: (aiEnabled) => set({ aiEnabled }),
   setLearningMode: (learningMode) => set({ learningMode }),
+  setAiReviewEveryTrades: (n) =>
+    set({ aiReviewEveryTrades: Math.min(50, Math.max(3, Math.round(n))) }),
     }),
     {
       name: "leef-terminal-sync",
@@ -136,6 +142,7 @@ export const useTerminal = create<TerminalState>()(
         swapMaxHops: s.swapMaxHops,
         aiEnabled: s.aiEnabled,
         learningMode: s.learningMode,
+        aiReviewEveryTrades: s.aiReviewEveryTrades,
       }),
     },
   ),

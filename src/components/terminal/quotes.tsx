@@ -40,10 +40,14 @@ export function Quotes({
   const selectRoute = useTerminal((s) => s.selectRoute);
   const head = headline(ranked);
 
-  const tokens = useMemo(
-    () => pairTokens(snap.pools, [tokenIn, tokenOut]),
-    [snap.pools, tokenIn, tokenOut],
-  );
+  // Any liquid universe token is tradeable here — not just LEEF pairs.
+  const tokens = useMemo(() => {
+    const set = new Set(pairTokens(snap.pools, [tokenIn, tokenOut]));
+    for (const u of snap.universe) {
+      if (u.usdPrice > 0 && u.tvlUsd >= 15 && !u.alcorScam) set.add(u.symbol.toUpperCase());
+    }
+    return [...set];
+  }, [snap.pools, snap.universe, tokenIn, tokenOut]);
   const amount = Number(amountIn) || 0;
 
   const routes = useMemo(

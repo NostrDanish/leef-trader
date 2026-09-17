@@ -2,6 +2,40 @@
 
 All notable changes to LEEF Trader. Dates are commit-era, not release tags.
 
+## Unreleased — Any-pair trading + AI auto-review + two real bug fixes
+
+- **Fix: CPU staking was 100% broken.** `signAndPushStakeCpu` built its
+  policy-visible action data with camelCase fields (`stakeCpuQuantity`) while
+  the firewall (correctly) reads the chain ABI names (`stake_cpu_quantity`).
+  Every stake died at the policy check before any signer saw it. Root-caused
+  to the type itself: `DelegateBwData` now uses the chain ABI field names —
+  correct for the wire packer, the policy firewall, AND external wallets
+  (WCW/Anchor receive `plain` as-is). Regression test: the signer's own
+  builder output must pass `assertActionPolicy`.
+- **Fix: same-token round trips refused despite a real route.** Alcor's
+  router answers `403 Invalid input/output` when input === output (verified
+  live). Cycles now verify leg-by-leg (min-out chained, exactly like
+  mixed-venue routes) in BOTH `verifyExecutableRoute` and the signer's
+  `buildTransfers`; `executeSwap` never passes a leg-scoped quote as a
+  whole-route `preQuoted`. Live-probed end-to-end against Alcor: 1M LEEF →
+  WAX → LEEF chains correctly and the no-loss floor holds (flat ring
+  guarantees −1.63% → refused by the cycle gate, as designed).
+- **Any-pair trading.** The base/quote guards are gone: any liquid universe
+  token can be base or quote (selecting the other side flips the pair).
+  Base/quote pickers list the whole liquid universe (scam-flagged excluded);
+  the manual Quotes desk offers it too. LEEF remains the default
+  beneficiary — near-tie route preference + volume preference when costs
+  allow — never a requirement, never at a loss, never at market-crashing
+  impact.
+- **AI auto-review (the "AI live helper").** While the bot runs and AI isn't
+  OFF, the analyst reads the evidence journal every N trades (default 8;
+  5/10/20 on the AI desk) and may propose typed learning artifacts — parsed
+  defensively, governor-pre-validated, shadow-first. Never per-trade, never
+  blocking, never signing. Status card on the AI desk shows cadence, last
+  run and proposal counts.
+- Docs: STRATEGIES.md (any-pair + learning-aware sizing + AI assistance),
+  AI.md (modes + auto-review).
+
 ## Unreleased — EOSUSA-powered history: backfill + tape-witnessed counterfactuals
 
 Division of labor per venue docs: Alcor's swaps API remains the trade-tape

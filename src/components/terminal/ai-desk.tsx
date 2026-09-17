@@ -22,22 +22,15 @@ import {
   type AiTask,
 } from "@/lib/leef/ai-analyst";
 import { fmtNum, timeAgo } from "@/lib/leef/format";
-import { aggregateEntries, journal, journalAll } from "@/lib/leef/journal";
+import { journal } from "@/lib/leef/journal";
 import { classifyRegime, dangerScore } from "@/lib/leef/regime";
 import { isEconomicFailureReason } from "@/lib/wallet/trade-error";
+import { getProfiles, injectArtifacts } from "@/lib/leef/learning-store";
 import {
-  bootLearning,
-  getArtifacts,
-  getProfiles,
-  injectArtifacts,
-  refreshProposals,
-} from "@/lib/leef/learning-store";
-import {
-  bucketMeanEdge,
   DEFAULT_LEARNING_CONFIG,
   extractLearningArtifacts,
-  SIZE_BUCKET_LABELS,
 } from "@/lib/leef/learning";
+import { autoReviewStatus, evidenceReviewContext } from "@/lib/leef/ai-review";
 import type { LeefSnapshot } from "@/lib/leef/types";
 import { useBot } from "@/store/bot";
 import { useTerminal } from "@/store/terminal";
@@ -253,51 +246,6 @@ function AnalysisView({ result }: { result: AiResult }) {
   );
 }
 
-/** evidence_review payload: journal stats + pool learning profiles. */
-async function evidenceContext(): Promise<Record<string, unknown>> {
-  const entries = await journalAll();
-  await bootLearning(entries);
-  refreshProposals();
-  const poolProfiles = Object.values(getProfiles())
-    .filter((p) => p.kind === "pool")
-    .sort((a, b) => b.executions - a.executions)
-    .slice(0, 10)
-    .map((p) => ({
-      key: p.key, // the AI must reference this exact scopeKey in proposals
-      pool: p.label,
-      executions: p.executions,
-      confirmed: p.buckets.reduce((s, b) => s + b.confirmed, 0),
-      ewmaSlippagePct: p.ewmaSlipPct,
-      gateFails: p.gateFails,
-      sizeCurve: p.buckets
-        .map((b, i) =>
-          b.confirmed >= 3
-            ? { bucket: SIZE_BUCKET_LABELS[i], meanRealizedEdgePct: bucketMeanEdge(b) }
-            : null,
-        )
-        .filter(Boolean),
-    }));
-  return {
-    instruction:
-      "Review the evidence. If — and only if — the data supports it, you may add a " +
-      "`learning_artifacts` array of {type, scopeKey, value, confidence, reason}. " +
-      "type must be POOL_SLIPPAGE_PROFILE (expected realized slippage %, 0.02–0.75) or " +
-      "POOL_SIZE_MULTIPLIER (size-ceiling factor, 0.5–1.0; 1 = no constraint). scopeKey " +
-      "must be a `key` from poolProfiles. Every proposal is shadow-tested by the " +
-      "deterministic LearningGovernor before it can affect anything.",
-    stats: aggregateEntries(entries),
-    poolProfiles,
-    artifacts: getArtifacts().map((a) => ({
-      id: a.id,
-      status: a.status,
-      value: a.value,
-      samples: a.samples,
-      confidence: a.confidence,
-      shadowSamples: a.shadow.n,
-    })),
-  };
-}
-
 /* ------------------------------------------------------------------ */
 /* Desk                                                                 */
 /* ------------------------------------------------------------------ */
@@ -342,7 +290,10 @@ export function AiDesk({ snap }: { snap: LeefSnapshot }) {
   const setAiEnabled = useTerminal((s) => s.setAiEnabled);
   const learningMode = useTerminal((s) => s.learningMode);
   const setLearningMode = useTerminal((s) => s.setLearningMode);
+  const aiReviewEveryTrades = useTerminal((s) => s.aiReviewEveryTrades);
+  const setAiReviewEveryTrades = useTerminal((s) => s.setAiReviewEveryTrades);
   const strategy = useBot((s) => s.strategy);
+  const autoReview = autoReviewStatus();
 
   /** Unified 3-state: OFF / SUGGEST / CONTROLLED_LEARNING. */
   const aiMode: "off" | "suggest" | "controlled" = !aiEnabled
@@ -385,7 +336,7 @@ export function AiDesk({ snap }: { snap: LeefSnapshot }) {
           ? marketContext(snap)
           : task === "strategy_analysis"
             ? strategyContext()
-            : await evidenceContext();
+            : await evidenceReviewContext();
       const result = await aiTask(task, data, { url: aiGatewayUrl });
       setRun({ status: "done", task, result, at: Date.now() });
       journal({
@@ -557,6 +508,50 @@ export function AiDesk({ snap }: { snap: LeefSnapshot }) {
           </div>
         )}
       </Card>
+
+      {aiEnabled && (
+        <Card className="p-4 sm:p-5">
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <div>
+              <h3 className="font-semibold">Auto-review</h3>
+              <p className="text-sm text-muted-foreground">
+                The analyst reads the evidence journal every N trades and proposes learning
+                artifacts into the governor's shadow pipeline. Never per-trade, never blocking,
+                never on the decision path — the engine trades on while it runs.
+              </p>
+            </div>
+            <div className="flex items-center gap-1.5 text-xs">
+              <span className="text-muted-foreground">Every</span>
+              {[5, 10, 20].map((n) => (
+                <button
+                  key={n}
+                  type="button"
+                  onClick={() => setAiReviewEveryTrades(n)}
+                  className={cn(
+                    "rounded-md border px-2 py-1 tabular-nums",
+                    aiReviewEveryTrades === n
+                      ? "border-accent/40 bg-accent/10 text-accent"
+                      : "border-border text-muted-foreground hover:text-foreground",
+                  )}
+                >
+                  {n}
+                </button>
+              ))}
+              <span className="text-muted-foreground">trades</span>
+            </div>
+          </div>
+          <div className="mt-3 flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
+            <Badge variant="outline" className={cn(autoReview.inFlight && "border-accent/40 text-accent")}>
+              {autoReview.inFlight ? "Reviewing…" : "Idle"}
+            </Badge>
+            <span>
+              Last: {autoReview.lastReviewAt > 0 ? timeAgo(new Date(autoReview.lastReviewAt).toISOString()) : "never"}
+              {" · "}{autoReview.note}
+              {autoReview.lastProposalCount > 0 ? ` · ${autoReview.lastProposalCount} artifacts in shadow` : ""}
+            </span>
+          </div>
+        </Card>
+      )}
 
       {aiEnabled && (
         <div className="grid gap-4 md:grid-cols-3">

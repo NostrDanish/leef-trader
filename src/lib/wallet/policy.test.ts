@@ -8,6 +8,7 @@ import {
   parseSwapMemo,
   type PolicyAction,
 } from "./policy";
+import { delegateBwData } from "./antelope";
 
 const ACCOUNT = "trader.leef";
 
@@ -349,6 +350,19 @@ describe("delegatebw (CPU staking) policy", () => {
 
   it("allows a self-stake at 8dp WAX", () => {
     expect(() => assertActionPolicy([stake()], ACCOUNT)).not.toThrow();
+  });
+
+  it("the signer's own builder passes the firewall (field-name regression)", () => {
+    // Regression: signAndPushStakeCpu once built camelCase fields
+    // (stakeCpuQuantity) which the firewall reads as stake_cpu_quantity —
+    // every stake failed with "bad stake_cpu_quantity". The builder now
+    // emits the chain ABI names and MUST pass policy.
+    expect(() =>
+      assertActionPolicy(
+        [{ contract: "eosio", name: "delegatebw", plain: { ...delegateBwData(ACCOUNT, 5) } }],
+        ACCOUNT,
+      ),
+    ).not.toThrow();
   });
 
   it("rejects staking to another account", () => {

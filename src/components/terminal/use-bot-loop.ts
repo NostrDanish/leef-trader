@@ -41,6 +41,7 @@ import {
   CF_HORIZON_MS,
 } from "@/lib/leef/learning-store";
 import { classifyRegime, dangerScore } from "@/lib/leef/regime";
+import { maybeAutoReview } from "@/lib/leef/ai-review";
 import { refreshExecutionState } from "@/lib/market/execution-state";
 import { governTrade, portfolioState } from "@/lib/market/portfolio-governor";
 import type { LeefSnapshot, SwapRoute } from "@/lib/leef/types";
@@ -1895,6 +1896,19 @@ export async function botOnSnapshot(snap: LeefSnapshot): Promise<void> {
     if (Date.now() - lastProposalRefresh > 10 * 60_000) {
       lastProposalRefresh = Date.now();
       refreshProposals();
+    }
+    // AI auto-review: the analyst reads the evidence every N trades and
+    // proposes artifacts into the governor's shadow pipeline. Never per
+    // trade, never blocking, never on the decision path.
+    {
+      const t = useTerminal.getState();
+      void maybeAutoReview({
+        aiEnabled: t.aiEnabled,
+        running: b.running,
+        trades: b.stats.trades,
+        everyTrades: t.aiReviewEveryTrades,
+        gatewayUrl: t.aiGatewayUrl,
+      });
     }
     seedSeriesFromTape(snap);
     // The signal series tracks the BASE token's USD mark (LEEF by default,

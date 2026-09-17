@@ -166,7 +166,10 @@ export async function executeSwap(opts: {
       throw new Error(`Round trip refused — ${verdict.reason}`);
     }
     route = { ...route, amountOut: verified.expectedOut };
-    preQuoted = verified.verified[0]?.alcor;
+    // Cycles verify leg-by-leg, so verified[0].alcor is a LEG-scoped quote —
+    // never a whole-route quote. Never hand it to the signer as preQuoted;
+    // the signer re-verifies cycles leg-by-leg itself.
+    preQuoted = undefined;
   }
 
   const governed = governTrade(book, w.balances(), {

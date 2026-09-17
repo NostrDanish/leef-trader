@@ -144,7 +144,13 @@ export async function verifyExecutableRoute(opts: {
   const remaining = () => opts.deadlineMs - (Date.now() - t0);
   if (remaining() < 50) throw new TradeError("QUOTE_STALE", "Execution deadline already expired");
 
-  if (allAlcorRoute(opts.route)) {
+  // A cycle (LEEF→…→LEEF) can NOT use the single-call fast path: Alcor's
+  // router answers 403 "Invalid input/output" when input === output (verified
+  // live 2026-09-17). Cycles verify leg-by-leg like mixed-venue routes, with
+  // each leg's guaranteed min-out chaining into the next leg's input.
+  const isCycle =
+    opts.route.tokenIn.toUpperCase() === opts.route.tokenOut.toUpperCase();
+  if (allAlcorRoute(opts.route) && !isCycle) {
     const tokenIn = metaOf(opts.route.tokenIn, opts.snap);
     const tokenOut = metaOf(opts.route.tokenOut, opts.snap);
     try {

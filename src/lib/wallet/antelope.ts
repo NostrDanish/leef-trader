@@ -461,20 +461,38 @@ export type CollectData = {
 /* ------------------------- eosio system actions -------------------- */
 /* delegatebw field order per the eosio.system ABI.                     */
 
+/**
+ * Chain ABI field names (eosio::delegatebw). These exact names are required
+ * by THREE consumers: the wire packer below, the policy firewall (which reads
+ * action.plain.stake_net_quantity), and external wallets (WCW/Anchor send the
+ * plain object to the ABI as-is). A camelCase twin of this type once made
+ * every stake fail policy with "bad stake_net_quantity" — do not reintroduce.
+ */
 export type DelegateBwData = {
   from: string;
   receiver: string;
-  stakeNetQuantity: string;
-  stakeCpuQuantity: string;
+  stake_net_quantity: string;
+  stake_cpu_quantity: string;
   transfer: boolean;
 };
+
+/** Self-stake data at 8dp — the only shape the policy firewall allows. */
+export function delegateBwData(owner: string, waxAmount: number): DelegateBwData {
+  return {
+    from: owner,
+    receiver: owner,
+    stake_net_quantity: "0.00000000 WAX",
+    stake_cpu_quantity: `${waxAmount.toFixed(8)} WAX`,
+    transfer: false,
+  };
+}
 
 export function packDelegateBw(d: DelegateBwData): Uint8Array {
   const w = new Writer();
   w.name(d.from);
   w.name(d.receiver);
-  writeAsset(w, parseAssetString(d.stakeNetQuantity));
-  writeAsset(w, parseAssetString(d.stakeCpuQuantity));
+  writeAsset(w, parseAssetString(d.stake_net_quantity));
+  writeAsset(w, parseAssetString(d.stake_cpu_quantity));
   w.u8(d.transfer ? 1 : 0);
   return w.done();
 }

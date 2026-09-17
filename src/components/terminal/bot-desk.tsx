@@ -721,12 +721,14 @@ function AdvisorCard({ snap }: { snap: LeefSnapshot }) {
         Pair & wallet scan
       </h3>
       <p className="mb-3 text-xs text-muted-foreground">
-        Not only LEEF/WAX — LEEF/USDC, LEEF/PARAUSD, WAX/USDC hops, whatever
-        books exist. Scan sizes from this wallet and CPU/NET/RAM. You apply.
+        Any pair on any book — WAX/TLM, LEEF/USDC, TACO/WUF, whatever exists.
+        LEEF is the default beneficiary (routes through it win near-ties; the
+        volume engine prefers it when costs allow), never a requirement and
+        never at a loss. Scan sizes from this wallet and CPU/NET/RAM. You apply.
       </p>
       <div className="mb-3 grid grid-cols-2 gap-2">
         <TokenSearch
-          label="Base (not WAX)"
+          label="Base — any token"
           value={base}
           options={bases}
           disabled={running}
@@ -736,7 +738,7 @@ function AdvisorCard({ snap }: { snap: LeefSnapshot }) {
           }}
         />
         <TokenSearch
-          label="Quote (not LEEF)"
+          label="Quote — any token"
           value={quote}
           options={quotes}
           disabled={running}

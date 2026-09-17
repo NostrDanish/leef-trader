@@ -47,38 +47,39 @@ const CORE = ["LEEF", "WAX", "WAXUSDC", "WAXUSDT", "USDT", "PARAUSD"] as const;
 
 /** Bases you can accumulate. WAX is the quote/gas asset — never a base. */
 export function listBaseTokens(snap: LeefSnapshot): string[] {
-  const set = new Set<string>(["LEEF"]);
+  // Any liquid token may be base — WAX included. LEEF is pinned first because
+  // the app is LEEF-built, not because the engine requires it.
+  const set = new Set<string>(["LEEF", "WAX"]);
   for (const u of snap.universe) {
     const s = u.symbol.toUpperCase();
-    if (s === "WAX") continue;
-    if (u.usdPrice > 0 && u.tvlUsd >= 20) set.add(s);
-  }
-  for (const p of snap.pools) {
-    const s = p.leef.symbol.toUpperCase();
-    if (s && s !== "WAX") set.add(s);
-  }
-  set.delete("WAX");
-  return [...set].sort((a, b) => (a === "LEEF" ? -1 : b === "LEEF" ? 1 : a.localeCompare(b)));
-}
-
-/** Quote side: WAX and stables. LEEF is the inventory asset — never a quote. */
-export function listQuoteTokens(snap: LeefSnapshot, base = "LEEF"): string[] {
-  const b = base.toUpperCase();
-  const set = new Set<string>(["WAX", "WAXUSDC", "WAXUSDT", "USDT", "PARAUSD"]);
-  for (const u of snap.universe) {
-    const s = u.symbol.toUpperCase();
-    if (s === b || s === "LEEF") continue;
-    if (u.usdPrice > 0 && (u.tvlUsd >= 15 || STABLEISH.has(s))) set.add(s);
+    if (u.usdPrice > 0 && u.tvlUsd >= 20 && !u.alcorScam) set.add(s);
   }
   for (const p of snap.pools) {
     const s = p.pair.symbol.toUpperCase();
-    if (s && s !== b && s !== "LEEF") set.add(s);
+    if (s) set.add(s);
+  }
+  return [...set].sort((a, b) =>
+    a === "LEEF" ? -1 : b === "LEEF" ? 1 : a === "WAX" ? -1 : b === "WAX" ? 1 : a.localeCompare(b),
+  );
+}
+
+/** Quote side: any liquid token — WAX and stables pinned first, LEEF allowed. */
+export function listQuoteTokens(snap: LeefSnapshot, base = "LEEF"): string[] {
+  const b = base.toUpperCase();
+  const set = new Set<string>(["WAX", "WAXUSDC", "WAXUSDT", "USDT", "PARAUSD", "LEEF"]);
+  for (const u of snap.universe) {
+    const s = u.symbol.toUpperCase();
+    if (s === b) continue;
+    if (u.usdPrice > 0 && (u.tvlUsd >= 15 || STABLEISH.has(s)) && !u.alcorScam) set.add(s);
+  }
+  for (const p of snap.pools) {
+    const s = p.pair.symbol.toUpperCase();
+    if (s && s !== b) set.add(s);
   }
   set.delete(b);
-  set.delete("LEEF");
   return [...set].sort((a, c) => {
     const rank = (x: string) =>
-      x === "WAX" ? 0 : STABLEISH.has(x) ? 1 : x === "TLM" ? 2 : 3;
+      x === "WAX" ? 0 : STABLEISH.has(x) ? 1 : x === "LEEF" ? 2 : x === "TLM" ? 3 : 4;
     return rank(a) - rank(c) || a.localeCompare(c);
   });
 }
