@@ -92,6 +92,38 @@ describe("planNextAction", () => {
       expect(plan.route.legs.length).toBeGreaterThan(0);
     }
   });
+
+  it("rejects a profit that exists only at a wrong oracle mark", () => {
+    // Deep 1:1 WAX/WAXUSDC book, but the universe marks WAXUSDC at 2× WAX —
+    // the path claims ~+100% at marks while the executable exit price says
+    // $0.02. The mark-vs-executable guard must refuse the phantom.
+    const auxPool: AuxPool = {
+      id: 500,
+      fee: 3000,
+      feePct: 0.3,
+      tokenA: { symbol: "WAX", contract: "eosio.token", decimals: 8, quantity: 100_000 },
+      tokenB: { symbol: "WAXUSDC", contract: "eth.token", decimals: 6, quantity: 100_000 },
+      tvlUsd: 4000,
+      volume24Usd: 100,
+    };
+    const s = snap([mkPool(50_000, 500_000_000)], [auxPool]);
+    s.universe.push({
+      symbol: "WAXUSDC",
+      contract: "eth.token",
+      decimals: 6,
+      alcorId: "waxusdc-eth.token",
+      poolId: 500,
+      waxPerToken: 2, // LIE: the mark says 2× WAX while the book trades 1:1
+      usdPrice: WAX_USD * 2,
+      tvlUsd: 4000,
+      stable: false,
+    });
+    const plan = planNextAction(s, { WAX: 50 }, { minUsd: 0, minNetPct: 0 });
+    // No phantom WAX→WAXUSDC "profit" may survive the guard.
+    if (plan) {
+      expect(plan.tokenOut === "WAXUSDC" && plan.netUsd > 0).toBe(false);
+    }
+  });
 });
 
 describe("planLeefTape", () => {

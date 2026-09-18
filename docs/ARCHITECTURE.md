@@ -81,6 +81,39 @@ suspension resync) and [WAX](./WAX.md) for chain specifics.
    `swap.alcor` table rows; meaningful changes re-trigger 2–6 — prices move
    at chain speed, not at API-cadence speed.
 
+## The canonical pipeline invariant
+
+**One trade, one economic truth.** Every execution path — manual swap,
+pinned route, cycle, bot buy/sell/swap, arb, rebalance chunk — flows through
+the same spine:
+
+```
+market snapshot → normalize/validate → opportunity → route+size optimizer
+→ NetEdge/cost model (incl. platform fee) → risk/inventory gates
+→ exact venue quote → final net-edge recheck (guaranteed side included)
+→ policy firewall → sign → broadcast once → reconcile → journal → learning
+```
+
+Consolidation rules that protect this invariant (audit-driven):
+
+- **Correlated indicators get one vote per family** (trend: EMA/SMA/MACD;
+  mean-reversion: RSI/Stochastic/Bollinger; volume: VWAP) — the signal blend
+  can no longer count one idea three times.
+- **Mark-based improvement is not profit**: next-action paths claiming a
+  profit at oracle marks must survive a route-implied exit-price check
+  (executable sell-back vs mark, tolerance = two-way costs + 3%).
+- **minNetEdgePct default is a real hurdle (0.1%)** — "sufficiently
+  profitable after uncertainty", not "technically non-negative".
+- **Every gate verdict journals the local CP model's output AND the venue's
+  exact output** — the model↔venue drift metric on the Evidence desk is the
+  live answer to whether tick-level CLMM discovery is ever worth building.
+- **Near-tie routes prefer LEEF, then venue-verifiability** (all-Alcor
+  routes verify exactly; Defibox/Taco are fresh-model with min-out guards).
+- The route cache is dependency-aware (pool-state versions, not wall-clock
+  TTL) — unrelated table changes never invalidate a hot route.
+- Learning profiles split by pool × route × size × regime × strategy — one
+  strategy's record never teaches another.
+
 ## The Nostr shell
 
 The app is built on a Nostr client template: `App.tsx` wires NostrProvider /

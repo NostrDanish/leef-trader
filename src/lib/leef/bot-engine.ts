@@ -836,7 +836,9 @@ export function evaluateBot(input: BotInput): Decision {
       tokenIn: quote,
       tokenOut: base,
       expectedGrossPct: Math.max(goals.takeProfitPct, 0.5),
-      minNetEdgePct: 0,
+  // A real hurdle, not "technically non-negative": entries must clear ALL
+  // modeled costs + platform fee by a margin that covers quote uncertainty.
+  minNetEdgePct: 0.1,
       minIn: minWax,
       maxIn: maxWax,
       volPerSec: realizedVolPerSec(input.series),

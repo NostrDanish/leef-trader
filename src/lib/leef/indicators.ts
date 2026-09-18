@@ -343,6 +343,23 @@ function scoreReading(id: IndicatorId, p: ChartPoint, prev: ChartPoint | null): 
   }
 }
 
+/**
+ * Indicator families — the seven engines are NOT independent votes. EMA/SMA/
+ * MACD all track trend; RSI/Stochastic/Bollinger all track mean-reversion;
+ * VWAP tracks fair value vs volume. Averaging all seven double-counts
+ * correlated families ("5/7 bullish" can be one idea five times). Each
+ * family gets ONE vote; the blend is the mean of family scores.
+ */
+export const INDICATOR_GROUP: Record<IndicatorId, "trend" | "meanrev" | "volume"> = {
+  ema: "trend",
+  sma: "trend",
+  macd: "trend",
+  rsi: "meanrev",
+  stoch: "meanrev",
+  bb: "meanrev",
+  vwap: "volume",
+};
+
 export function scoreSignal(points: ChartPoint[], params: TickParams): SignalSnap {
   if (points.length === 0) {
     return { score: 0, bias: "hold", confidence: 0, readings: [] };
@@ -354,11 +371,27 @@ export function scoreSignal(points: ChartPoint[], params: TickParams): SignalSna
   if (readings.length === 0) {
     return { score: 0, bias: "hold", confidence: 0, readings: [] };
   }
-  const raw = readings.reduce((s, r) => s + (Number.isFinite(r.score) ? r.score : 0), 0) / readings.length;
+  // Family scores first: one vote per correlated family.
+  const byGroup = new Map<string, number[]>();
+  for (const r of readings) {
+    if (!Number.isFinite(r.score)) continue;
+    const g = INDICATOR_GROUP[r.id];
+    const arr = byGroup.get(g) ?? [];
+    arr.push(r.score);
+    byGroup.set(g, arr);
+  }
+  const groupScores = [...byGroup.values()].map(
+    (arr) => arr.reduce((s, v) => s + v, 0) / arr.length,
+  );
+  const raw =
+    groupScores.length > 0
+      ? groupScores.reduce((s, v) => s + v, 0) / groupScores.length
+      : 0;
   const score = clamp(Number.isFinite(raw) ? raw * params.sensitivity : 0, -1, 1);
+  // Agreement across FAMILIES, not across correlated individual readings.
   const agreement =
-    readings.filter((r) => Math.sign(r.score) === Math.sign(score) && Math.abs(r.score) > 0.12)
-      .length / readings.length;
+    groupScores.filter((g) => Math.sign(g) === Math.sign(score) && Math.abs(g) > 0.12)
+      .length / Math.max(1, groupScores.length);
   const confidence = clamp(
     (Number.isFinite(score) ? Math.abs(score) : 0) * 0.55 +
       (Number.isFinite(agreement) ? agreement : 0) * 0.45,

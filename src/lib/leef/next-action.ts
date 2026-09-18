@@ -87,6 +87,20 @@ export function planNextAction(
       const netUsd = usdOut - usdIn;
       const netPct = usdIn > 0 ? (netUsd / usdIn) * 100 : 0;
       if (netUsd <= 0 || netPct + 1e-12 < minNetPct) continue;
+      // Mark-vs-executable guard: a path's "profit" is computed at oracle
+      // marks. If the oracle overprices the destination relative to what the
+      // route graph would actually pay to SELL it back, the profit exists
+      // only in the price marks. Compute the executable exit price from the
+      // reverse route; beyond (two-way costs + 3%), the mark is lying and
+      // the candidate is rejected. Mark-based inventory improvement remains
+      // possible — phantom profit does not.
+      const back = bestExecutionRouteOnGraph(graph, route.amountOut, dest, token.symbol);
+      if (back && back.amountOut > 0 && route.amountOut > 0) {
+        const impliedExitUsd = (back.amountOut * pxIn) / route.amountOut;
+        const tolerance =
+          1 + (route.feePct + back.feePct) / 100 + (route.priceImpact + back.priceImpact) + 0.03;
+        if (pxOut > impliedExitUsd * tolerance) continue;
+      }
       if (!best || netUsd > best.netUsd) {
         best = {
           tokenIn: token.symbol,

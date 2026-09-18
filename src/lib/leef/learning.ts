@@ -141,6 +141,8 @@ export type Profile = {
   buckets: BucketStats[];
   /** Per-regime breakdown — a pool does not behave the same in every tape. */
   byRegime: Record<string, RegimeStats>;
+  /** Per-strategy breakdown — one strategy's record never teaches another. */
+  byStrategy: Record<string, RegimeStats>;
 };
 
 export type LearningProfiles = Record<string, Profile>;
@@ -215,6 +217,7 @@ function profileFor(
       ewmaEdgeErrAt: 0,
       buckets: Array.from({ length: SIZE_BUCKET_EDGES.length + 1 }, blankBucket),
       byRegime: {},
+      byStrategy: {},
     };
     profiles[key] = p;
   }
@@ -273,15 +276,28 @@ export function applyEntry(profiles: LearningProfiles, e: JournalEntry, cfg: Lea
       const b = p.buckets[sizeBucketIndex(e.sizeUsd ?? 0)]!;
       b.samples += 1;
       // Regime dimension: calm and volatile tapes are different pools.
-      if (e.regime) {
-        const rs = (p.byRegime[e.regime] ??= {
+      // Strategy dimension: one engine's evidence never teaches another.
+      for (const [dim, key] of [
+        [p.byRegime, e.regime],
+        [p.byStrategy, e.strategy],
+      ] as const) {
+        if (!key) continue;
+        const ds = (dim[key] ??= {
           samples: 0,
           confirmed: 0,
           slipPctSum: 0,
           edgePctSum: 0,
           edgeN: 0,
         });
-        rs.samples += 1;
+        ds.samples += 1;
+        if (e.status === "confirmed" && (e.expectedOut ?? 0) > 0 && (e.actualOut ?? 0) > 0) {
+          ds.confirmed += 1;
+          ds.slipPctSum += (1 - e.actualOut! / e.expectedOut!) * 100;
+          if (e.predEdgePct != null && e.realizedEdgePct != null) {
+            ds.edgePctSum += e.realizedEdgePct;
+            ds.edgeN += 1;
+          }
+        }
       }
       if (
         e.status === "confirmed" &&
@@ -291,21 +307,12 @@ export function applyEntry(profiles: LearningProfiles, e: JournalEntry, cfg: Lea
         b.confirmed += 1;
         const slip = (1 - e.actualOut! / e.expectedOut!) * 100;
         b.slipPctSum += slip;
-        if (e.regime && p.byRegime[e.regime]) {
-          const rs = p.byRegime[e.regime]!;
-          rs.confirmed += 1;
-          rs.slipPctSum += slip;
-        }
         p.ewmaSlipPct = ewmaStep(p.ewmaSlipPct, p.ewmaSlipAt, slip, now, cfg.halfLifeMs);
         p.ewmaSlipAt = now;
         if (e.predEdgePct != null && e.realizedEdgePct != null) {
           const err = e.realizedEdgePct - e.predEdgePct;
           b.edgePctSum += e.realizedEdgePct;
           b.edgeN += 1;
-          if (e.regime && p.byRegime[e.regime]) {
-            p.byRegime[e.regime]!.edgePctSum += e.realizedEdgePct;
-            p.byRegime[e.regime]!.edgeN += 1;
-          }
           b.predEdgePctSum += e.predEdgePct;
           p.ewmaEdgeErrPct = ewmaStep(
             p.ewmaEdgeErrPct,

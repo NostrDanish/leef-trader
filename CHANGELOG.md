@@ -2,6 +2,36 @@
 
 All notable changes to LEEF Trader. Dates are commit-era, not release tags.
 
+## Unreleased — Consolidation pass (audit response): one economic truth
+
+Audit-verified consolidation, no rewrites (rejected items documented in
+docs/ARCHITECTURE.md → "The canonical pipeline invariant"):
+
+- **Indicator families vote once.** EMA/SMA/MACD (trend), RSI/Stochastic/
+  Bollinger (mean-reversion), VWAP (volume) — the blend averages FAMILY
+  scores, so correlated engines can't stack a fake 5/7 consensus.
+- **Mark-vs-executable guard** in the next-action planner: a one-shot path
+  claiming profit at oracle marks must survive an executable exit-price
+  check (reverse-route implied sell price vs mark; tolerance = two-way
+  route costs + 3%). Phantom profits die at discovery, not at the gate.
+- **minNetEdgePct default 0 → 0.1%**: entries must clear all modeled costs
+  by a real margin. (Persisted stores keep their saved value; fresh installs
+  get the hurdle.)
+- **Model↔venue drift metric**: every gate verdict now journals the local CP
+  model's output next to the venue's exact output; the Evidence desk shows
+  mean/|mean| drift — the live answer to whether tick-level CLMM discovery
+  is worth building.
+- **Near-tie routes prefer LEEF, then exact-verifiability** (all-Alcor beats
+  fresh-model venues inside the band).
+- **Learning profiles gain the strategy dimension** (byStrategy) — one
+  engine's evidence never teaches another engine's pools.
+- Verified-already-present (no change): execution state machine
+  (trade-cycle.ts), volume-last intent ordering (opportunity.ts), oracle
+  confidence fields, dependency-aware route cache (block-driven pool
+  versions), provider health failover, CPU/NET/RAM preflight.
+- Tests: consolidation.test.ts (family voting + dilution + verifiability
+  tiers), next-action phantom-profit guard case.
+
 ## Unreleased — Platform fee (0.001% → smart.ass) + market-aware rebalancer
 
 **Platform fee** (`lib/leef/platform-fee.ts`, docs/PLATFORM_FEE.md):

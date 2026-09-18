@@ -671,6 +671,11 @@ export function routeTouchesLeef(route: SwapRoute): boolean {
  * route worse than the band NEVER leapfrogs — and the exact-quote gate
  * downstream still vetoes anything uneconomic. Economics first, always.
  *
+ * Second tier within a near-tie group: venue-verifiability. All-Alcor routes
+ * get an EXACT venue-router quote at the gate; Defibox/Taco legs are
+ * fresh-model (fresh reserves + CP math, min-out guarded). Near-tied routes
+ * prefer the one whose quote will be exactly verified.
+ *
  * Applied on bot gate-attempt ordering (not in the quotes desk, where the
  * user sees the untouched economic ranking and picks for themselves).
  */
@@ -688,6 +693,12 @@ export function preferLeefNearTies(
     if (r.amountOut + 1e-12 >= floor && routeTouchesLeef(r)) leefNearTies.push(r);
     else rest.push(r);
   }
+  const exactFirst = (a: SwapRoute, b: SwapRoute) => {
+    const ea = a.legs.every((l) => !l.venue || l.venue === "alcor") ? 1 : 0;
+    const eb = b.legs.every((l) => !l.venue || l.venue === "alcor") ? 1 : 0;
+    return eb - ea; // stable secondary tier
+  };
+  leefNearTies.sort(exactFirst);
   return [...leefNearTies, ...rest];
 }
 

@@ -224,7 +224,10 @@ export function Evidence() {
             {
               label: "Gate pass rate",
               value: gateRate != null ? `${gateRate.toFixed(0)}%` : "—",
-              sub: "exact-quote gate",
+              sub:
+                stats && stats.gateDrift.n > 0
+                  ? `model↔venue drift ${stats.gateDrift.meanPct >= 0 ? "+" : ""}${stats.gateDrift.meanPct.toFixed(2)}% (|${stats.gateDrift.meanAbsPct.toFixed(2)}%|) × ${fmtNum(stats.gateDrift.n, { digits: 0 })}`
+                  : "exact-quote gate",
             },
             {
               label: "Realized P&L",

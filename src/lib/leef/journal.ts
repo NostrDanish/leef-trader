@@ -64,6 +64,10 @@ export type JournalEntry = {
   netPct?: number;
   exactness?: string;
   verifyMs?: number;
+  /** The LOCAL CP model's expected output — pair with expectedOut (venue) to
+   *  measure model-vs-venue drift, the live answer to "is CP discovery good
+   *  enough or do we need tick-level CLMM discovery?" */
+  modelOut?: number;
 
   /** execution entries */
   action?: "buy" | "sell" | "swap" | "arb" | "rebalance";
@@ -209,6 +213,12 @@ export type EvidenceStats = {
   topGateFails: { reason: string; count: number }[];
   /** Counterfactual HOLD tallies (Phase 2). */
   counterfactuals: { trueHolds: number; falseHolds: number; neutral: number };
+  /**
+   * Model↔venue drift: (venueExact / localCP − 1) over gate quotes. The live
+   * answer to "is constant-product discovery good enough, or does Alcor need
+   * tick-level CLMM discovery?" — small |meanAbsPct| = CP suffices.
+   */
+  gateDrift: { n: number; meanPct: number; meanAbsPct: number };
 };
 
 /**
@@ -250,6 +260,7 @@ export function aggregateEntries(entries: JournalEntry[]): EvidenceStats {
   const byStrategy = new Map<string, StrategyEvidence>();
   const gateFails = new Map<string, number>();
   const counterfactuals = { trueHolds: 0, falseHolds: 0, neutral: 0 };
+  const drift = { n: 0, sumPct: 0, sumAbsPct: 0 };
   let oldestTs: number | null = null;
   let newestTs: number | null = null;
 
@@ -290,6 +301,12 @@ export function aggregateEntries(entries: JournalEntry[]): EvidenceStats {
           const sig = reasonSignature(e.reason ?? "unknown");
           gateFails.set(sig, (gateFails.get(sig) ?? 0) + 1);
         }
+        if ((e.modelOut ?? 0) > 0 && (e.expectedOut ?? 0) > 0) {
+          const d = (e.expectedOut! / e.modelOut! - 1) * 100;
+          drift.n += 1;
+          drift.sumPct += d;
+          drift.sumAbsPct += Math.abs(d);
+        }
         break;
       case "execution":
         // Self-impact follow-up entries are observations, not new executions.
@@ -324,6 +341,11 @@ export function aggregateEntries(entries: JournalEntry[]): EvidenceStats {
       .sort((a, b) => b.count - a.count)
       .slice(0, 8),
     counterfactuals,
+    gateDrift: {
+      n: drift.n,
+      meanPct: drift.n > 0 ? drift.sumPct / drift.n : 0,
+      meanAbsPct: drift.n > 0 ? drift.sumAbsPct / drift.n : 0,
+    },
   };
 }
 
