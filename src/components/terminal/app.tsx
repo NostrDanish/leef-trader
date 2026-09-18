@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect } from "react";
 import { restoreWallet } from "@/lib/wallet/session";
 import { marketEngine } from "@/lib/market/market-engine";
 import { useTerminal } from "@/store/terminal";
@@ -24,10 +24,9 @@ import { useSnapshot } from "./use-snapshot";
 import { WalletDesk } from "./wallet-desk";
 
 export function TerminalApp() {
-  const { snap, ranked, isFetching, refetch, dataUpdatedAt, syncSec } = useSnapshot();
+  const { snap, ranked, isFetching, refetch } = useSnapshot();
   const tick = useLiveTick(snap);
   const tab = useTerminal((s) => s.tab);
-  const [countdown, setCountdown] = useState(syncSec);
 
   // The persistent market engine: chain heartbeat, market pulls, on-chain
   // pool state, balances, bot + rebalancer drivers, suspension resync.
@@ -51,17 +50,6 @@ export function TerminalApp() {
     };
   }, []);
 
-  useEffect(() => {
-    setCountdown(syncSec);
-  }, [dataUpdatedAt, syncSec]);
-
-  useEffect(() => {
-    const id = window.setInterval(() => {
-      setCountdown((c) => (c <= 1 ? syncSec : c - 1));
-    }, 1000);
-    return () => window.clearInterval(id);
-  }, [syncSec]);
-
   return (
     <div className="flex min-h-screen flex-col overflow-x-hidden bg-bg text-fg">
       <TerminalHeader
@@ -71,7 +59,7 @@ export function TerminalApp() {
           void refetch();
         }}
       />
-      <StatusBar snap={snap} ranked={ranked} countdown={countdown} tick={tick} />
+      <StatusBar snap={snap} ranked={ranked} tick={tick} />
       <ImportKeyDialog />
 
       {snap.warning && snap.source === "fallback" && (
