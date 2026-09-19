@@ -27,26 +27,118 @@ import {
 
 type TableRow = Record<string, unknown>;
 
+/**
+ * Bounded-concurrency worker pool (waxterminal sharded-sweep lesson): run
+ * `fn` over every item with at most `maxInFlight` promises live at once.
+ * Order of results matches the input order. The per-host queue inside
+ * fetchJson stays the real network throttle — this bounds how much work we
+ * even hand it.
+ */
+export async function mapPool<T, R>(
+  items: readonly T[],
+  maxInFlight: number,
+  fn: (item: T, index: number) => Promise<R>,
+): Promise<R[]> {
+  const out = new Array<R>(items.length);
+  let next = 0;
+  const lanes = Math.max(1, Math.min(maxInFlight, items.length));
+  await Promise.all(
+    Array.from({ length: lanes }, async () => {
+      while (next < items.length) {
+        const i = next++;
+        out[i] = await fn(items[i]!, i);
+      }
+    }),
+  );
+  return out;
+}
+
+/** Venue sweep fan-out: shards per table sweep, at most this many in flight. */
+export const SWEEP_CONCURRENCY = 4;
+/** Pair ids beyond this are still covered — the last shard is open-ended. */
+const SWEEP_SHARD_SPAN = 25_000;
+/** Per-shard page cap (same 8-page ceiling as the old sequential sweep). */
+const SWEEP_MAX_PAGES = 8;
+
+type TableRowsPage = { rows?: TableRow[]; more?: boolean; next_key?: string };
+
+async function readTablePage(
+  code: string,
+  table: string,
+  limit: number,
+  lowerBound: string | number,
+  upperBound?: number,
+): Promise<TableRowsPage> {
+  return (await rpcPost("/v1/chain/get_table_rows", {
+    json: true,
+    code,
+    scope: code,
+    table,
+    limit,
+    lower_bound: lowerBound,
+    ...(upperBound != null ? { upper_bound: upperBound } : {}),
+  })) as TableRowsPage;
+}
+
+function rowKey(row: TableRow): string {
+  const id = row.id ?? row.pool_id ?? row.poolid;
+  return id != null ? String(id) : JSON.stringify(row);
+}
+
+/** Numeric primary key, when the row carries one (all venue pair tables do). */
+function rowNumericId(row: TableRow): number | null {
+  const id = Number(row.id ?? row.pool_id ?? row.poolid);
+  return Number.isFinite(id) ? id : null;
+}
+
+/**
+ * Sharded table sweep. Instead of 8 strictly sequential pages, the primary-
+ * key space is split into shards paged in parallel by a small worker pool
+ * (max SWEEP_CONCURRENCY in flight). The final shard is open-ended so a pair
+ * id beyond the fixed span is never missed. Rows outside a shard's bounds
+ * (a key landing mid-page) are dropped and duplicates removed by key.
+ */
 async function getTableRows(code: string, table: string, limit = 200): Promise<TableRow[]> {
-  const rows: TableRow[] = [];
-  let lowerBound: string | number = 0;
-  for (let page = 0; page < 8; page++) {
-    const raw = (await rpcPost("/v1/chain/get_table_rows", {
-      json: true,
-      code,
-      scope: code,
-      table,
-      limit,
-      lower_bound: lowerBound,
-    })) as { rows?: TableRow[]; more?: boolean; next_key?: string };
-    const chunk = Array.isArray(raw.rows) ? raw.rows : [];
-    rows.push(...chunk);
-    if (!raw.more || chunk.length === 0) break;
-    lowerBound = raw.next_key ?? (typeof chunk[chunk.length - 1]?.id === "number"
-      ? (chunk[chunk.length - 1]!.id as number) + 1
-      : rows.length);
+  const shards: { lower: number; upper: number | null }[] = [];
+  for (let i = 0; i < SWEEP_CONCURRENCY; i++) {
+    shards.push({
+      lower: i * SWEEP_SHARD_SPAN,
+      upper: i === SWEEP_CONCURRENCY - 1 ? null : (i + 1) * SWEEP_SHARD_SPAN - 1,
+    });
   }
-  return rows;
+  const perShard = await mapPool(shards, SWEEP_CONCURRENCY, async (shard) => {
+    const rows: TableRow[] = [];
+    let lowerBound: string | number = shard.lower;
+    for (let page = 0; page < SWEEP_MAX_PAGES; page++) {
+      const raw = await readTablePage(code, table, limit, lowerBound, shard.upper ?? undefined);
+      const chunk = Array.isArray(raw.rows) ? raw.rows : [];
+      rows.push(...chunk);
+      if (!raw.more || chunk.length === 0) break;
+      const lastId = rowNumericId(chunk[chunk.length - 1]!);
+      const next = raw.next_key ?? (lastId != null ? lastId + 1 : rows.length);
+      if (shard.upper != null && Number(next) > shard.upper) break;
+      lowerBound = next;
+    }
+    return rows;
+  });
+  const seen = new Set<string>();
+  const out: TableRow[] = [];
+  for (let s = 0; s < perShard.length; s++) {
+    const shard = shards[s]!;
+    for (const row of perShard[s]!) {
+      const id = rowNumericId(row);
+      // A shard owns only rows inside its bounds; strays are fetched (or
+      // deduped away) by the shard that owns them.
+      if (id != null && (id < shard.lower || (shard.upper != null && id > shard.upper))) {
+        continue;
+      }
+      const key = rowKey(row);
+      if (seen.has(key)) continue;
+      seen.add(key);
+      out.push(row);
+    }
+  }
+  return out;
 }
 
 function tokenFromDefibox(raw: unknown, reserve: unknown): VenueToken | null {
