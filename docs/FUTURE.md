@@ -10,12 +10,22 @@ the KEEP list (see ALCOR_COMPARATIVE_AUDIT.md §6/§14).
   (fullMath/sqrtPriceMath/tickMath/swapMath) from the MIT `alcor-v2-sdk`
   into `src/lib/wax/alcor-clmm.ts`; fetch `ticks` per hot pool
   (`get_table_rows`, scope = poolId), cache, refetch on liquidity change or
-  60 s. **Build when:** the P-B `venueImpactPct`/gateDrift evidence (now
-  journaled) shows material model↔venue drift at traded sizes — OR as an
-  availability feature: it is the only way to keep producing executable
-  quotes when wax.alcor.exchange is down (today: fail-closed SPOF).
-  Never adopt the SDK package, WASM/Rust route-finders, or worker threads
-  without profiling evidence.
+  60 s. **Verdict (live sweep 2026-09-19): NOT justified by the evidence.**
+  The repo's virtual-CP formula was measured against Alcor's live router
+  (execution truth) across 6 hot pairs: drift 0.000% (max 0.000021%) at
+  every size the bot trades (0.5–200 WAX-eq). Drift only appears at
+  15–100× bot sizes, and the worst in-cap case was 0.53% at ~3% price
+  impact — inside the bot's 3% impact cap, which already rejects those
+  trades. Building the tick-walk now would buy ~0 measurable accuracy.
+  **Contingency instead:** if the journaled `venueImpactPct`/gateDrift
+  evidence ever rises, first add the cheap 3-line distance-to-tick-boundary
+  guard (compare trade size against the pool row's boundary input; sizes
+  near the boundary get a router re-quote or a skip) — it captures most of
+  the residual error without the Q64 port. Revisit E-3 only if that guard
+  fires often, or as an availability feature: it remains the only way to
+  keep producing executable quotes when wax.alcor.exchange is down (today:
+  fail-closed SPOF). Never adopt the SDK package, WASM/Rust route-finders,
+  or worker threads without profiling evidence.
 
 ## New venue: Alcor order-book DEX (`alcordexmain`)
 - Orders are plain token `transfer`s with the ask in the memo

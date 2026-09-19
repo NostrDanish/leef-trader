@@ -52,6 +52,18 @@ export type PolicyAction = {
   plain: Record<string, unknown>;
 };
 
+/** Economic floor a non-arb Alcor swap must enforce on-chain (see PolicyContext). */
+export type SwapFloor = {
+  /** Approved input the user/bot sized, in tokenIn units. */
+  amountIn: number;
+  /** Router-quoted output, in tokenOut units. */
+  expectedOut: number;
+  /** Slippage tolerance the min-out sum must respect, percent. */
+  slippagePct: number;
+  tokenIn: PolicyToken;
+  tokenOut: PolicyToken;
+};
+
 export type PolicyContext = {
   /** Snapshot-derived catalog (LEEF pools, aux pools, token universe). */
   snap?: Pick<LeefSnapshot, "pools" | "aux" | "universe">;
@@ -64,6 +76,15 @@ export type PolicyContext = {
    * response or AI can redirect the fee.
    */
   platformFee?: { maxByKey: Record<string, number> };
+  /**
+   * Non-arb Alcor swap floor, enforced at the firewall: the action list's
+   * swapexactin memos must carry REAL on-chain min-outs (> 0) whose sum
+   * clears `expectedOut × (1 − slippagePct/100)`, and the transfers may not
+   * pull more than the approved `amountIn`. Without this, a router/proxy
+   * response with a min-out-0 memo or an inflated input would sail through
+   * the structural checks with zero on-chain guarantee.
+   */
+  swapFloor?: SwapFloor;
 };
 
 /** One parsed `swapexactin#<pools>#<receiver>#<minOut SYM@contract>#<flags>` memo. */
@@ -200,6 +221,9 @@ function checkTransfer(
   if (!swap) {
     fail("transfer memo is neither an LP deposit nor a valid swapexactin route to this account");
   }
+  if (!(swap!.minAmount > 0)) {
+    fail("swap memo carries a zero min-out — no on-chain guarantee");
+  }
   const minToken = tokens.get(swap!.minSymbol);
   if (!minToken || minToken.contract !== swap!.minContract) {
     fail(
@@ -258,6 +282,23 @@ export function assertActionPolicy(
       fail(`only token transfers + AMM liquidity actions are allowed — got ${action.contract}::${action.name}`);
     }
     checkTransfer(action, account, tokens, ctx?.platformFee);
+  }
+
+  // Non-arb swap floor: when the caller vouches the economics, the memos'
+  // ON-CHAIN min-outs must back the quote and the transfers must stay inside
+  // the approved input. Checked against the actual action list, not the
+  // caller's summary.
+  if (ctx?.swapFloor) {
+    const legs = actions
+      .filter(
+        (a) => a.name === "transfer" && String(a.plain.to ?? "") === ALCOR_SWAP_CONTRACT,
+      )
+      .map((a) => ({
+        input: String(a.plain.quantity ?? ""),
+        memo: String(a.plain.memo ?? ""),
+      }));
+    const violation = swapFloorViolation({ floor: ctx.swapFloor, legs, account });
+    if (violation) fail(violation);
   }
 }
 
@@ -331,6 +372,67 @@ export function arbFloorViolation(opts: {
     return (
       `route no longer clears the profit floor — enforced min-out ${minWaxOut.toFixed(8)} WAX ` +
       `< required ${floor.toFixed(8)} WAX (${minProfitPct}% over ${buyIn.toFixed(4)} WAX in)`
+    );
+  }
+  return null;
+}
+
+/**
+ * Verify the non-arb swap invariant against the actual router legs:
+ *
+ *   Σ memo min-outs  ≥  expectedOut × (1 − slippagePct/100),  every min-out > 0
+ *   Σ leg inputs     ≤  amountIn × 1.0001
+ *
+ * where the min-outs are what the swap.alcor contract enforces on-chain.
+ * The router quote's numbers are NOT proof: a compromised API or proxy can
+ * quote a rich `output`/`minReceived` while the memo — the only thing the
+ * chain enforces — guarantees nothing, or size `swaps[].input` at the whole
+ * wallet balance. Mirrors `arbFloorViolation`. Returns null when the
+ * invariant holds, else the reason.
+ */
+export function swapFloorViolation(opts: {
+  floor: SwapFloor;
+  legs: ArbLegLike[];
+  account: string;
+}): string | null {
+  const { floor, legs, account } = opts;
+  if (!(floor.amountIn > 0)) return "swap size must be positive";
+  if (legs.length === 0) return "swap needs fresh Alcor router legs";
+
+  let spent = 0;
+  let minOut = 0;
+  for (const leg of legs) {
+    const input = parseAsset(leg.input);
+    if (!input || input.symbol !== floor.tokenIn.symbol || !(input.amount > 0)) {
+      return `swap leg input isn't a ${floor.tokenIn.symbol} amount: "${leg.input}"`;
+    }
+    spent += input.amount;
+    const memo = parseSwapMemo(leg.memo, account);
+    if (!memo) return "swap leg memo failed validation (pools/receiver/min-out)";
+    if (memo.minSymbol !== floor.tokenOut.symbol || memo.minContract !== floor.tokenOut.contract) {
+      return `swap leg min-out isn't ${floor.tokenOut.symbol}@${floor.tokenOut.contract}`;
+    }
+    if (!(memo.minAmount > 0)) {
+      return "swap leg memo carries a zero min-out — no on-chain guarantee";
+    }
+    minOut += memo.minAmount;
+  }
+  // Router splits must never pull MORE than the approved amount. (Less is
+  // fine — the floor above scales to the quote, not the spend.)
+  if (spent > floor.amountIn * 1.0001) {
+    return (
+      `router wants to pull ${spent.toFixed(8)} ${floor.tokenIn.symbol} ` +
+      `but only ${floor.amountIn.toFixed(8)} was approved`
+    );
+  }
+
+  const minFloor = floor.expectedOut * (1 - Math.max(0, floor.slippagePct) / 100);
+  // One output-token quantum of slack for IEEE-754 dust (see arbFloorViolation).
+  if (minOut + 1e-8 < minFloor) {
+    return (
+      `route no longer clears the slippage floor — enforced min-out ${minOut.toFixed(8)} ` +
+      `${floor.tokenOut.symbol} < required ${minFloor.toFixed(8)} ` +
+      `(${floor.slippagePct}% under the quoted ${floor.expectedOut.toFixed(8)})`
     );
   }
   return null;

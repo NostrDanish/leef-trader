@@ -24,6 +24,32 @@ export async function rpcPost(
   return await rpcPool.call(path, body, { timeoutMs, priority });
 }
 
+/**
+ * Quorum verdict over per-endpoint receipt statuses.
+ *
+ * `executed` is chain truth (reconcile cross-checks the transfer evidence)
+ * and stays single-source. A FAILED verdict is what unlocks capital for a
+ * re-trade — so one lying or stale RPC must never be enough: `failed`
+ * requires agreement from ≥2 endpoints, and any executed/failed
+ * disagreement stays "unknown" (locked, keep polling).
+ */
+export function quorumTxStatus(
+  statuses: string[],
+): "executed" | "soft_fail" | "hard_fail" | "unknown" {
+  let executed = 0;
+  let hard = 0;
+  let soft = 0;
+  for (const s of statuses) {
+    if (s === "executed") executed += 1;
+    else if (s === "hard_fail") hard += 1;
+    else if (s === "soft_fail" || s === "failed") soft += 1;
+  }
+  if (executed > 0 && hard + soft > 0) return "unknown"; // conflicting answers
+  if (executed > 0) return "executed";
+  if (hard + soft >= 2) return hard > 0 ? "hard_fail" : "soft_fail";
+  return "unknown";
+}
+
 /** Fast inclusion check — does not wait for Hyperion history indexing. */
 export async function getTransactionStatus(
   txid: string,
@@ -44,6 +70,7 @@ export async function getTransactionStatus(
         }),
       ),
   );
+  const statuses: string[] = [];
   for (const r of settled) {
     if (r.status !== "fulfilled") continue;
     const raw = r.value as {
@@ -51,11 +78,9 @@ export async function getTransactionStatus(
       processed?: { receipt?: { status?: string } };
     };
     const status = raw?.trx?.receipt?.status ?? raw?.processed?.receipt?.status ?? "";
-    if (status === "executed") return "executed";
-    if (status === "hard_fail") return "hard_fail";
-    if (status === "soft_fail" || status === "failed") return "soft_fail";
+    if (status) statuses.push(status);
   }
-  return "unknown";
+  return quorumTxStatus(statuses);
 }
 
 export type ChainAccount = {
