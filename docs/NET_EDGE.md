@@ -71,6 +71,16 @@ Every score carries an `explain: string[]` with the actual numbers, so the
 journal can say *"edge 0.83% (4.2× required) · execution 0.31% of 3% cap ·
 liquidity $4,210 TVL · confidence 80% · quote age 1.8s"* — never just "42".
 
+### Quote age vs the venue's 5 s trade cache
+
+`quoteAge` is measured client-side, but the Alcor swapRouter additionally
+caches each computed trade for **5 s server-side** (`CACHE_TTL = 5000`,
+verified against alcor-ui). Within that window a re-quote returns the
+*identical cached trade*, so re-quoting "to be safe" buys nothing — the
+on-chain **minOut memo**, not the re-quote, is the real freshness guarantee
+(and every executable route carries one). Read a sub-5 s quote age as "same
+venue trade", not "freshly computed venue state".
+
 ## Failure behavior
 
 No route / unpriceable token / zero notional → `null`. The bot holds. Fail
