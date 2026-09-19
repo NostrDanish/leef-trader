@@ -98,6 +98,61 @@ describe("fetchJson proxy gating", () => {
   });
 });
 
+describe("fetchJson 429/503 retry gating (H1)", () => {
+  function httpResponse(status: number, body = "rate limited"): Response {
+    return new Response(body, { status });
+  }
+
+  it("a POST that gets a 429 is NOT retried — the error propagates", async () => {
+    const host = freshHost();
+    const fetchMock = vi.fn().mockResolvedValue(httpResponse(429));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(
+      fetchJson(`${host}/v1/chain/push_transaction`, {
+        method: "POST",
+        body: { packed: "deadbeef" },
+      }),
+    ).rejects.toThrow(/429/);
+    // Exactly one submission — the signed payload is never re-POSTed.
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("a POST that gets a 503 is NOT retried either", async () => {
+    const host = freshHost();
+    const fetchMock = vi.fn().mockResolvedValue(httpResponse(503, "edge timeout"));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(
+      fetchJson(`${host}/v1/chain/push_transaction`, {
+        method: "POST",
+        body: { packed: "deadbeef" },
+      }),
+    ).rejects.toThrow(/503/);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("a bodyless GET still retries once after the 429 cooldown", async () => {
+    vi.useFakeTimers();
+    try {
+      const host = freshHost();
+      const fetchMock = vi
+        .fn()
+        .mockResolvedValueOnce(httpResponse(429))
+        .mockResolvedValueOnce(okResponse({ ok: true }));
+      vi.stubGlobal("fetch", fetchMock);
+
+      const p = fetchJson(`${host}/v1/chain/get_info`);
+      // The host cooldown is 10–15 s; run the clock past it.
+      await vi.advanceTimersByTimeAsync(16_000);
+      await expect(p).resolves.toEqual({ ok: true });
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
+
 describe("wallet proxyFetch", () => {
   it("refuses to proxy a push_transaction POST", async () => {
     const err = new TypeError("Failed to fetch");
@@ -122,6 +177,41 @@ describe("wallet proxyFetch", () => {
     vi.stubGlobal("fetch", fetchMock);
 
     const res = await proxyFetch("https://wax.example.com/v1/chain/get_info");
+    expect(res.status).toBe(200);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(String(fetchMock.mock.calls[1]![0])).toContain(PROXY_PREFIX);
+  });
+
+  it("never proxies a Request-object POST, even though init is empty (L3)", async () => {
+    const fetchMock = vi.fn().mockRejectedValue(new TypeError("Failed to fetch"));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const req = new Request("https://wax.example.com/v1/chain/push_transaction", {
+      method: "POST",
+      body: JSON.stringify({ signatures: [], packed_trx: "aa" }),
+    });
+    await expect(proxyFetch(req)).rejects.toThrow("Failed to fetch");
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(String(fetchMock.mock.calls[0]![0])).not.toContain(PROXY_PREFIX);
+  });
+
+  it("never proxies a non-GET Request even without a body (L3)", async () => {
+    const fetchMock = vi.fn().mockRejectedValue(new TypeError("Failed to fetch"));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const req = new Request("https://wax.example.com/v1/chain/get_info", { method: "POST" });
+    await expect(proxyFetch(req)).rejects.toThrow("Failed to fetch");
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("still proxies a bodyless GET Request object (L3)", async () => {
+    const fetchMock = vi
+      .fn()
+      .mockRejectedValueOnce(new TypeError("Failed to fetch"))
+      .mockResolvedValueOnce(okResponse({ ok: true }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const res = await proxyFetch(new Request("https://wax.example.com/v1/chain/get_info"));
     expect(res.status).toBe(200);
     expect(fetchMock).toHaveBeenCalledTimes(2);
     expect(String(fetchMock.mock.calls[1]![0])).toContain(PROXY_PREFIX);
