@@ -34,12 +34,15 @@ const CORS_PROXY = "https://proxy.shakespeare.diy/?url=";
  * payload and silently double-submit a timed-out broadcast (the "exactly
  * one submission" invariant).
  */
-const proxyFetch: typeof fetch = async (input, init) => {
+export const proxyFetch: typeof fetch = async (input, init) => {
   try {
     return await fetch(input, init);
   } catch (err) {
-    const body = typeof init?.body === "string" ? init.body : "";
-    if (body.includes("push_transaction")) throw err;
+    // Wharfkit POSTs PackedTransaction JSON — the string "push_transaction"
+    // appears in the URL, never the body — so gate on method/body instead:
+    // only a bodyless GET (a read call) may fall through to the proxy.
+    const isGet = !init?.body && (!init?.method || init.method === "GET");
+    if (!isGet) throw err;
     const url =
       typeof input === "string" ? input : input instanceof Request ? input.url : String(input);
     return await fetch(`${CORS_PROXY}${encodeURIComponent(url)}`, init);

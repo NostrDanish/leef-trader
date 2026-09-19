@@ -316,8 +316,12 @@ export async function fetchJson(
 
   const host = hostOf(url);
   const proxied = `${CORS_PROXY}${encodeURIComponent(url)}`;
+  // Non-GET requests are never proxied: re-submitting a failed POST through a
+  // third party would expose the signed payload and could double-submit a
+  // timed-out broadcast (the "exactly one submission" invariant).
+  const proxyable = !directOnly && method === "GET";
 
-  if (!directOnly && host && proxyHosts.has(host)) {
+  if (proxyable && host && proxyHosts.has(host)) {
     return await callHost(proxied, init, timeoutMs, priority, context);
   }
 
@@ -326,7 +330,7 @@ export async function fetchJson(
   } catch (err) {
     // Only network/CORS failures (TypeError) get the proxy — HTTP errors are
     // real responses and must not be duplicated.
-    if (directOnly || err instanceof FetchJsonError) throw err;
+    if (!proxyable || err instanceof FetchJsonError) throw err;
     if (host) proxyHosts.add(host);
     return await callHost(proxied, init, timeoutMs, priority, context);
   }
