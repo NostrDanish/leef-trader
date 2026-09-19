@@ -43,7 +43,15 @@ export const proxyFetch: typeof fetch = async (input, init) => {
     // Wharfkit POSTs PackedTransaction JSON — the string "push_transaction"
     // appears in the URL, never the body — so gate on method/body instead:
     // only a bodyless GET (a read call) may fall through to the proxy.
-    const isGet = !init?.body && (!init?.method || init.method === "GET");
+    // A Request object carries its OWN method/body — check it too, or a
+    // POST encoded as `new Request(url, { method: "POST", body })` would
+    // slip through the init-only check and be proxied as a bodyless GET.
+    const method = (
+      init?.method ?? (input instanceof Request ? input.method : "GET")
+    ).toUpperCase();
+    const hasBody =
+      init?.body != null || (input instanceof Request && input.body != null);
+    const isGet = !hasBody && method === "GET";
     if (!isGet) throw err;
     const url =
       typeof input === "string" ? input : input instanceof Request ? input.url : String(input);
