@@ -187,7 +187,11 @@ export async function verifyExecutableRoute(opts: {
   // each leg's guaranteed min-out chaining into the next leg's input.
   const isCycle =
     opts.route.tokenIn.toUpperCase() === opts.route.tokenOut.toUpperCase();
-  if (allAlcorRoute(opts.route) && !isCycle) {
+  // The venue caps maxHops at 3 server-side: only ≤3-leg routes may take the
+  // single-call fast path. A >3-leg route quoted whole would let Alcor
+  // re-pick a different ≤3-hop path whose executed legs diverge from the
+  // evaluated ones — those verify leg-by-leg like mixed-venue routes.
+  if (allAlcorRoute(opts.route) && !isCycle && opts.route.legs.length <= 3) {
     const tokenIn = metaOf(opts.route.tokenIn, opts.snap);
     const tokenOut = metaOf(opts.route.tokenOut, opts.snap);
     try {

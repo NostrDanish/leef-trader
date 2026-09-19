@@ -712,9 +712,11 @@ export function routeTouchesLeef(route: SwapRoute): boolean {
  * downstream still vetoes anything uneconomic. Economics first, always.
  *
  * Second tier within a near-tie group: venue-verifiability. All-Alcor routes
- * get an EXACT venue-router quote at the gate; Defibox/Taco legs are
- * fresh-model (fresh reserves + CP math, min-out guarded). Near-tied routes
- * prefer the one whose quote will be exactly verified.
+ * with ≤ 3 legs get an EXACT whole-route venue quote at the gate (longer
+ * ones verify leg-by-leg — the venue caps maxHops at 3 server-side);
+ * Defibox/Taco legs are fresh-model (fresh reserves + CP math, min-out
+ * guarded). Near-tied routes prefer the one whose quote will be exactly
+ * verified.
  *
  * Within the all-Alcor near-ties, routes with ≤ 3 legs rank first (P-D): the
  * venue caps maxHops at 3 server-side, so those verify WHOLE-ROUTE with one
