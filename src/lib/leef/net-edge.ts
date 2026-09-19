@@ -148,7 +148,9 @@ export function optimizeEntrySize(opts: {
   const maxIn = opts.maxIn;
   if (!(maxIn > 0) || maxIn + 1e-12 < minIn) return null;
   const tried: SizedEntry["tried"] = [];
-  let best: EdgeVerdict | null = null;
+  // Winner lives in a ref: a `let` assigned only inside the closure narrows
+  // to `never` at the guards below (TS6 control-flow change).
+  const best: { v: EdgeVerdict | null } = { v: null };
   const seen = new Set<number>();
 
   const consider = (amountIn: number) => {
@@ -159,7 +161,7 @@ export function optimizeEntrySize(opts: {
     const v = evaluateEntry({ ...opts, amountIn: clamped });
     if (!v) return;
     tried.push({ amountIn: clamped, netEdgePct: v.netEdgePct, netProfitUsd: v.netProfitUsd });
-    if (v.pass && (!best || v.netProfitUsd > best.netProfitUsd)) best = v;
+    if (v.pass && (!best.v || v.netProfitUsd > best.v.netProfitUsd)) best.v = v;
   };
 
   const span = maxIn - minIn;
@@ -169,10 +171,10 @@ export function optimizeEntrySize(opts: {
   } else {
     for (const f of SIZE_LADDER) consider(minIn + span * f);
   }
-  if (!best) return null;
+  if (!best.v) return null;
 
-  let lo = Math.max(minIn, best.amountIn * 0.7);
-  let hi = Math.min(maxIn, best.amountIn * 1.3);
+  let lo = Math.max(minIn, best.v.amountIn * 0.7);
+  let hi = Math.min(maxIn, best.v.amountIn * 1.3);
   if (hi <= lo) {
     lo = minIn;
     hi = maxIn;
@@ -189,9 +191,9 @@ export function optimizeEntrySize(opts: {
     if (profitAt(m1) < profitAt(m2)) lo = m1;
     else hi = m2;
   }
-  if (!best) return null;
-  if (best.amountIn + 1e-12 < minIn || best.amountIn - 1e-12 > maxIn) return null;
-  return { best, tried };
+  if (!best.v) return null;
+  if (best.v.amountIn + 1e-12 < minIn || best.v.amountIn - 1e-12 > maxIn) return null;
+  return { best: best.v, tried };
 }
 
 /* ------------------------------------------------------------------ */
