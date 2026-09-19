@@ -28,7 +28,8 @@ export type JournalKind =
   | "calibration"
   | "ai"
   | "counterfactual"
-  | "learning";
+  | "learning"
+  | "flow";
 
 /**
  * Counterfactual HOLD labels (Phase 2). A HOLD with a concrete candidate is
@@ -68,6 +69,9 @@ export type JournalEntry = {
    *  measure model-vs-venue drift, the live answer to "is CP discovery good
    *  enough or do we need tick-level CLMM discovery?" */
   modelOut?: number;
+  /** The venue router's own CLMM-exact price impact (percent) on the gated
+   *  quote — impact-level drift evidence, sharper than output-level drift. */
+  venueImpactPct?: number;
 
   /** execution entries */
   action?: "buy" | "sell" | "swap" | "arb" | "rebalance";
@@ -219,6 +223,13 @@ export type EvidenceStats = {
    * tick-level CLMM discovery?" — small |meanAbsPct| = CP suffices.
    */
   gateDrift: { n: number; meanPct: number; meanAbsPct: number };
+  /**
+   * Venue-reported CLMM price impact over gate quotes carrying
+   * `venueImpactPct` (Alcor-exact quotes only). Impact-level companion to
+   * gateDrift: "impact differs by pool/size", the input that decides whether
+   * a local tick-walk quoter (E-3) is worth building.
+   */
+  venueImpact: { n: number; meanPct: number; meanAbsPct: number };
 };
 
 /**
@@ -228,7 +239,8 @@ export type EvidenceStats = {
 export function reasonSignature(reason: string): string {
   return reason
     .replace(/[0-9a-f]{16,}/gi, "0x…")
-    .replace(/\d+(\.\d+)?/g, "#")
+    // (?!x): don't eat the marker's leading 0 — "0x…" must survive intact.
+    .replace(/\d+(\.\d+)?(?!x)/g, "#")
     .replace(/\s+/g, " ")
     .trim()
     .slice(0, 90);
@@ -261,6 +273,7 @@ export function aggregateEntries(entries: JournalEntry[]): EvidenceStats {
   const gateFails = new Map<string, number>();
   const counterfactuals = { trueHolds: 0, falseHolds: 0, neutral: 0 };
   const drift = { n: 0, sumPct: 0, sumAbsPct: 0 };
+  const venueImpact = { n: 0, sumPct: 0, sumAbsPct: 0 };
   let oldestTs: number | null = null;
   let newestTs: number | null = null;
 
@@ -278,8 +291,9 @@ export function aggregateEntries(entries: JournalEntry[]): EvidenceStats {
     if (oldestTs == null || e.ts < oldestTs) oldestTs = e.ts;
     if (newestTs == null || e.ts > newestTs) newestTs = e.ts;
     // Analyst calls stay auditable in the raw log but never become a
-    // per-strategy row — they are commentary, not trading performance.
-    if (e.kind === "ai" || e.kind === "learning") continue;
+    // per-strategy row — they are commentary, not trading performance. Flow
+    // checkpoint validation rows are infrastructure evidence, likewise.
+    if (e.kind === "ai" || e.kind === "learning" || e.kind === "flow") continue;
     if (e.kind === "counterfactual") {
       // Counterfactuals are not decisions — tallied separately.
       if (e.cfLabel === "TRUE_HOLD") counterfactuals.trueHolds += 1;
@@ -307,6 +321,11 @@ export function aggregateEntries(entries: JournalEntry[]): EvidenceStats {
           drift.sumPct += d;
           drift.sumAbsPct += Math.abs(d);
         }
+        if (e.venueImpactPct != null && Number.isFinite(e.venueImpactPct)) {
+          venueImpact.n += 1;
+          venueImpact.sumPct += e.venueImpactPct;
+          venueImpact.sumAbsPct += Math.abs(e.venueImpactPct);
+        }
         break;
       case "execution":
         // Self-impact follow-up entries are observations, not new executions.
@@ -323,7 +342,9 @@ export function aggregateEntries(entries: JournalEntry[]): EvidenceStats {
           s.predEdgePctSum += e.predEdgePct;
           s.predN += 1;
         }
-        s.realEdgePctSum += e.realEdgePct ?? 0;
+        // legacy field, remove after one release: realizedEdgePct
+        s.realEdgePctSum +=
+          e.realEdgePct ?? (e as { realizedEdgePct?: number }).realizedEdgePct ?? 0;
         s.realN += 1;
         break;
     }
@@ -345,6 +366,11 @@ export function aggregateEntries(entries: JournalEntry[]): EvidenceStats {
       n: drift.n,
       meanPct: drift.n > 0 ? drift.sumPct / drift.n : 0,
       meanAbsPct: drift.n > 0 ? drift.sumAbsPct / drift.n : 0,
+    },
+    venueImpact: {
+      n: venueImpact.n,
+      meanPct: venueImpact.n > 0 ? venueImpact.sumPct / venueImpact.n : 0,
+      meanAbsPct: venueImpact.n > 0 ? venueImpact.sumAbsPct / venueImpact.n : 0,
     },
   };
 }
