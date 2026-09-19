@@ -1,5 +1,11 @@
 import { describe, expect, it } from "vitest";
-import { isLeefToken, isWaxToken, quoteConstantProduct } from "./amm";
+import {
+  isLeefToken,
+  isWaxToken,
+  quoteConstantProduct,
+  virtualLeefPairReserves,
+  virtualReserves,
+} from "./amm";
 
 /**
  * Token identity is contract + symbol + precision — never a symbol alone.
@@ -59,5 +65,56 @@ describe("quoteConstantProduct", () => {
     expect(q.priceImpact).toBeGreaterThan(0);
     expect(q.priceImpact).toBeLessThan(0.02);
     expect(q.spotPrice).toBeCloseTo(10, 10);
+  });
+});
+
+/**
+ * Pool 217 fixture (main WAX/LEEF, fee 3000) verified on-chain and against
+ * the Alcor API at audit time (ALCOR_COMPARATIVE_AUDIT §3.3 + appendix):
+ * tokenA = WAX (8 decimals), tokenB = LEEF (4 decimals), tick 9501.
+ */
+const POOL217 = {
+  sqrtPriceX64: "29663563357779418305",
+  liquidity: "20077984976034",
+  wax: 112_613.008,
+  leef: 4_565_638_459,
+  /** Tick price: 25 858.7 LEEF per WAX. Raw-reserve CP says 40 542 — the bug. */
+  tickPrice: 25_858.7,
+};
+
+describe("virtualReserves", () => {
+  it("computes the V3 virtual reserves (rx = L·2⁶⁴/√P, ry = L·√P/2⁶⁴)", () => {
+    const v = virtualReserves(POOL217)!;
+    expect(v).not.toBeNull();
+    // Audit-measured human equivalents: ≈124 858 WAX / ≈3 228 900 000 LEEF.
+    expect(Number(v.rx) / 1e8).toBeCloseTo(124_858, 0);
+    expect(Number(v.ry) / 1e4).toBeCloseTo(3_228_670_475, -4);
+  });
+
+  it("returns null when liquidity or sqrtPriceX64 is missing or non-positive", () => {
+    expect(virtualReserves({ liquidity: "0", sqrtPriceX64: POOL217.sqrtPriceX64 })).toBeNull();
+    expect(virtualReserves({ liquidity: POOL217.liquidity })).toBeNull();
+    expect(virtualReserves({ sqrtPriceX64: POOL217.sqrtPriceX64 })).toBeNull();
+    expect(virtualReserves({ liquidity: "abc", sqrtPriceX64: "xyz" })).toBeNull();
+    expect(virtualReserves({ liquidity: "-5", sqrtPriceX64: POOL217.sqrtPriceX64 })).toBeNull();
+  });
+
+  it("anchors CP spot at the tick price, not the raw reserve ratio", () => {
+    // leefIsA = false: tokenA = WAX, tokenB = LEEF.
+    const v = virtualLeefPairReserves({
+      liquidity: POOL217.liquidity,
+      sqrtPriceX64: POOL217.sqrtPriceX64,
+      leefIsA: false,
+      leef: { symbol: "LEEF", contract: "leefmaincorp", decimals: 4, quantity: POOL217.leef },
+      pair: { symbol: "WAX", contract: "eosio.token", decimals: 8, quantity: POOL217.wax },
+    })!;
+    expect(v).not.toBeNull();
+    const spotVirtual = v.leef / v.pair;
+    const spotRaw = POOL217.leef / POOL217.wax;
+    expect(spotRaw).toBeCloseTo(40_542.7, 1); // the level error, pinned
+    expect(spotVirtual).toBeCloseTo(POOL217.tickPrice, 0);
+    // Marginal CP quote (a tiny WAX→LEEF buy) lands on the tick price.
+    const q = quoteConstantProduct(0.001, v.pair, v.leef, 3000);
+    expect(q.spotPrice).toBeCloseTo(POOL217.tickPrice, 0);
   });
 });

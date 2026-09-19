@@ -11,10 +11,18 @@
  * haircut. Splits only win when they beat the best single path by enough to
  * cover extra on-chain actions (SPLIT_IMPROVE_MARGIN).
  *
- * Local quotes use constant-product on published reserves — conservative for
- * Alcor CLMM. Live execution still requotes the winner through Alcor.
+ * Local quotes use constant-product. Alcor CLMM edges quote over V3 VIRTUAL
+ * reserves (tick-price anchored — exact at the margin for in-range fills);
+ * CP on raw balances was not conservative, it was wrong (the 56.8% pool-217
+ * level error). Defibox/Taco edges quote over raw reserves, which ARE the CP
+ * reserves there. Live execution still requotes the winner through Alcor.
  */
-import { isLeefToken, isWaxToken, quoteConstantProduct } from "./amm";
+import {
+  isLeefToken,
+  isWaxToken,
+  quoteConstantProduct,
+  virtualLeefPairReserves,
+} from "./amm";
 import { isScamToken } from "./token-registry";
 import { LEEF_CONTRACT, LEEF_SYMBOL, WAX_CONTRACT, WAX_SYMBOL } from "./types";
 import type { AuxPool, LeefPool, QuoteLeg, SwapRoute } from "./types";
@@ -46,6 +54,9 @@ type Edge = {
   toSym: string;
   reserveIn: number;
   reserveOut: number;
+  /** CLMM virtual reserves (Alcor only) — tick-price anchored CP depth. */
+  virtIn?: number;
+  virtOut?: number;
   fee: number;
   feePct: number;
   tvlUsd: number;
@@ -73,8 +84,14 @@ function parseId(id: TokenId): { symbol: string; contract: string } {
 }
 
 function quoteEdge(edge: Edge, amountIn: number): QuoteLeg | null {
-  if (!(amountIn > 0) || edge.reserveIn < amountIn * MIN_RESERVE_MULT) return null;
-  const q = quoteConstantProduct(amountIn, edge.reserveIn, edge.reserveOut, edge.fee);
+  // Alcor CLMM: CP over virtual reserves (exact at the margin). Raw balances
+  // only when the pool carries no CLMM state — and always for Defibox/Taco,
+  // whose raw reserves ARE the constant-product reserves.
+  const virt = edge.venue === "alcor" && edge.virtIn != null && edge.virtOut != null;
+  const reserveIn = virt ? edge.virtIn! : edge.reserveIn;
+  const reserveOut = virt ? edge.virtOut! : edge.reserveOut;
+  if (!(amountIn > 0) || reserveIn < amountIn * MIN_RESERVE_MULT) return null;
+  const q = quoteConstantProduct(amountIn, reserveIn, reserveOut, edge.fee);
   if (q.amountOut <= 0 || q.priceImpact >= MAX_IMPACT) return null;
   return {
     poolId: edge.poolId,
@@ -160,6 +177,7 @@ export function buildRouteGraph(
     const a = leefId();
     const b = tokenId(p.pair.symbol, p.pair.contract);
     const name = `LEEF / ${p.pair.symbol}`;
+    const v = virtualLeefPairReserves(p);
     pushEdge(g, {
       poolId: p.id,
       from: a,
@@ -168,6 +186,8 @@ export function buildRouteGraph(
       toSym: p.pair.symbol.toUpperCase(),
       reserveIn: p.leef.quantity,
       reserveOut: p.pair.quantity,
+      virtIn: v?.leef,
+      virtOut: v?.pair,
       fee: p.fee,
       feePct: p.feePct,
       tvlUsd: p.tvlUsd,
@@ -183,6 +203,8 @@ export function buildRouteGraph(
       toSym: LEEF_SYMBOL,
       reserveIn: p.pair.quantity,
       reserveOut: p.leef.quantity,
+      virtIn: v?.pair,
+      virtOut: v?.leef,
       fee: p.fee,
       feePct: p.feePct,
       tvlUsd: p.tvlUsd,

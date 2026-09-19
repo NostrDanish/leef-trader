@@ -375,3 +375,67 @@ describe("LEEF near-tie preference", () => {
     expect(routeTouchesLeef(route("plain", 1, false))).toBe(false);
   });
 });
+
+/**
+ * P-A: Alcor edges quote CP over V3 virtual reserves (tick-price anchored).
+ * Pool 217 fixture verified on-chain at audit time (ALCOR_COMPARATIVE_AUDIT
+ * §3.3): tokenA = WAX (8 dec), tokenB = LEEF (4 dec), tick 9501, so
+ * leefIsA = false. Tick price = 25 858.7 LEEF/WAX; the raw reserve ratio
+ * (40 542) was the level-error bug.
+ */
+function pool217(over: { clmm: boolean }): LeefPool {
+  return {
+    id: 217,
+    fee: 3000,
+    feePct: 0.3,
+    leef: { symbol: "LEEF", contract: "leefmaincorp", decimals: 4, quantity: 4_565_638_459 },
+    pair: { symbol: "WAX", contract: "eosio.token", decimals: 8, quantity: 112_613.008 },
+    leefIsA: false,
+    tvlUsd: 10_000,
+    volume24Usd: 500,
+    volumeWeekUsd: 0,
+    volumeUsdMonth: 0,
+    volumeUsd90: 0,
+    volumeLeef24: 0,
+    volumePair24: 0,
+    change24: 0,
+    changeWeek: 0,
+    liquidity: over.clmm ? "20077984976034" : "0",
+    sqrtPriceX64: over.clmm ? "29663563357779418305" : undefined,
+    pairPerLeef: 112_613.008 / 4_565_638_459,
+    leefPerPair: 4_565_638_459 / 112_613.008,
+    waxPerLeef: 112_613.008 / 4_565_638_459,
+    usdPerLeef: null,
+    tickSpacing: 60,
+  };
+}
+
+describe("virtual-reserve CP anchor (P-A)", () => {
+  it("quotes an Alcor CLMM edge at the tick price, not the raw reserve ratio", () => {
+    const r = bestExecutionRoute([pool217({ clmm: true })], [], 1, "WAX", "LEEF")!;
+    expect(r.kind).toBe("direct");
+    // Marginal quote ≈ 25 858.7 × (1 − 0.3%) ≈ 25 781; raw-CP would say ≈40 421.
+    expect(r.amountOut).toBeGreaterThan(24_000);
+    expect(r.amountOut).toBeLessThan(26_000);
+    expect(r.amountOut).toBeCloseTo(25_781, -2);
+  });
+
+  it("falls back to raw reserves when liquidity/sqrtPriceX64 are absent", () => {
+    const r = bestExecutionRoute([pool217({ clmm: false })], [], 1, "WAX", "LEEF")!;
+    expect(r.kind).toBe("direct");
+    expect(r.amountOut).toBeCloseTo(40_421, -2);
+  });
+
+  it("leaves Defibox/Taco (true-CP) books on raw reserves", () => {
+    const book = aux({
+      id: 700,
+      a: { symbol: "LEEF", contract: "leefmaincorp", quantity: 200_000_000 },
+      b: { symbol: "WAX", contract: "eosio.token", quantity: 10_000 },
+    });
+    book.venue = "defibox";
+    // Raw spot = 20 000 LEEF/WAX; tiny clip nets ≈ spot × (1 − fee).
+    const r = bestExecutionRoute([], [book], 1, "WAX", "LEEF")!;
+    expect(r.amountOut).toBeCloseTo(19_938, 0);
+    expect(r.legs[0]!.venue).toBe("defibox");
+  });
+});

@@ -1,4 +1,10 @@
-import { backedPools, isLeefToken, isWaxToken, quoteConstantProduct } from "./amm";
+import {
+  backedPools,
+  isLeefToken,
+  isWaxToken,
+  quoteConstantProduct,
+  virtualLeefPairReserves,
+} from "./amm";
 import { bestExecutionRoute } from "./route-optimizer";
 import { planLeefTape, planNextAction } from "./next-action";
 import {
@@ -489,8 +495,10 @@ function bestSellRoute(
 /**
  * Find a two-pool atomic arb: buy LEEF with WAX on the cheaper WAX book,
  * sell it on the richer one — both legs in a single transaction.
- * Constant-product quotes on real reserves are conservative for Alcor's
- * concentrated pools, which is the safe direction for a min-out guard.
+ * Alcor legs quote constant-product over VIRTUAL reserves (tick-price
+ * anchored, exact at the margin for in-range fills); Defibox/Taco legs quote
+ * raw reserves, which are the exact CP reserves there. The venue quote and
+ * min-out memo remain the hard guards at execution.
  */
 /** LEEF/WAX books from Defibox/Taco, shaped as LeefPool so arb can cross venues. */
 function venueWaxLeefPools(snap: LeefSnapshot): LeefPool[] {
@@ -542,11 +550,25 @@ export function findArb(
 
   let best: ArbPlan | null = null;
   for (const buyPool of waxPools) {
-    const q1 = quoteConstantProduct(waxIn, buyPool.pair.quantity, buyPool.leef.quantity, buyPool.fee);
+    // Alcor CLMM pools quote over virtual reserves (tick-price anchored);
+    // Defibox/Taco (and stateless pools) fall back to raw reserves = exact CP.
+    const buyRes = virtualLeefPairReserves(buyPool);
+    const q1 = quoteConstantProduct(
+      waxIn,
+      buyRes?.pair ?? buyPool.pair.quantity,
+      buyRes?.leef ?? buyPool.leef.quantity,
+      buyPool.fee,
+    );
     if (q1.amountOut <= 0 || q1.priceImpact > 0.2) continue;
     for (const sellPool of waxPools) {
       if (!allowSamePool && sellPool.id === buyPool.id) continue;
-      const q2 = quoteConstantProduct(q1.amountOut, sellPool.leef.quantity, sellPool.pair.quantity, sellPool.fee);
+      const sellRes = virtualLeefPairReserves(sellPool);
+      const q2 = quoteConstantProduct(
+        q1.amountOut,
+        sellRes?.leef ?? sellPool.leef.quantity,
+        sellRes?.pair ?? sellPool.pair.quantity,
+        sellPool.fee,
+      );
       if (q2.amountOut <= 0 || q2.priceImpact > 0.2) continue;
       const profitPct = q2.amountOut / waxIn - 1;
       const impactPct = 1 - (1 - q1.priceImpact) * (1 - q2.priceImpact);
