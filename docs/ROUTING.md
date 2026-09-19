@@ -50,9 +50,19 @@ beat the best single path by ≥ 0.3% (extra CPU of extra transfers).
 
 ## Live vs local
 
-Local constant-product on published reserves is **ranking**. Live Buy/Sell
-and bot fills **requote Alcor** immediately before signing. Unknown chain
-status is never retried blindly.
+Local constant-product is **ranking**; the venue quote is execution truth.
+Alcor CLMM edges quote CP over **virtual reserves** (`L/√P`, `L·√P` from the
+pool's on-chain `liquidity` + `sqrtPriceX64`), which is anchored at the tick
+price — exact at the margin and exact for any fill that stays inside the
+current tick range. (The previous CP-on-raw-balances was not "conservative
+for CLMM", it was wrong: a +56.8%/−36.2% level error measured on pool 217 —
+see ALCOR_COMPARATIVE_AUDIT §3.3.) Pools without CLMM state fall back to raw
+reserves, and Defibox/Taco always quote raw — their raw reserves ARE the CP
+reserves. Live Buy/Sell and bot fills **requote Alcor** immediately before
+signing, and the on-chain minOut memo is the hard freshness guard (the
+venue caches each router trade for 5 s server-side, so within that window a
+re-quote returns the identical cached trade — minOut, not the re-quote, is
+the guarantee). Unknown chain status is never retried blindly.
 
 ## Terminology
 
