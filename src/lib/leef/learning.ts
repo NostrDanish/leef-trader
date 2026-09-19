@@ -293,8 +293,11 @@ export function applyEntry(profiles: LearningProfiles, e: JournalEntry, cfg: Lea
         if (e.status === "confirmed" && (e.expectedOut ?? 0) > 0 && (e.actualOut ?? 0) > 0) {
           ds.confirmed += 1;
           ds.slipPctSum += (1 - e.actualOut! / e.expectedOut!) * 100;
-          if (e.predEdgePct != null && e.realizedEdgePct != null) {
-            ds.edgePctSum += e.realizedEdgePct;
+          // legacy field, remove after one release: realizedEdgePct
+          const dsRealEdge =
+            e.realEdgePct ?? (e as { realizedEdgePct?: number }).realizedEdgePct;
+          if (e.predEdgePct != null && dsRealEdge != null) {
+            ds.edgePctSum += dsRealEdge;
             ds.edgeN += 1;
           }
         }
@@ -309,9 +312,9 @@ export function applyEntry(profiles: LearningProfiles, e: JournalEntry, cfg: Lea
         b.slipPctSum += slip;
         p.ewmaSlipPct = ewmaStep(p.ewmaSlipPct, p.ewmaSlipAt, slip, now, cfg.halfLifeMs);
         p.ewmaSlipAt = now;
-        if (e.predEdgePct != null && e.realizedEdgePct != null) {
-          const err = e.realizedEdgePct - e.predEdgePct;
-          b.edgePctSum += e.realizedEdgePct;
+        if (e.predEdgePct != null && e.realEdgePct != null) {
+          const err = e.realEdgePct - e.predEdgePct;
+          b.edgePctSum += e.realEdgePct;
           b.edgeN += 1;
           b.predEdgePctSum += e.predEdgePct;
           p.ewmaEdgeErrPct = ewmaStep(
