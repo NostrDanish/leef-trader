@@ -102,32 +102,49 @@ export function assetDelta(
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
+/**
+ * Verdict over the per-host Hyperion parses. Executed stays single-source
+ * (the transfer evidence is the cross-check); a FAILED verdict unlocks
+ * capital, so it requires ≥2 agreeing indexers — one stale or malicious
+ * Hyperion must never flip a landed tx to "failed".
+ * Exported pure for regression tests.
+ */
+export function hyperionTxVerdict(
+  txid: string,
+  parsed: ({ executed: boolean; transfers: TxTransfer[] } | null)[],
+): ReconcileResult | null {
+  const found = parsed.filter((p): p is { executed: boolean; transfers: TxTransfer[] } => p != null);
+  const good = found.find((p) => p.executed);
+  if (good) return { status: "confirmed", txid, transfers: good.transfers };
+  if (found.filter((p) => !p.executed).length >= 2) {
+    return { status: "failed", txid, error: "Transaction failed on-chain — nothing moved" };
+  }
+  return null;
+}
+
 async function hyperionOnce(txid: string): Promise<ReconcileResult | null> {
   const hosts = historyPool
     .health()
     .filter((e) => e.status !== "disabled")
     .slice(0, 3);
-  for (const e of hosts) {
-    try {
-      const raw = await fetchJson(
-        `${e.url}/v2/history/get_transaction?id=${encodeURIComponent(txid)}`,
-        {
-          timeoutMs: 5_000,
-          priority: "high",
-          context: { operation: "Hyperion tx lookup", endpoint: `${e.url}/v2/history/get_transaction`, params: { id: txid } },
-        },
-      );
-      const parsed = parseHyperionTransfers(raw);
-      if (!parsed) continue;
-      if (!parsed.executed) {
-        return { status: "failed", txid, error: "Transaction failed on-chain — nothing moved" };
+  const parsed = await Promise.all(
+    hosts.map(async (e) => {
+      try {
+        const raw = await fetchJson(
+          `${e.url}/v2/history/get_transaction?id=${encodeURIComponent(txid)}`,
+          {
+            timeoutMs: 5_000,
+            priority: "high",
+            context: { operation: "Hyperion tx lookup", endpoint: `${e.url}/v2/history/get_transaction`, params: { id: txid } },
+          },
+        );
+        return parseHyperionTransfers(raw);
+      } catch {
+        return null; /* host down / not indexed yet */
       }
-      return { status: "confirmed", txid, transfers: parsed.transfers };
-    } catch {
-      /* next host */
-    }
-  }
-  return null;
+    }),
+  );
+  return hyperionTxVerdict(txid, parsed);
 }
 
 /**

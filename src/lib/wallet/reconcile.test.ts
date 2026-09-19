@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { assetDelta, parseHyperionTransfers } from "./reconcile";
-import { waxResourceBlock } from "./chain";
+import { assetDelta, hyperionTxVerdict, parseHyperionTransfers } from "./reconcile";
+import { quorumTxStatus, waxResourceBlock } from "./chain";
 
 const ACCOUNT = "trader.leef";
 
@@ -107,6 +107,62 @@ describe("assetDelta", () => {
     ];
     expect(assetDelta(spoofed, ACCOUNT, "LEEF", "leefmaincorp")).toBeCloseTo(241234.5678, 4);
     expect(assetDelta(spoofed, ACCOUNT, "LEEF")).toBeCloseTo(241234.5678 + 9999, 4);
+  });
+});
+
+describe("quorumTxStatus (M2 — failed verdicts need ≥2 agreeing endpoints)", () => {
+  it("a single endpoint saying failed stays UNKNOWN — one lying RPC can't unlock capital", () => {
+    expect(quorumTxStatus(["hard_fail"])).toBe("unknown");
+    expect(quorumTxStatus(["soft_fail", ""])).toBe("unknown");
+    expect(quorumTxStatus(["hard_fail", "unrecognized"])).toBe("unknown");
+  });
+
+  it("two endpoints agreeing on failed → failed", () => {
+    expect(quorumTxStatus(["hard_fail", "hard_fail"])).toBe("hard_fail");
+    expect(quorumTxStatus(["hard_fail", "soft_fail"])).toBe("hard_fail");
+    expect(quorumTxStatus(["soft_fail", "failed"])).toBe("soft_fail");
+    expect(quorumTxStatus(["soft_fail", "soft_fail", ""])).toBe("soft_fail");
+  });
+
+  it("executed stays single-source (chain truth)", () => {
+    expect(quorumTxStatus(["executed"])).toBe("executed");
+    expect(quorumTxStatus(["", "executed"])).toBe("executed");
+  });
+
+  it("conflicting executed/failed answers stay UNKNOWN", () => {
+    expect(quorumTxStatus(["executed", "hard_fail"])).toBe("unknown");
+    expect(quorumTxStatus(["soft_fail", "executed", "hard_fail"])).toBe("unknown");
+  });
+
+  it("no recognized status → unknown", () => {
+    expect(quorumTxStatus([])).toBe("unknown");
+    expect(quorumTxStatus(["", "expired"])).toBe("unknown");
+  });
+});
+
+describe("hyperionTxVerdict (M2 — failed verdicts need ≥2 agreeing indexers)", () => {
+  const failed = { executed: false, transfers: [] };
+  const good = { executed: true, transfers: [] };
+
+  it("a single indexer reporting failed returns null (keep polling — stays UNKNOWN)", () => {
+    expect(hyperionTxVerdict("t", [failed])).toBeNull();
+    expect(hyperionTxVerdict("t", [failed, null, null])).toBeNull();
+  });
+
+  it("two indexers agreeing on failed → failed", () => {
+    const v = hyperionTxVerdict("t", [failed, failed]);
+    expect(v).toMatchObject({ status: "failed", txid: "t" });
+    expect(hyperionTxVerdict("t", [failed, null, failed])).toMatchObject({ status: "failed" });
+  });
+
+  it("executed stays single-source and wins over failed reports", () => {
+    expect(hyperionTxVerdict("t", [good])).toMatchObject({ status: "confirmed" });
+    expect(hyperionTxVerdict("t", [failed, good])).toMatchObject({ status: "confirmed" });
+  });
+
+  it("nothing parsed → null", () => {
+    expect(hyperionTxVerdict("t", [null, null])).toBeNull();
+    expect(hyperionTxVerdict("t", [])).toBeNull();
   });
 });
 
