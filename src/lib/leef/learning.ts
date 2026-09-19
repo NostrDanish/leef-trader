@@ -293,8 +293,11 @@ export function applyEntry(profiles: LearningProfiles, e: JournalEntry, cfg: Lea
         if (e.status === "confirmed" && (e.expectedOut ?? 0) > 0 && (e.actualOut ?? 0) > 0) {
           ds.confirmed += 1;
           ds.slipPctSum += (1 - e.actualOut! / e.expectedOut!) * 100;
-          if (e.predEdgePct != null && e.realEdgePct != null) {
-            ds.edgePctSum += e.realEdgePct;
+          // legacy field, remove after one release: realizedEdgePct
+          const dsRealEdge =
+            e.realEdgePct ?? (e as { realizedEdgePct?: number }).realizedEdgePct;
+          if (e.predEdgePct != null && dsRealEdge != null) {
+            ds.edgePctSum += dsRealEdge;
             ds.edgeN += 1;
           }
         }

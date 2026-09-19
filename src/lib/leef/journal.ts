@@ -340,7 +340,9 @@ export function aggregateEntries(entries: JournalEntry[]): EvidenceStats {
           s.predEdgePctSum += e.predEdgePct;
           s.predN += 1;
         }
-        s.realEdgePctSum += e.realEdgePct ?? 0;
+        // legacy field, remove after one release: realizedEdgePct
+        s.realEdgePctSum +=
+          e.realEdgePct ?? (e as { realizedEdgePct?: number }).realizedEdgePct ?? 0;
         s.realN += 1;
         break;
     }

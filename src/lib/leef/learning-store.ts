@@ -111,22 +111,25 @@ function onEntry(e: JournalEntry): void {
   governAndMaybeAct(artifact);
   // Size-multiplier shadow: fresh realized edge in the watched bucket.
   const sizeArtifact = artifacts[`POOL_SIZE_MULTIPLIER:${key}`];
+  // legacy field, remove after one release: realizedEdgePct
+  const realEdge =
+    e.realEdgePct ?? (e as { realizedEdgePct?: number }).realizedEdgePct;
   if (
     sizeArtifact &&
     (sizeArtifact.status === "shadow" || sizeArtifact.status === "active") &&
     sizeArtifact.watchBucket != null &&
     e.status === "confirmed" &&
-    e.realEdgePct != null &&
+    realEdge != null &&
     sizeBucketIndex(e.sizeUsd ?? 0) === sizeArtifact.watchBucket
   ) {
     sizeArtifact.shadow.n += 1;
-    sizeArtifact.shadow.baselineErrSum += e.realEdgePct;
+    sizeArtifact.shadow.baselineErrSum += realEdge;
     journal({
       kind: "learning",
       artifactId: sizeArtifact.id,
       artifactType: sizeArtifact.type,
       artifactStatus: sizeArtifact.status,
-      reason: `shadow size sample: realized edge ${e.realEdgePct.toFixed(2)}% in watched bucket ${SIZE_BUCKET_LABELS[sizeArtifact.watchBucket]}`,
+      reason: `shadow size sample: realized edge ${realEdge.toFixed(2)}% in watched bucket ${SIZE_BUCKET_LABELS[sizeArtifact.watchBucket]}`,
       samples: sizeArtifact.shadow.n,
       poolIds: e.poolIds,
       sizeUsd: e.sizeUsd,
