@@ -214,7 +214,9 @@ export type WaxAnchor = {
   confidence: number;
 };
 
-type WaxObservation = WaxAnchor & { spot: boolean };
+/** One pool's price observation — the aggregate fields (sources, dispersion,
+ *  confidence) only exist once the anchor is chosen. */
+type WaxObservation = Pick<WaxAnchor, "usd" | "tvlUsd" | "poolId"> & { spot: boolean };
 
 /**
  * Every WAX/trusted-stable pool is an observation, in two trust tiers:

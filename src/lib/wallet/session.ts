@@ -27,12 +27,21 @@ let session: Session | null = null;
 
 const CORS_PROXY = "https://proxy.shakespeare.diy/?url=";
 
-/** Wharfkit's internal chain calls get the same CORS-proxy fallback. */
+/**
+ * Wharfkit's internal chain calls get the same CORS-proxy fallback — but
+ * only for READ calls. A signed transaction (push_transaction) must NEVER
+ * be re-submitted through a third-party proxy: it would expose the signed
+ * payload and silently double-submit a timed-out broadcast (the "exactly
+ * one submission" invariant).
+ */
 const proxyFetch: typeof fetch = async (input, init) => {
   try {
     return await fetch(input, init);
-  } catch {
-    const url = typeof input === "string" ? input : input.url;
+  } catch (err) {
+    const body = typeof init?.body === "string" ? init.body : "";
+    if (body.includes("push_transaction")) throw err;
+    const url =
+      typeof input === "string" ? input : input instanceof Request ? input.url : String(input);
     return await fetch(`${CORS_PROXY}${encodeURIComponent(url)}`, init);
   }
 };

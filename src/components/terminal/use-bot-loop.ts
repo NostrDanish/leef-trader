@@ -1491,7 +1491,7 @@ async function runBotOnceInner(
         platformFeeCollected:
           live && execStatus === "confirmed" && feeInfo ? true : undefined,
         predEdgePct: position?.predEdgePct ?? undefined,
-        realizedEdgePct:
+        realEdgePct:
           position && position.entryCostUsd > 0
             ? (pnlUsd / position.entryCostUsd) * 100
             : undefined,
@@ -1608,7 +1608,7 @@ async function runBotOnceInner(
         platformFeeToken: feeInfo?.symbol,
         platformFeeCollected:
           live && execStatus === "confirmed" && feeInfo ? true : undefined,
-        realizedEdgePct: inUsd > 0 ? (tapePnl / inUsd) * 100 : undefined,
+        realEdgePct: inUsd > 0 ? (tapePnl / inUsd) * 100 : undefined,
         latencyMs: live ? Date.now() - tExec : undefined,
         ...routeJournalMeta(
           decision.route,
@@ -1787,7 +1787,7 @@ async function runBotOnceInner(
         amountIn: plan.waxIn, expectedOut: plan.waxOut,
         actualOut: realizedWax ?? undefined, txid, status: execStatus, pnlUsd,
         predEdgePct: plan.profitPct * 100,
-        realizedEdgePct:
+        realEdgePct:
           (realizedWax != null ? realizedWax / plan.waxIn : plan.waxOut / plan.waxIn - 1) * 100,
         platformFeeAmount: feeInfo?.amount,
         platformFeeToken: feeInfo?.symbol,
@@ -1856,11 +1856,10 @@ async function runBotOnceInner(
             tokenIn: b.quote || "WAX",
             tokenOut: b.base || "LEEF",
           });
-    const coolMs =
-      code === "QUOTE_FAILURE" || code === "RPC_FAILURE" || code === "API_RATE_LIMIT"
-        ? 30_000
-        : 12_000;
-    markDeadOpportunity(fp, coolMs);
+    // Infrastructure classes (QUOTE_FAILURE/RPC_FAILURE/API_RATE_LIMIT) already
+    // returned above with their own rate-limit backoff; everything left gets
+    // the standard dead-clip cooldown.
+    markDeadOpportunity(fp, 12_000);
     return decision;
   } finally {
     const fetchTiming = lastFetchTiming();

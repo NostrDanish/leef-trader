@@ -436,7 +436,11 @@ export async function signAndPushArb(opts: {
   /** Hard profit floor the sell legs must enforce on-chain, percent. */
   minProfitPct: number;
   snap: LeefSnapshot;
-}): Promise<{ txid: string }> {
+}): Promise<{
+  txid: string;
+  /** The platform fee appended to this transaction (absent when it floors to 0). */
+  platformFee?: { amount: number; symbol: string; contract: string };
+}> {
   const plan = opts.plan;
 
   if (!plan.buyLegs?.length || !plan.sellLegs?.length) {

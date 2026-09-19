@@ -29,6 +29,8 @@ export type UniverseToken = {
   usdPrice: number;
   /** TVL of the valuation pool. */
   tvlUsd: number;
+  /** Alcor-reported 24h USD volume of the valuation pool. */
+  volume24Usd?: number;
   stable: boolean;
   /** Trusted-stable oracle state (PEGGED/…/UNKNOWN) when `stable`. */
   stableState?: StableState;
@@ -66,6 +68,8 @@ type RawPoolRow = {
   priceA?: number;
   /** Venue-quoted spot: A per 1 B. */
   priceB?: number;
+  /** Alcor-reported 24h USD volume. */
+  volumeUSD?: number;
 };
 
 const num = (v: unknown): number => {
@@ -125,6 +129,7 @@ export function buildUniverse(rawPools: unknown, waxUsd: number): UniverseToken[
     other: RawToken,
     poolId: number,
     tvlUsd: number,
+    volume24Usd: number,
     otherIsWax: boolean,
     /** Venue-quoted spot: tok per 1 other (priceA/priceB from the pool row). */
     otherPerTokSpot: number,
@@ -185,14 +190,15 @@ export function buildUniverse(rawPools: unknown, waxUsd: number): UniverseToken[
     const b = p.tokenB;
     const id = Number(p.id);
     const tvlUsd = num(p.tvlUSD);
+    const volume24Usd = num(p.volumeUSD);
     if (!a || !b || !Number.isFinite(id)) continue;
     const aWax = isWaxToken(a);
     const bWax = isWaxToken(b);
     if (aWax || bWax) {
       // WAX pool: price the non-WAX side. tokIsA=false → tok is tokenB (venue
       // priceB = A per 1 B); tokIsA=true → priceA. CLMM-safe.
-      if (aWax && b) consider(b, a, id, tvlUsd, true, spotFor(p, false));
-      if (bWax && a) consider(a, b, id, tvlUsd, true, spotFor(p, true));
+      if (aWax && b) consider(b, a, id, tvlUsd, volume24Usd, true, spotFor(p, false));
+      if (bWax && a) consider(a, b, id, tvlUsd, volume24Usd, true, spotFor(p, true));
       // WAX itself is always in the universe.
       const waxTok = aWax ? a : b;
       if (waxTok && !best.has("WAX@eosio.token")) {
@@ -205,6 +211,7 @@ export function buildUniverse(rawPools: unknown, waxUsd: number): UniverseToken[
           waxPerToken: 1,
           usdPrice: waxUsd,
           tvlUsd,
+          volume24Usd,
           stable: false,
         });
       }
@@ -220,8 +227,8 @@ export function buildUniverse(rawPools: unknown, waxUsd: number): UniverseToken[
       String(b.symbol ?? "").toUpperCase(),
       String(b.contract ?? ""),
     );
-    if (aStable && !bStable) consider(b, a, id, tvlUsd, false, spotFor(p, false));
-    if (bStable && !aStable) consider(a, b, id, tvlUsd, false, spotFor(p, true));
+    if (aStable && !bStable) consider(b, a, id, tvlUsd, volume24Usd, false, spotFor(p, false));
+    if (bStable && !aStable) consider(a, b, id, tvlUsd, volume24Usd, false, spotFor(p, true));
   }
 
   // Venue verification overlay: Alcor's own score/flags annotate every token.

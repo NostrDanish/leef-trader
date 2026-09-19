@@ -132,6 +132,12 @@ export const useTerminal = create<TerminalState>()(
   setLearningMode: (learningMode) => set({ learningMode }),
   setAiReviewEveryTrades: (n) =>
     set({ aiReviewEveryTrades: Math.min(50, Math.max(3, Math.round(n))) }),
+  setPoolQuery: (poolQuery) => set({ poolQuery }),
+  setPoolSort: (poolSort) => set({ poolSort }),
+  togglePoolDir: () => set({ poolDir: get().poolDir === "asc" ? "desc" : "asc" }),
+  setTickPool: (tickPoolId) => set({ tickPoolId }),
+  setSyncSec: (sec) => set({ syncSec: clampSyncSec(sec) }),
+  setAiGatewayUrl: (aiGatewayUrl) => set({ aiGatewayUrl }),
     }),
     {
       name: "leef-terminal-sync",

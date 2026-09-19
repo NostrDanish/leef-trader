@@ -26,6 +26,7 @@ import {
   DEFAULT_MIN_TRADE_USD,
   DEFAULT_OPERATIONAL_RESERVE_USD,
   usdToTokenBounds,
+  type UsdBounds,
 } from "./risk-usd";
 import type { LeefPool, LeefSnapshot, SwapRoute } from "./types";
 import {
@@ -821,14 +822,31 @@ export function evaluateBot(input: BotInput): Decision {
   // Treasure growth is inventory-agnostic — a missing quote mark must not
   // block converting TLM/USDC/… into the named treasures.
   if ("error" in bounds && strategy !== "growth") return hold(bounds.error);
-  const minWax = "error" in bounds ? 0 : bounds.minIn;
+  // Growth is inventory-agnostic: a missing quote mark degrades the USD
+  // bounds to zeros (sizing falls back to wallet balances below) — it must
+  // never crash on the error variant.
+  const usdBounds: UsdBounds =
+    "error" in bounds
+      ? {
+          quoteUsd: 0,
+          minIn: 0,
+          maxIn: 0,
+          positionUsd: 0,
+          remainingUsd: 0,
+          walletQuote: 0,
+          walletUsd: 0,
+          spendableUsd: 0,
+          effectiveMaxUsd: 0,
+        }
+      : bounds;
+  const minWax = usdBounds.minIn;
   // Danger score sizes entries down (never up). Manual force keeps full size.
-  const maxWax = ("error" in bounds ? 0 : bounds.maxIn) * (input.force ? 1 : sizeF);
+  const maxWax = usdBounds.maxIn * (input.force ? 1 : sizeF);
 
   if (input.force === "buy") {
     if (maxWax + 1e-12 < minWax) {
       return hold(
-        `Effective max $${bounds.effectiveMaxUsd.toFixed(2)} is under min trade $${risk.minTradeUsd.toFixed(2)} (wallet $${bounds.walletUsd.toFixed(2)}) — sitting out`,
+        `Effective max $${usdBounds.effectiveMaxUsd.toFixed(2)} is under min trade $${risk.minTradeUsd.toFixed(2)} (wallet $${usdBounds.walletUsd.toFixed(2)}) — sitting out`,
       );
     }
     const sized = optimizeEntrySize({
@@ -836,16 +854,16 @@ export function evaluateBot(input: BotInput): Decision {
       tokenIn: quote,
       tokenOut: base,
       expectedGrossPct: Math.max(goals.takeProfitPct, 0.5),
-  // A real hurdle, not "technically non-negative": entries must clear ALL
-  // modeled costs + platform fee by a margin that covers quote uncertainty.
-  minNetEdgePct: 0.1,
+      // A real hurdle, not "technically non-negative": entries must clear ALL
+      // modeled costs + platform fee by a margin that covers quote uncertainty.
+      minNetEdgePct: risk.minNetEdgePct,
       minIn: minWax,
       maxIn: maxWax,
       volPerSec: realizedVolPerSec(input.series),
     });
     if (!sized) {
       return hold(
-        `Manual buy · no size in $${risk.minTradeUsd.toFixed(2)}–$${bounds.effectiveMaxUsd.toFixed(2)} effective max clears costs — sitting out`,
+        `Manual buy · no size in $${risk.minTradeUsd.toFixed(2)}–$${usdBounds.effectiveMaxUsd.toFixed(2)} effective max clears costs — sitting out`,
       );
     }
     const route = sized.best.route;
@@ -878,7 +896,7 @@ export function evaluateBot(input: BotInput): Decision {
     const hops = hopsForStrategy("volume-x", risk.maxHops, now);
     const tape = planLeefTape(snap, input.balances, {
       minUsd: risk.minTradeUsd,
-      maxUsd: Math.max(risk.minTradeUsd, bounds.effectiveMaxUsd || risk.maxPositionUsd),
+      maxUsd: Math.max(risk.minTradeUsd, usdBounds.effectiveMaxUsd || risk.maxPositionUsd),
       maxHops: hops,
       seed: now,
       maxLossPct: risk.maxEchoLossPct,
@@ -1020,7 +1038,7 @@ export function evaluateBot(input: BotInput): Decision {
     if (dangerHold) return hold(dangerHold);
     if (!(maxWaxArg > 0) || maxWaxArg + 1e-12 < minWax) {
       return hold(
-        `Position cap reached ($${bounds.positionUsd.toFixed(2)} / $${risk.maxPositionUsd.toFixed(0)}), remaining room under min trade, or no ${quote}`,
+        `Position cap reached ($${usdBounds.positionUsd.toFixed(2)} / $${risk.maxPositionUsd.toFixed(0)}), remaining room under min trade, or no ${quote}`,
       );
     }
     if (!(expectedGrossPct > 0)) return hold("No positive expected move on this book — sitting out");
@@ -1381,7 +1399,7 @@ export function evaluateBot(input: BotInput): Decision {
         }
       } else {
         considered.push(
-          `no deployable ${quote} (effective max $${bounds.effectiveMaxUsd.toFixed(2)} < min $${risk.minTradeUsd.toFixed(2)})`,
+          `no deployable ${quote} (effective max $${usdBounds.effectiveMaxUsd.toFixed(2)} < min $${risk.minTradeUsd.toFixed(2)})`,
         );
       }
 
@@ -1556,7 +1574,7 @@ export function evaluateBot(input: BotInput): Decision {
       }
       const tape = planLeefTape(snap, input.balances, {
         minUsd: risk.minTradeUsd,
-        maxUsd: Math.max(risk.minTradeUsd, bounds.effectiveMaxUsd),
+        maxUsd: Math.max(risk.minTradeUsd, usdBounds.effectiveMaxUsd),
         maxHops: hops,
         seed: now + 17,
         maxLossPct: risk.maxEchoLossPct,

@@ -206,6 +206,9 @@ class MarketEngine {
 
   private scheduleHeartbeat(delayMs: number): void {
     if (!this.started) return;
+    // Never leave a previous heartbeat pending — onWake/forceResync would
+    // otherwise spawn duplicate self-perpetuating heartbeat chains.
+    if (this.heartbeatTimer) clearTimeout(this.heartbeatTimer);
     const expected = Date.now() + delayMs;
     this.heartbeatTimer = setTimeout(() => {
       // Timer drift = the browser throttled/suspended us. Detect the gap.

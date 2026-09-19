@@ -3,8 +3,12 @@
  * limits, and 429 backoff.
  *
  * - Direct first; only NETWORK failures (CORS blocks surface as TypeError)
- *   retry through the Shakespeare proxy. HTTP errors (4xx/5xx) are real
- *   answers from the host — proxying them would just double the load.
+ *   on idempotent GETs retry through the Shakespeare proxy. HTTP errors
+ *   (4xx/5xx) are real answers from the host — proxying them would just
+ *   double the load. Non-GET requests are NEVER proxied: a failed POST
+ *   (worst case push_transaction) re-submitted through a third party would
+ *   expose the signed payload and silently double-submit a timed-out
+ *   broadcast — the "exactly one submission" invariant forbids it.
  * - At most 4 in-flight requests per host; the rest queue. Unthrottled bursts
  *   (e.g. 80 pool refreshes at once) are what trip nginx rate limits.
  * - On 429/503 the host gets a cooldown and the caller retries once after it.
