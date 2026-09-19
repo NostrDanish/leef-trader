@@ -1,4 +1,10 @@
-import { backedPools, isLeefToken, isWaxToken, quoteConstantProduct } from "./amm";
+import {
+  backedPools,
+  isLeefToken,
+  isWaxToken,
+  quoteConstantProduct,
+  virtualLeefPairReserves,
+} from "./amm";
 import { bestExecutionRoute } from "./route-optimizer";
 import { planLeefTape, planNextAction } from "./next-action";
 import {
@@ -11,7 +17,7 @@ import {
   type GrowthTarget,
 } from "./growth-engine";
 import { realizedVolPerSec, usdPriceOf } from "./cost-model";
-import { classifyRegime, dangerScore, regimeWeight } from "./regime";
+import { classifyRegime, dangerScore, regimeWeight, type FlowRiskContext } from "./regime";
 import { balanceForIdentifier, markPortfolioUsd } from "@/lib/wallet/balances";
 import {
   decorate,
@@ -26,6 +32,7 @@ import {
   DEFAULT_MIN_TRADE_USD,
   DEFAULT_OPERATIONAL_RESERVE_USD,
   usdToTokenBounds,
+  type UsdBounds,
 } from "./risk-usd";
 import type { LeefPool, LeefSnapshot, SwapRoute } from "./types";
 import {
@@ -35,7 +42,6 @@ import {
   opportunityFingerprint,
   rejectOpportunity,
   routeComplexity,
-  routeHops,
   selectBestOpportunity,
   type CalibrationMemory,
   type OpportunityGate,
@@ -244,7 +250,7 @@ export const DEFAULT_RISK: BotRisk = {
   // a volume echo is "zero-loss average" after fees — the on-chain min-out
   // still reverts anything worse. Not wash trading: cost is bounded.
   maxEchoLossPct: 1.5,
-  minNetEdgePct: 0,
+  minNetEdgePct: 0.1,
   maxQuoteAgeSec: 45,
   maxHops: 4,
 };
@@ -360,6 +366,11 @@ export type BotInput = {
   growthMode?: GrowthMode;
   /** Execution errors in the recent window — feeds the danger score. */
   recentFailures?: number;
+  /**
+   * Swap-flow risk context (E-1, feature-flagged by the caller). Risk only:
+   * it may raise the danger score; it NEVER creates an entry.
+   */
+  flow?: FlowRiskContext | null;
 };
 
 /* ------------------------------------------------------------------ */
@@ -392,1255 +403,848 @@ export function momentumPct(series: PricePoint[], points = 6): number {
   if (series.length < points + 1) return 0;
   const a = series[series.length - 1 - points]!.usd;
   const b = series[series.length - 1]!.usd;
-  return a > 0 ? b / a - 1 : 0;
+  if (!(a > 0) || !(b > 0)) return 0;
+  return (b / a - 1) * 100;
 }
 
-/**
- * Adaptive grid step: large enough to clear a round-trip of fees + impact
- * plus recent realized volatility. Never below 1% or above 8%.
- */
-export function adaptiveGridStepPct(
-  configured: number,
-  volPerSec: number,
-  feePct = 0.3,
-): number {
-  const roundTripFee = feePct * 2;
-  const vol30s = volPerSec * 30 * 100; // percent move over one print
-  const floor = roundTripFee + 0.4; // fees plus a thin impact/slippage buffer
-  return Math.min(8, Math.max(1, configured, floor, vol30s * 1.5));
+/** Clip chooser for volume/volume-x/unleashed: mixed sizes inside [min, max]. */
+export function pickClipInBand(min: number, max: number, seed: number): number {
+  if (!(max > 0)) return 0;
+  if (max <= min) return max;
+  const ladder = [0, 0.08, 0.15, 0.3, 0.5, 0.75, 1];
+  const r = (Math.abs(Math.floor(seed)) >>> 0) % ladder.length;
+  const f = ladder[r]!;
+  return Math.min(max, Math.max(min, min + (max - min) * f));
 }
 
-/** Latest RSI, Bollinger %B and distance to the band midline from the real series. */
-export function reversionRead(series: PricePoint[]): {
-  rsi: number | null;
-  pctB: number | null;
-  /** Distance from current price up to the Bollinger midline, percent. */
-  distToMidPct: number | null;
-} {
-  if (series.length < BOT_WARMUP_POINTS) return { rsi: null, pctB: null, distToMidPct: null };
-  const points = decorate(seriesToCandles(series), BOT_TICK_PARAMS);
-  const last = points[points.length - 1];
-  const distToMidPct =
-    last && last.bbMid != null && last.c > 0 ? (last.bbMid / last.c - 1) * 100 : null;
-  return { rsi: last?.rsi ?? null, pctB: last?.pctB ?? null, distToMidPct };
+/** Adaptive cooldown: slower after losses / hyper clips, faster in flow. */
+export function adaptiveCooldownSec(baseSec: number, strategy: BotStrategy, lastPnlUsd: number | null): number {
+  let c = baseSec;
+  if (strategy === "spread" || strategy === "volume") c = Math.max(20, c * 0.6);
+  if (lastPnlUsd != null && lastPnlUsd < 0) c *= 1.8;
+  return Math.max(8, Math.round(c));
 }
 
-/**
- * Adaptive cooldown: arb/echo round trips are self-contained and can re-arm
- * faster; DCA is deliberately slow; a losing trade slows the bot down
-  * (simple anti-tilt, never a martingale). The 10s floor matches the Live
-  * book pull — no configuration may trade faster than that.
-  */
-export function adaptiveCooldownSec(
-  baseSec: number,
-  strategy: BotStrategy,
-  lastPnlUsd: number,
-): number {
-  let factor = 1;
-  if (
-    strategy === "spread" ||
-    strategy === "volume" ||
-    strategy === "volume-x" ||
-    strategy === "unleashed"
-  )
-    factor = 0.5;
-  else if (strategy === "growth") factor = 0.75;
-  else if (strategy === "dca") factor = 2;
-  if (lastPnlUsd < 0) factor *= 1.5;
-  return Math.max(10, Math.round(baseSec * factor));
-}
-
-/** Pick a clip inside [min, max] — never always the max. Mix dust / mid / fat. */
-export function pickClipInBand(minIn: number, maxIn: number, seed = Date.now()): number {
-  if (!(maxIn > 0) || maxIn + 1e-12 < minIn) return 0;
-  if (maxIn - minIn < minIn * 0.02) return maxIn;
-  const r = ((seed * 1_103_515_245 + 12_345) >>> 0) / 4_294_967_296;
-  const ladder = [0, 0.08, 0.18, 0.35, 0.55, 0.8, 1];
-  const f = ladder[Math.floor(r * ladder.length) % ladder.length]!;
-  return minIn + (maxIn - minIn) * f;
-}
-
-/** Strategy-aware hop budget: never above the user cap, not always 10. */
-export function hopsForStrategy(strategy: BotStrategy, cap: number, seed = Date.now()): number {
-  const c = Math.min(10, Math.max(1, Math.floor(cap || 4)));
-  const r = ((seed >>> 0) % 3) + 1;
-  if (strategy === "spread" || strategy === "volume") return Math.min(c, 2);
-  if (strategy === "volume-x" || strategy === "unleashed")
-    return Math.min(c, Math.max(2, r + 1));
-  if (strategy === "growth") return hopsForGrowth("balanced", c);
-  if (strategy === "signal" || strategy === "meanrev") return Math.min(c, 3);
-  return Math.min(c, 4);
-}
-
-function bestBuyRoute(
-  snap: LeefSnapshot,
-  amountIn: number,
-  quote = "WAX",
-  base = "LEEF",
-): SwapRoute | null {
-  if (amountIn <= 0) return null;
-  return bestExecutionRoute(snap.pools, snap.aux, amountIn, quote, base);
-}
-
-function bestSellRoute(
-  snap: LeefSnapshot,
-  baseAmount: number,
-  quote = "WAX",
-  base = "LEEF",
-): SwapRoute | null {
-  if (baseAmount <= 0) return null;
-  return bestExecutionRoute(snap.pools, snap.aux, baseAmount, base, quote);
+/** Route depth by strategy. Never above the user cap; rarely the full 10. */
+export function hopsForStrategy(strategy: BotStrategy, maxHops: number): number {
+  const cap = Math.max(2, Math.min(10, maxHops));
+  if (strategy === "volume-x") return Math.min(3, cap);
+  if (strategy === "volume" || strategy === "spread") return Math.min(3, cap);
+  if (strategy === "grid" || strategy === "dca") return Math.min(4, cap);
+  if (strategy === "signal" || strategy === "meanrev") return Math.min(4, cap);
+  if (strategy === "unleashed") return Math.min(6, cap);
+  return cap;
 }
 
 /* ------------------------------------------------------------------ */
-/* Atomic spread arbitrage                                             */
+/* Spread arb — atomic, riskless by construction                       */
 /* ------------------------------------------------------------------ */
 
 /**
- * Find a two-pool atomic arb: buy LEEF with WAX on the cheaper WAX book,
- * sell it on the richer one — both legs in a single transaction.
- * Constant-product quotes on real reserves are conservative for Alcor's
- * concentrated pools, which is the safe direction for a min-out guard.
+ * Find a profitable atomic WAX → LEEF → WAX echo across two LEEF books.
+ * CLMM pools quote over V3 virtual reserves (tick-price anchored — P-A);
+ * pools without CLMM state fall back to raw-reserve CP (exact for true-CP
+ * Defibox/Taco books). Uses plan.waxIn as the trade size.
  */
-/** LEEF/WAX books from Defibox/Taco, shaped as LeefPool so arb can cross venues. */
-function venueWaxLeefPools(snap: LeefSnapshot): LeefPool[] {
-  const out: LeefPool[] = [];
-  for (const p of snap.aux) {
-    if (p.venue !== "defibox" && p.venue !== "taco") continue;
-    const wax = isWaxToken(p.tokenA) ? p.tokenA : isWaxToken(p.tokenB) ? p.tokenB : null;
-    const leef = isLeefToken(p.tokenA) ? p.tokenA : isLeefToken(p.tokenB) ? p.tokenB : null;
-    if (!wax || !leef || leef.quantity < 1_000_000) continue;
-    out.push({
-      id: p.id,
-      fee: p.fee,
-      feePct: p.feePct,
-      leef,
-      pair: wax,
-      leefIsA: isLeefToken(p.tokenA),
-      tvlUsd: p.tvlUsd,
-      volume24Usd: p.volume24Usd,
-      volumeWeekUsd: 0,
-      volumeUsdMonth: 0,
-      volumeUsd90: 0,
-      volumeLeef24: 0,
-      volumePair24: 0,
-      change24: 0,
-      changeWeek: 0,
-      liquidity: "0",
-      pairPerLeef: leef.quantity > 0 ? wax.quantity / leef.quantity : 0,
-      leefPerPair: wax.quantity > 0 ? leef.quantity / wax.quantity : 0,
-      waxPerLeef: leef.quantity > 0 ? wax.quantity / leef.quantity : null,
-      usdPerLeef: null,
-      tickSpacing: 60,
-    });
-  }
-  return out;
-}
-
 export function findArb(
   snap: LeefSnapshot,
   waxIn: number,
   minProfitPct: number,
-  allowSamePool = false,
 ): ArbPlan | null {
-  if (!(waxIn > 0)) return null;
-  const waxPools = [
-    ...backedPools(snap.pools).filter((p) => isWaxToken(p.pair)),
-    ...venueWaxLeefPools(snap),
-  ];
-  if (waxPools.length < 2 && !allowSamePool) return null;
-
+  const pools = backedPools(snap.pools).filter((p) => isWaxToken(p.pair));
+  if (pools.length < 2 || waxIn <= 0) return null;
+  const quote = (p: LeefPool) => {
+    const v = virtualLeefPairReserves(p);
+    const leef = v?.leef ?? p.leef.quantity;
+    const pair = v?.pair ?? p.pair.quantity;
+    return {
+      buy: quoteConstantProduct(waxIn, pair, leef, p.fee),
+      sellQuote: (leefMid: number) => quoteConstantProduct(leefMid, leef, pair, p.fee),
+    };
+  };
   let best: ArbPlan | null = null;
-  for (const buyPool of waxPools) {
-    const q1 = quoteConstantProduct(waxIn, buyPool.pair.quantity, buyPool.leef.quantity, buyPool.fee);
-    if (q1.amountOut <= 0 || q1.priceImpact > 0.2) continue;
-    for (const sellPool of waxPools) {
-      if (!allowSamePool && sellPool.id === buyPool.id) continue;
-      const q2 = quoteConstantProduct(q1.amountOut, sellPool.leef.quantity, sellPool.pair.quantity, sellPool.fee);
-      if (q2.amountOut <= 0 || q2.priceImpact > 0.2) continue;
-      const profitPct = q2.amountOut / waxIn - 1;
-      const impactPct = 1 - (1 - q1.priceImpact) * (1 - q2.priceImpact);
-      // Rank by net WAX profit, not percentage — a 2 WAX clip at +0.8% can
-      // beat a 10 WAX clip at +0.3% after impact.
-      const profitWax = q2.amountOut - waxIn;
-      const bestProfit = best ? best.waxOut - best.waxIn : -Infinity;
-      if (profitPct * 100 >= minProfitPct && profitWax > bestProfit) {
-        best = {
-          buyPool,
-          sellPool,
-          waxIn,
-          leefMid: q1.amountOut,
-          waxOut: q2.amountOut,
-          profitPct,
-          impactPct,
-        };
-      }
+  for (const buyPool of pools) {
+    const bq = quote(buyPool).buy;
+    if (bq.amountOut <= 0) continue;
+    for (const sellPool of pools) {
+      if (sellPool.id === buyPool.id) continue;
+      const sq = quote(sellPool).sellQuote(bq.amountOut);
+      if (sq.amountOut <= 0) continue;
+      const profitPct = sq.amountOut / waxIn - 1;
+      if (profitPct * 100 <= minProfitPct) continue;
+      const plan: ArbPlan = {
+        buyPool,
+        sellPool,
+        waxIn,
+        leefMid: bq.amountOut,
+        waxOut: sq.amountOut,
+        profitPct,
+        impactPct: (bq.priceImpact + sq.priceImpact) * 100,
+      };
+      if (!best || plan.waxOut > best.waxOut) best = plan;
     }
   }
   return best;
 }
 
-/** Scan a size ladder and pick the clip that maximises net WAX profit. */
+/** Largest arb clip: scaled to the shallow side, capped by wallet + impact. */
 export function findBestArb(
   snap: LeefSnapshot,
   maxWax: number,
   minProfitPct: number,
-  allowSamePool = false,
+  isEcho: boolean,
   minWax = 0,
 ): ArbPlan | null {
-  if (!(maxWax > 0) || maxWax + 1e-12 < minWax) return null;
-  const floor = Math.max(0, minWax);
-  let best: ArbPlan | null = null;
-  const span = maxWax - floor;
-  const points = span < floor * 0.02 ? [floor, maxWax] : [0, 0.2, 0.35, 0.6, 1].map((f) => floor + span * f);
-  for (const size of points) {
-    const plan = findArb(snap, size, minProfitPct, allowSamePool);
+  if (maxWax <= 0) return null;
+  for (const f of [1, 0.5, 0.25, 0.125, 0.0625]) {
+    const size = maxWax * f;
+    if (size + 1e-12 < minWax) break;
+    const plan = findArb(snap, size, isEcho ? -100 : minProfitPct);
     if (!plan) continue;
-    if (!best || plan.waxOut - plan.waxIn > best.waxOut - best.waxIn) best = plan;
-  }
-  return best;
-}
-
-/* ------------------------------------------------------------------ */
-/* The decision engine                                                 */
-/* ------------------------------------------------------------------ */
-
-function hold(reason: string): Decision {
-  return { kind: "hold", reason };
-}
-
-function gateFromRisk(risk: BotRisk): OpportunityGate {
-  return {
-    minNetProfitUsd: 0,
-    minNetEdgePct: Math.max(0, risk.minNetEdgePct),
-    minExecutionProbability: 0.35,
-    maxImpactPct: risk.maxImpactPct,
-    maxQuoteAgeMs: Math.max(1, risk.maxQuoteAgeSec) * 1000,
-    maxVolumeCostPct: risk.maxEchoLossPct,
-  };
-}
-
-function scoreBuyOpportunity(opts: {
-  source: string;
-  tokenIn: string;
-  tokenOut: string;
-  amountIn: number;
-  notionalUsd: number;
-  netProfitUsd: number;
-  netEdgePct: number;
-  route: SwapRoute;
-  quoteAgeMs: number;
-  maxQuoteAgeMs: number;
-  snap: LeefSnapshot;
-  balances: Record<string, number>;
-  calibration?: CalibrationMemory;
-  strategyConfidence: number;
-}): ScoredOpportunity {
-  return buildScoredOpportunity({
-    fingerprint: opportunityFingerprint({
-      kind: opts.source,
-      tokenIn: opts.tokenIn,
-      tokenOut: opts.tokenOut,
-      routeId: opts.route.id,
-    }),
-    intent: "profit",
-    source: opts.source,
-    tokenIn: opts.tokenIn,
-    tokenOut: opts.tokenOut,
-    amountIn: opts.amountIn,
-    notionalUsd: opts.notionalUsd,
-    expectedNetProfitUsd: opts.netProfitUsd,
-    expectedNetEdgePct: opts.netEdgePct,
-    hops: routeComplexity(opts.route).hops,
-    liquidityUsd: opts.route.tvlUsd,
-    impactPct: opts.route.priceImpact * 100,
-    split: opts.route.kind === "split",
-    actions: routeComplexity(opts.route).actions,
-    quoteAgeMs: opts.quoteAgeMs,
-    maxQuoteAgeMs: opts.maxQuoteAgeMs,
-    inventoryFactor: inventoryFactor({
-      snap: opts.snap,
-      balances: opts.balances,
-      tokenOut: opts.tokenOut,
-    }),
-    calibrationHaircut: calibrationHaircut(opts.calibration),
-    strategyConfidence: opts.strategyConfidence,
-  });
-}
-
-function scoreArbOpportunity(opts: {
-  source: string;
-  intent: "profit" | "volume";
-  plan: ArbPlan;
-  waxUsd: number;
-  quoteAgeMs: number;
-  maxQuoteAgeMs: number;
-  snap: LeefSnapshot;
-  balances: Record<string, number>;
-  calibration?: CalibrationMemory;
-  /** Regime multiplier — dislocation boosts arb, trend regimes don't care. */
-  regimeFactor?: number;
-}): ScoredOpportunity {
-  const netUsd = (opts.plan.waxOut - opts.plan.waxIn) * opts.waxUsd;
-  // Atomic two-leg in ONE transaction — hop count is the worse leg, not the sum.
-  const hops = Math.max(
-    opts.plan.buyLegs?.reduce((m, l) => Math.max(m, l.route.length), 1) ?? 1,
-    opts.plan.sellLegs?.reduce((m, l) => Math.max(m, l.route.length), 1) ?? 1,
-  );
-  const actions =
-    (opts.plan.buyLegs?.length ?? 1) + (opts.plan.sellLegs?.length ?? 1);
-  const tvl = Math.min(opts.plan.buyPool.tvlUsd, opts.plan.sellPool.tvlUsd);
-  return buildScoredOpportunity({
-    fingerprint: opportunityFingerprint({
-      kind: opts.source,
-      tokenIn: "WAX",
-      tokenOut: "WAX",
-      routeId: `${opts.plan.buyPool.id}>${opts.plan.sellPool.id}`,
-    }),
-    intent: opts.intent,
-    source: opts.source,
-    tokenIn: "WAX",
-    tokenOut: "WAX",
-    amountIn: opts.plan.waxIn,
-    notionalUsd: opts.plan.waxIn * opts.waxUsd,
-    expectedNetProfitUsd: netUsd,
-    expectedNetEdgePct: opts.plan.profitPct * 100,
-    hops,
-    actions,
-    split: actions > 2,
-    liquidityUsd: tvl,
-    impactPct: opts.plan.impactPct * 100,
-    quoteAgeMs: opts.quoteAgeMs,
-    maxQuoteAgeMs: opts.maxQuoteAgeMs,
-    inventoryFactor: 1, // round-trip: inventory-neutral
-    calibrationHaircut: calibrationHaircut(opts.calibration),
-    strategyConfidence: 0.85 * (opts.regimeFactor ?? 1),
-  });
-}
-
-export function evaluateBot(input: BotInput): Decision {
-  const { snap, risk, goals, position, strategy } = input;
-  const now = input.now;
-  const quote = (input.quote ?? "WAX").toUpperCase();
-  const base = (input.base ?? "LEEF").toUpperCase();
-  const leefUsd = snap.leefUsd;
-  const waxUsd = snap.waxUsd;
-  /** USD mark of the asset being accumulated — generic, not LEEF-hardcoded. */
-  const baseUsd = usdPriceOf(base, snap) > 0 ? usdPriceOf(base, snap) : leefUsd;
-
-  if (!input.running && !input.force) return hold("Bot is stopped");
-  if (snap.source !== "live") return hold("Book is stale — waiting for live Alcor data");
-  if (!(leefUsd > 0) || !(waxUsd > 0)) return hold("Waiting for a priced book");
-  // Never-seen-live WAX price (cold start) is UNKNOWN for the trading engine
-  // — the display may show a last-known value, but no capital moves on it.
-  if (snap.waxConfidence === 0) {
-    return hold("WAX/USD oracle has never seen a live price — not trading on an unknown mark");
-  }
-  if (!(baseUsd > 0)) return hold(`No USD mark for ${base} — pick another base token`);
-  if (quote !== "WAX" && !(usdPriceOf(quote, snap) > 0)) {
-    return hold(`No USD mark for ${quote} — pick another quote token`);
-  }
-
-  // Quote freshness: never act on an obsolete book. Callers raise
-  // maxQuoteAgeSec with the current sync cadence (syncSec + one miss).
-  const quoteAgeSec = (now - Date.parse(snap.fetchedAt)) / 1000;
-  if (!Number.isFinite(quoteAgeSec) || quoteAgeSec > risk.maxQuoteAgeSec) {
-    return hold(
-      `Book quote is ${Number.isFinite(quoteAgeSec) ? `${Math.round(quoteAgeSec)}s` : "unparseably"} old — waiting for a fresh pull`,
-    );
-  }
-
-  // Session goal / drawdown circuit breakers.
-  if (goals.sessionGoalUsd > 0 && input.sessionRealizedUsd >= goals.sessionGoalUsd) {
-    return {
-      kind: "stop",
-      reason: `Session goal reached (+$${input.sessionRealizedUsd.toFixed(2)} realized) — bot stopped`,
-    };
-  }
-  const equityUsd = markPortfolioUsd(snap, input.balances).totalUsd;
-  if (
-    goals.maxDrawdownPct > 0 &&
-    input.sessionStartEquityUsd > 0 &&
-    equityUsd < input.sessionStartEquityUsd * (1 - goals.maxDrawdownPct / 100)
-  ) {
-    return {
-      kind: "stop",
-      reason: `Max drawdown ${goals.maxDrawdownPct}% hit (equity $${equityUsd.toFixed(2)}) — bot stopped`,
-    };
-  }
-
-  if (!input.force) {
-    if (now < input.cooldownUntil) {
-      const s = Math.ceil((input.cooldownUntil - now) / 1000);
-      return hold(`Cooldown ${s}s`);
+    if (isEcho) {
+      // Echo: accept any round trip inside the loss budget.
+      if (plan.profitPct * 100 >= minProfitPct) return plan;
+      continue;
     }
-    if (input.tradesThisHour >= risk.maxTradesHour) return hold("Hourly trade cap reached");
+    return plan;
   }
+  return null;
+}
 
-  const signal = botSignal(input.series);
+/* ------------------------------------------------------------------ */
+/* The engine                                                          */
+/* ------------------------------------------------------------------ */
 
-  /* ------------------------- market regime ------------------------- */
-  // One classification per evaluation, shared by every strategy. Vetoes only
-  // ever suppress ENTRIES — exits above already ran.
+function boundsFor(input: BotInput, snap: LeefSnapshot): UsdBounds | { error: string } {
+  return usdToTokenBounds({
+    snap,
+    quote: input.quote ?? "WAX",
+    base: input.base ?? "LEEF",
+    risk: input.risk,
+    position: input.position,
+    balances: input.balances,
+  });
+}
+
+/** Shared regime/danger gate. Weight scales ALL entries, never below 0. */
+function dangerGate(
+  input: BotInput,
+  snap: LeefSnapshot,
+  series: PricePoint[],
+): { weight: number; blockReason: string | null; danger: number; regime: string } {
   const regime = classifyRegime({
-    series: input.series,
+    series,
     poolPricesUsd: snap.pools.map((p) => p.usdPerLeef ?? 0).filter((v) => v > 0),
   });
-  const regTag = regime.regime !== "unknown" ? ` [${regime.regime}]` : "";
-  const regW = (source: string) => regimeWeight(regime.regime, source);
-
-  // Unified danger score — one defensive number shared by every strategy.
-  // 80+ = HOLD all entries (exits above already ran). Below that, entries
-  // are sized down, never up. Strategies may not override this.
   const danger = dangerScore({
-    quoteAgeMs: Math.max(0, quoteAgeSec * 1000),
-    maxQuoteAgeMs: risk.maxQuoteAgeSec * 1000,
+    quoteAgeMs: Math.max(0, input.now - Date.parse(snap.fetchedAt)),
+    maxQuoteAgeMs: Math.max(15, input.risk.maxQuoteAgeSec) * 1000,
     volPct: regime.volPct,
     dislocationPct: regime.dislocationPct,
     liquidityUsd: Math.max(0, ...snap.pools.map((p) => p.tvlUsd)),
     recentFailures: input.recentFailures ?? 0,
+    flow: input.flow ?? null,
   });
-  // Hard veto lives at the ENTRY points below — never before the exit block,
-  // so stop-losses and take-profits fire even in a danger market.
-  const dangerHold =
-    !input.force && danger.band === "hold"
-      ? `Danger ${danger.score}/100 — ${danger.explain.join(" · ")} · entries suspended (exits still fire)`
-      : null;
-  const sizeF = danger.sizeFactor;
+  if (danger.score >= 80) {
+    return {
+      weight: 0,
+      blockReason: `Danger ${danger.score.toFixed(0)}/100 (${danger.explain.join("; ")}) — all entries blocked`,
+      danger: danger.score,
+      regime: regime.regime,
+    };
+  }
+  const w = regimeWeight(regime) * (danger.score >= 50 ? 0.5 : 1);
+  return { weight: w, blockReason: null, danger: danger.score, regime: regime.regime };
+}
 
-  /* ------------------------- manual overrides ---------------------- */
-
-  const bounds = usdToTokenBounds({
+/**
+ * Build a scored opportunity for the Auto orchestrator: strategy thesis
+ * → size optimization → opportunity score → calibration haircut → inventory
+ * factor → dead-clip rejection memory.
+ */
+function buildOpportunity(opts: {
+  strategy: BotStrategy;
+  input: BotInput;
+  snap: LeefSnapshot;
+  bounds: UsdBounds;
+  series: PricePoint[];
+  thesis: { grossPct: number; confidence: number; label: string };
+  gate: OpportunityGate;
+  weight: number;
+}): ScoredOpportunity | null {
+  const { input, snap, bounds, series, thesis, gate, weight } = opts;
+  const tokenIn = input.quote ?? "WAX";
+  const tokenOut = input.base ?? "LEEF";
+  const maxIn = bounds.maxIn * weight;
+  if (maxIn + 1e-12 < bounds.minIn) return null;
+  const grossPct = thesis.grossPct * calibrationHaircut(input.calibration?.[opts.strategy]);
+  const sized = optimizeEntrySize({
     snap,
-    quote,
-    base,
-    risk,
-    position: input.position,
-    balances: input.balances,
+    tokenIn,
+    tokenOut,
+    expectedGrossPct: grossPct,
+    minNetEdgePct: input.risk.minNetEdgePct,
+    minIn: bounds.minIn,
+    maxIn,
+    volPerSec: realizedVolPerSec(series),
   });
-  // Treasure growth is inventory-agnostic — a missing quote mark must not
-  // block converting TLM/USDC/… into the named treasures.
-  if ("error" in bounds && strategy !== "growth") return hold(bounds.error);
-  const minWax = "error" in bounds ? 0 : bounds.minIn;
-  // Danger score sizes entries down (never up). Manual force keeps full size.
-  const maxWax = ("error" in bounds ? 0 : bounds.maxIn) * (input.force ? 1 : sizeF);
+  if (!sized) return null;
+  const scored = scoreOpportunity({
+    verdict: sized.best,
+    confidence: thesis.confidence,
+    minNetEdgePct: input.risk.minNetEdgePct,
+    maxImpactPct: input.risk.maxImpactPct,
+    quoteAgeMs: Math.max(0, opts.input.now - Date.parse(snap.fetchedAt)),
+    maxQuoteAgeMs: Math.max(15, input.risk.maxQuoteAgeSec) * 1000,
+  });
+  const inv = inventoryFactor({
+    balances: input.balances,
+    quote: tokenIn,
+    quoteUsd: bounds.quoteUsd,
+    base: tokenOut,
+    baseUsd: bounds.baseUsd,
+    positionUsd: input.position ? input.position.amountLeef * bounds.baseUsd : 0,
+    maxPositionUsd: input.risk.maxPositionUsd,
+  });
+  const route = sized.best.route;
+  const opp = buildScoredOpportunity({
+    strategy: opts.strategy,
+    label: thesis.label,
+    kind: "entry",
+    tokenIn,
+    tokenOut,
+    amountIn: sized.best.amountIn,
+    route,
+    expectedGrossPct: grossPct,
+    expectedNetProfitUsd: sized.best.netProfitUsd * inv * thesis.confidence,
+    edge: {
+      netEdgePct: sized.best.netEdgePct,
+      netProfitUsd: sized.best.netProfitUsd,
+      score: scored.score,
+      explain: scored.explain,
+    },
+    complexity: routeComplexity(route),
+    inventoryFit: inv,
+    confidence: thesis.confidence,
+    fingerprint: opportunityFingerprint({ kind: "entry", tokenIn, tokenOut, poolIds: route.poolIds }),
+    gate,
+  });
+  return rejectOpportunity(opp) ? null : opp;
+}
 
-  if (input.force === "buy") {
-    if (maxWax + 1e-12 < minWax) {
-      return hold(
-        `Effective max $${bounds.effectiveMaxUsd.toFixed(2)} is under min trade $${risk.minTradeUsd.toFixed(2)} (wallet $${bounds.walletUsd.toFixed(2)}) — sitting out`,
-      );
-    }
-    const sized = optimizeEntrySize({
-      snap,
-      tokenIn: quote,
-      tokenOut: base,
-      expectedGrossPct: Math.max(goals.takeProfitPct, 0.5),
-  // A real hurdle, not "technically non-negative": entries must clear ALL
-  // modeled costs + platform fee by a margin that covers quote uncertainty.
-  minNetEdgePct: 0.1,
-      minIn: minWax,
-      maxIn: maxWax,
-      volPerSec: realizedVolPerSec(input.series),
-    });
-    if (!sized) {
-      return hold(
-        `Manual buy · no size in $${risk.minTradeUsd.toFixed(2)}–$${bounds.effectiveMaxUsd.toFixed(2)} effective max clears costs — sitting out`,
-      );
-    }
-    const route = sized.best.route;
-    const amountWax = sized.best.amountIn;
-    return {
-      kind: "buy",
-      amountWax,
-      route,
-      reason: `Manual buy · ${amountWax.toFixed(2)} ${quote} ($${risk.minTradeUsd.toFixed(2)}–$${risk.maxPositionUsd.toFixed(0)}) · ${route.label}`,
-      confidence: signal.confidence,
-      expectedGrossPct: Math.max(goals.takeProfitPct, 0.5),
-      edge: sized
-        ? { netEdgePct: sized.best.netEdgePct, netProfitUsd: sized.best.netProfitUsd, score: 0 }
-        : undefined,
-    };
-  }
-  if (input.force === "sell" && (!position || position.amountLeef <= 0)) {
-    return hold("No open position to sell");
-  }
-
-  /* ----------- position-independent scans (spread arb / volume) ---- */
-
-  const quoteAgeMs = quoteAgeSec * 1000;
-  const maxQuoteAgeMs = risk.maxQuoteAgeSec * 1000;
-  const oppGate = gateFromRisk(risk);
-  const calOf = (id: string) => input.calibration?.[id];
-
-  if (strategy === "volume-x") {
-    if (dangerHold) return hold(dangerHold);
-    const hops = hopsForStrategy("volume-x", risk.maxHops, now);
-    const tape = planLeefTape(snap, input.balances, {
-      minUsd: risk.minTradeUsd,
-      maxUsd: Math.max(risk.minTradeUsd, bounds.effectiveMaxUsd || risk.maxPositionUsd),
-      maxHops: hops,
-      seed: now,
-      maxLossPct: risk.maxEchoLossPct,
-    });
-    if (tape) {
-      const scored = scoreBuyOpportunity({
-        source: "volume-x",
-        tokenIn: tape.tokenIn,
-        tokenOut: tape.tokenOut,
-        amountIn: tape.amountIn,
-        notionalUsd: tape.usdIn,
-        netProfitUsd: tape.netUsd,
-        netEdgePct: tape.netPct,
-        route: tape.route,
-        quoteAgeMs,
-        maxQuoteAgeMs,
-        snap,
-        balances: input.balances,
-        calibration: calOf("volume-x"),
-        strategyConfidence: 1,
-      });
-      return {
-        kind: "swap",
-        tokenIn: tape.tokenIn,
-        tokenOut: tape.tokenOut,
-        amountIn: tape.amountIn,
-        route: tape.route,
-        opportunity: scored,
-        minNetPct: -risk.maxEchoLossPct,
-        reason: `Volume-X ${tape.tokenIn}→${tape.tokenOut} · $${tape.usdIn.toFixed(4)} · net ${tape.netPct.toFixed(2)}% · ${tape.route.label}`,
-      };
-    }
-    if (!position || position.amountLeef <= 0) {
-      return hold("Volume-X: no LEEF-tape clip inside min–max from this wallet");
-    }
-  }
-
-  if (strategy === "spread" || strategy === "volume") {
-    const waxAvail = maxWax;
-    const isVolume = strategy === "volume";
-    let arbDecision: Decision | null = null;
-    let scanReason: string;
-
-    if (dangerHold) {
-      scanReason = dangerHold;
-    } else if (waxAvail + 1e-12 < minWax) {
-      scanReason = `Not enough ${quote} for the $${risk.minTradeUsd.toFixed(2)} min trade`;
-    } else if (isVolume) {
-      const clip = pickClipInBand(minWax, waxAvail, now);
-      const plan = findBestArb(snap, clip > 0 ? clip : waxAvail, -risk.maxEchoLossPct, true, minWax);
-      if (plan) {
-        const scored = scoreArbOpportunity({
-          source: "volume",
-          // Stay volume even if the echo is slightly green — promoting it to
-          // "profit" used to demand 0.1% edge and killed zero-loss volume.
-          intent: "volume",
-          plan,
-          waxUsd,
-          quoteAgeMs,
-          maxQuoteAgeMs,
-          snap,
-          balances: input.balances,
-          calibration: calOf("volume"),
-        });
-        const why = rejectOpportunity(scored, oppGate);
-        if (why) {
-          scanReason = `Volume rejected by common gate: ${why} · EV $${scored.expectedValueUsd.toFixed(4)}`;
-        } else {
-          const costPct = -plan.profitPct * 100;
-          arbDecision = {
-            kind: "arb",
-            arbKind: "volume",
-            plan,
-            opportunity: scored,
-            reason:
-              plan.profitPct >= 0
-                ? `Spread-funded echo #${plan.buyPool.id}→#${plan.sellPool.id} · EV $${scored.expectedValueUsd.toFixed(4)} · exec ${(scored.executionProbability * 100).toFixed(0)}%`
-                : `Volume echo #${plan.buyPool.id}${plan.sellPool.id === plan.buyPool.id ? " round-trip" : `→#${plan.sellPool.id}`} · cost ${costPct.toFixed(2)}% · EV $${scored.expectedValueUsd.toFixed(4)}`,
-          };
-        }
-      } else {
-        scanReason = `Round trip costs more than the ${risk.maxEchoLossPct}% budget right now`;
-      }
-    } else {
-      const gatePct =
-        ((1 + risk.minEdgePct / 100) / Math.max(0.9, 1 - risk.slippage / 100) - 1) * 100;
-      const plan = findBestArb(snap, waxAvail, gatePct, false, minWax);
-      if (plan) {
-        const scored = scoreArbOpportunity({
-          source: "spread",
-          intent: "profit",
-          plan,
-          waxUsd,
-          quoteAgeMs,
-          maxQuoteAgeMs,
-          snap,
-          balances: input.balances,
-          calibration: calOf("spread"),
-        });
-        const why = rejectOpportunity(scored, oppGate);
-        if (why) {
-          scanReason = `Arb rejected by common gate: ${why} · EV $${scored.expectedValueUsd.toFixed(4)} · ${scored.explain[1]}`;
-        } else {
-          arbDecision = {
-            kind: "arb",
-            arbKind: "spread",
-            plan,
-            opportunity: scored,
-            reason: `Arb #${plan.buyPool.id}→#${plan.sellPool.id} · EV $${scored.expectedValueUsd.toFixed(4)} · net ${(plan.profitPct * 100).toFixed(2)}% · exec ${(scored.executionProbability * 100).toFixed(0)}%`,
-          };
-        }
-      } else {
-        const probe = findBestArb(snap, waxAvail, -100, false, minWax);
-        scanReason = `No atomic arb ≥ ${risk.minEdgePct}% after fees+impact (${
-          probe ? `best spread ${(probe.profitPct * 100).toFixed(2)}%` : "no two WAX books"
-        })`;
-      }
-    }
-
-    if (arbDecision) return arbDecision;
-    if (!position || position.amountLeef <= 0) return hold(scanReason!);
-  }
-
-  /* ------------------- entry sizing (NetEdgeEngine) ---------------- */
-
-  /**
-   * Entries flow through the NetEdgeEngine: scan sizes below the risk cap,
-   * charge the full round-trip cost model, and take the profit-maximizing
-   * size that still clears minNetEdgePct. No size clears → DO NOTHING.
-   * (Exits are never edge-gated — risk actions must always fire.)
-   */
-  const tryBuyWith = (
-    reason: string,
-    expectedGrossPct: number,
-    confidence: number,
-    maxWaxArg: number,
-  ): Decision => {
-    // Danger veto on entries — every buy path in every strategy funnels here.
-    if (dangerHold) return hold(dangerHold);
-    if (!(maxWaxArg > 0) || maxWaxArg + 1e-12 < minWax) {
-      return hold(
-        `Position cap reached ($${bounds.positionUsd.toFixed(2)} / $${risk.maxPositionUsd.toFixed(0)}), remaining room under min trade, or no ${quote}`,
-      );
-    }
-    if (!(expectedGrossPct > 0)) return hold("No positive expected move on this book — sitting out");
-    const sized = optimizeEntrySize({
-      snap,
-      tokenIn: quote,
-      tokenOut: base,
-      expectedGrossPct,
-      minNetEdgePct: risk.minNetEdgePct,
-      minIn: minWax,
-      maxIn: maxWaxArg,
-      volPerSec: realizedVolPerSec(input.series),
-    });
-    if (!sized) {
-      return hold(
-        `No size in ${minWax.toFixed(2)}–${maxWaxArg.toFixed(2)} ${quote} clears net edge ≥ ${risk.minNetEdgePct}% after all costs`,
-      );
-    }
-    const v = sized.best;
-    if (v.route.priceImpact * 100 > risk.maxImpactPct) {
-      return hold(
-        `Entry impact ${(v.route.priceImpact * 100).toFixed(1)}% above ${risk.maxImpactPct}% cap`,
-      );
-    }
-    const score = scoreOpportunity({
-      verdict: v,
-      confidence,
-      minNetEdgePct: risk.minNetEdgePct,
-      maxImpactPct: risk.maxImpactPct,
-      quoteAgeMs,
-      maxQuoteAgeMs,
-    });
-    const scored = scoreBuyOpportunity({
-      source: strategy,
-      tokenIn: quote,
-      tokenOut: base,
-      amountIn: v.amountIn,
-      notionalUsd: v.notionalUsd,
-      netProfitUsd: v.netProfitUsd,
-      netEdgePct: v.netEdgePct,
-      route: v.route,
-      quoteAgeMs,
-      maxQuoteAgeMs,
-      snap,
-      balances: input.balances,
-      calibration: calOf(strategy === "auto" ? "signal" : strategy),
-      strategyConfidence: confidence,
-    });
-    const why = rejectOpportunity(scored, oppGate);
-    if (why) {
-      return hold(
-        `${reason} rejected by common gate: ${why} · EV $${scored.expectedValueUsd.toFixed(4)} · ${scored.explain[1]}`,
-      );
-    }
-    return {
-      kind: "buy",
-      amountWax: v.amountIn,
-      route: v.route,
-      reason:
-        `${reason} · EV $${scored.expectedValueUsd.toFixed(4)} · net ${v.netEdgePct.toFixed(2)}% ≈ $${v.netProfitUsd.toFixed(3)} ` +
-        `on ${v.amountIn.toFixed(2)} ${quote} · exec ${(scored.executionProbability * 100).toFixed(0)}%`,
-      confidence,
-      expectedGrossPct,
-      edge: { netEdgePct: v.netEdgePct, netProfitUsd: v.netProfitUsd, score: score.score },
-      opportunity: scored,
-    };
+/** The Auto orchestrator: every strategy proposes, expected value decides. */
+function decideAuto(input: BotInput, snap: LeefSnapshot, series: PricePoint[]): Decision {
+  const bounds = boundsFor(input, snap);
+  if ("error" in bounds) return { kind: "hold", reason: `Auto: ${bounds.error}` };
+  const gateCtx = dangerGate(input, snap, series);
+  if (gateCtx.blockReason) return { kind: "hold", reason: `Auto: ${gateCtx.blockReason}` };
+  const gate: OpportunityGate = {
+    regime: gateCtx.regime,
+    dangerScore: gateCtx.danger,
+    quoteAgeMs: Math.max(0, input.now - Date.parse(snap.fetchedAt)),
   };
-  const tryBuy = (reason: string, expectedGrossPct: number, confidence: number): Decision =>
-    tryBuyWith(reason, expectedGrossPct, confidence, maxWax);
+  const candidates: ScoredOpportunity[] = [];
+  const rejections: string[] = [];
+  const consider = (opp: ScoredOpportunity | null, label: string) => {
+    if (opp) candidates.push(opp);
+    else rejections.push(label);
+  };
 
-  /* ---------------- position management (pair strategies) ---------- */
-
-  if (position && position.amountLeef > 0 && strategy !== "growth") {
-    const pnlPct = (baseUsd / position.entryUsd - 1) * 100;
-    // Chain truth beats local tracking: never build a transfer for more base
-    // than the wallet actually holds — that tx reverts with overdrawn balance.
-    const walletBase = balanceForIdentifier(input.balances, snap.universe, base);
-    const sellableBase = Math.min(position.amountLeef, Math.max(0, walletBase));
-    const sellRoute = bestSellRoute(snap, sellableBase, quote, base);
-
-    const sellAll = (reason: string): Decision | null => {
-      if (!(sellableBase > 0)) {
-        return hold(
-          `Position tracks ${position.amountLeef.toLocaleString()} ${base} but the wallet holds ${walletBase.toLocaleString()} — nothing sellable on-chain`,
-        );
-      }
-      if (!sellRoute) return null;
-      if (sellRoute.priceImpact * 100 > risk.maxImpactPct) {
-        return hold(`Exit impact ${(sellRoute.priceImpact * 100).toFixed(1)}% above cap — waiting for depth`);
-      }
-      const cappedNote =
-        sellableBase + 1e-9 < position.amountLeef
-          ? ` (capped at wallet balance ${walletBase.toLocaleString()} ${base})`
-          : "";
-      return {
-        kind: "sell",
-        amountLeef: sellableBase,
-        route: sellRoute,
-        reason: reason + cappedNote,
-        confidence: signal.confidence,
-      };
-    };
-
-    if (input.force === "sell") {
-      return sellAll(`Manual sell · position ${pnlPct >= 0 ? "+" : ""}${pnlPct.toFixed(2)}%`) ??
-        hold("No backed route to sell into");
-    }
-
-    // Stop-loss.
-    if (goals.stopLossPct > 0 && pnlPct <= -goals.stopLossPct) {
-      const d = sellAll(`Stop-loss ${pnlPct.toFixed(2)}% ≤ −${goals.stopLossPct}% · cutting the position`);
-      if (d) return d;
-    }
-    // Take-profit.
-    if (goals.takeProfitPct > 0 && pnlPct >= goals.takeProfitPct) {
-      const d = sellAll(`Take-profit +${pnlPct.toFixed(2)}% ≥ +${goals.takeProfitPct}% · banking it`);
-      if (d) return d;
-    }
-    // Trailing stop: armed once profit exceeded trailingPct, fires on giveback.
-    if (goals.trailingPct > 0 && position.highUsd > 0) {
-      const peakPct = (position.highUsd / position.entryUsd - 1) * 100;
-      const givebackPct = (baseUsd / position.highUsd - 1) * 100;
-      if (peakPct >= goals.trailingPct && givebackPct <= -goals.trailingPct) {
-        const d = sellAll(
-          `Trailing stop · peaked +${peakPct.toFixed(1)}%, gave back ${givebackPct.toFixed(1)}% — locking +${pnlPct.toFixed(2)}%`,
-        );
-        if (d) return d;
-      }
-    }
-
-    // Strategy exits. Auto inherits every exit rule.
-    if ((strategy === "signal" || strategy === "auto") && signal.warmed && signal.bias === "sell") {
-      const d = sellAll(
-        `Engine vote flipped sell (${Math.round(signal.confidence * 100)}% conf) · position ${pnlPct >= 0 ? "+" : ""}${pnlPct.toFixed(2)}%`,
-      );
-      if (d) return d;
-    }
-    if (strategy === "meanrev" || strategy === "auto") {
-      const { rsi, pctB } = reversionRead(input.series);
-      if (rsi != null && pctB != null && (rsi >= 62 || pctB >= 0.9)) {
-        const d = sellAll(
-          `Reversion exit · RSI ${rsi.toFixed(0)} / %B ${pctB.toFixed(2)} back at the mean · position ${pnlPct >= 0 ? "+" : ""}${pnlPct.toFixed(2)}%`,
-        );
-        if (d) return d;
-      }
-    }
-    if ((strategy === "grid" || strategy === "auto") && input.gridAnchor != null) {
-      const step = adaptiveGridStepPct(risk.gridStepPct, realizedVolPerSec(input.series));
-      const stepUp = input.gridAnchor * (1 + step / 100);
-      if (baseUsd >= stepUp) {
-        const d = sellAll(
-          `Grid step +${step.toFixed(2)}% filled · ${pnlPct >= 0 ? "+" : ""}${pnlPct.toFixed(2)}% on the leg`,
-        );
-        if (d) return d;
-      }
-    }
-    if (strategy === "auto") {
-      // With a position open, the only position-independent action worth
-      // considering is atomic arbitrage — it doesn't touch the held bag.
-      if (!dangerHold && maxWax + 1e-12 >= minWax) {
-        const gatePct =
-          ((1 + risk.minEdgePct / 100) / Math.max(0.9, 1 - risk.slippage / 100) - 1) * 100;
-        const arb = findBestArb(snap, maxWax, gatePct, false, minWax);
-        if (arb) {
-          const opp = scoreArbOpportunity({
-            source: "spread",
-            intent: "profit",
-            plan: arb,
-            waxUsd,
-            quoteAgeMs,
-            maxQuoteAgeMs,
-            snap,
-            balances: input.balances,
-            calibration: calOf("spread"),
-          });
-          const why = rejectOpportunity(opp, oppGate);
-          if (!why && opp.expectedValueUsd > 0) {
-            return {
-              kind: "arb",
-              arbKind: "spread",
-              plan: arb,
-              opportunity: opp,
-              reason: `Auto: arb #${arb.buyPool.id}→#${arb.sellPool.id} beats holding · EV $${opp.expectedValueUsd.toFixed(4)} · exec ${(opp.executionProbability * 100).toFixed(0)}%`,
-            };
-          }
-        }
-      }
-    }
-    if (strategy === "dca") {
-      // Keep stacking until the position cap, then ride to the take-profit.
-      // maxWax already is min(spendable wallet, remaining position headroom)
-      // in quote units — never read a bare-symbol balance here.
-      const dcaMax = maxWax;
-      if (dcaMax + 1e-12 >= minWax) {
-        return tryBuyWith(
-          `DCA clip · averaging in at $${baseUsd.toFixed(8)}/${base}`,
-          goals.takeProfitPct,
-          signal.confidence,
-          dcaMax,
-        );
-      }
-      return hold(
-        `Cap reached · holding ${position.amountLeef.toLocaleString()} LEEF · ${pnlPct >= 0 ? "+" : ""}${pnlPct.toFixed(2)}% vs entry — TP at +${goals.takeProfitPct}%`,
-      );
-    }
-    return hold(
-      `Holding ${position.amountLeef.toLocaleString()} LEEF · ${pnlPct >= 0 ? "+" : ""}${pnlPct.toFixed(2)}% vs entry · vote ${signal.warmed ? signal.bias : "warming up"}`,
+  const signal = botSignal(series);
+  if (signal.warmed && signal.bias === "buy") {
+    consider(
+      buildOpportunity({
+        strategy: "signal",
+        input, snap, bounds, series, gate, weight: gateCtx.weight,
+        thesis: {
+          grossPct: Math.max(0.5, input.goals.takeProfitPct * signal.confidence),
+          confidence: signal.confidence,
+          label: `Signal ${(signal.score * 100).toFixed(0)}%`,
+        },
+      }),
+      "signal",
     );
   }
 
-  if (input.force === "sell") return hold("No open position to sell");
-
-  /* ------------------------------ entries ------------------------- */
-
-  switch (strategy) {
-    case "signal": {
-      if (!signal.warmed) {
-        return hold(`Engines warming up — ${input.series.length}/${BOT_WARMUP_POINTS} prints collected`);
-      }
-      const conf = Math.round(signal.confidence * 100);
-      const mom = momentumPct(input.series);
-      if (signal.bias === "buy" && conf >= risk.minConfidence) {
-        if (regime.regime === "trend_down") {
-          return hold(`Engine vote BUY ${conf}% but regime is trend_down — not buying a downtrend`);
-        }
-        const votes = signal.readings
-          .filter((r) => r.score > 0.12)
-          .map((r) => r.id.toUpperCase())
-          .join("+");
-        // Thesis size = TP faded by momentum, NOT by vote confidence.
-        // Confidence already gated entry (minConfidence). Multiplying it into
-        // expected gross AND again into EV double-counted the same number.
-        const expected = goals.takeProfitPct * (mom < 0 ? 0.6 : 1);
-        return tryBuy(
-          `Engine vote BUY ${conf}% conf (${votes || "blend"}) · momentum ${(mom * 100).toFixed(2)}%`,
-          expected,
-          1,
-        );
-      }
-      return hold(`Vote ${signal.bias} · ${conf}% conf (need ≥ ${risk.minConfidence}% buy)`);
-    }
-    case "meanrev": {
-      const { rsi, pctB, distToMidPct } = reversionRead(input.series);
-      if (rsi == null || pctB == null) {
-        return hold(`Engines warming up — ${input.series.length}/${BOT_WARMUP_POINTS} prints collected`);
-      }
-      const mom = momentumPct(input.series, 12);
-      // Do not catch a falling knife: a strong downtrend is not a dip.
-      if (mom < -0.04) {
-        return hold(`Mean-reversion blocked — 12-print momentum ${(mom * 100).toFixed(1)}% (trend, not a dip)`);
-      }
-      if (rsi <= 30 && pctB <= 0.1) {
-        // Falling-knife filter: in a down regime "oversold" can stay oversold.
-        // Require a 3-print hook (short-term momentum turned up) before buying.
-        if (regime.regime === "trend_down") {
-          const hook = momentumPct(input.series, 3);
-          if (hook <= 0) {
-            return hold(`Oversold in a downtrend but no 3-print hook yet${regTag} — falling-knife filter`);
-          }
-        }
-        const expected = Math.max(0, (distToMidPct ?? 0) * 0.7) * regW("meanrev");
-        return tryBuy(
-          `Oversold · RSI ${rsi.toFixed(0)} ≤ 30, %B ${pctB.toFixed(2)} at the lower band${regTag}`,
-          expected,
-          signal.confidence,
-        );
-      }
-      return hold(`RSI ${rsi.toFixed(0)} · %B ${pctB.toFixed(2)} — waiting for an oversold tag`);
-    }
-    case "grid": {
-      const step = adaptiveGridStepPct(risk.gridStepPct, realizedVolPerSec(input.series));
-      const expected = step * 0.8;
-      const anchor = input.gridAnchor;
-      if (anchor == null) {
-        return tryBuy(`Grid seed buy — anchoring at market · step ${step.toFixed(2)}%`, expected, signal.confidence);
-      }
-      const stepDown = anchor * (1 - step / 100);
-      if (baseUsd <= stepDown) {
-        return tryBuy(`Grid step −${step.toFixed(2)}% filled at the bid`, expected, signal.confidence);
-      }
-      const distDown = (baseUsd / stepDown - 1) * 100;
-      return hold(`Grid armed · next buy ${distDown.toFixed(1)}% below, next sell +${step.toFixed(2)}% above last fill`);
-    }
-    case "dca": {
-      // Trend protection: DCA never interprets a falling price as bullish.
-      if (regime.regime === "trend_down") {
-        return hold(`Regime trend_down${regTag} — DCA paused (never average into a downtrend)`);
-      }
-      const mom = momentumPct(input.series, 8);
-      // Skip a clip when the tape is ripping against us; size stays risk-capped.
-      if (mom > 0.05) {
-        return hold(`DCA waiting — 8-print momentum +${(mom * 100).toFixed(1)}% (not averaging into a spike)`);
-      }
-      // trend_down already vetoed above — regW("dca") is always > 0 here.
-      return tryBuy(
-        `Scheduled accumulation clip${regTag}`,
-        goals.takeProfitPct * regW("dca"),
-        signal.confidence,
+  const anchor = input.gridAnchor;
+  if (anchor && snap.leefUsd > 0) {
+    const dropPct = (anchor / snap.leefUsd - 1) * 100;
+    if (dropPct >= input.risk.gridStepPct) {
+      consider(
+        buildOpportunity({
+          strategy: "grid",
+          input, snap, bounds, series, gate, weight: gateCtx.weight,
+          thesis: {
+            grossPct: input.risk.gridStepPct * 0.8,
+            confidence: 0.6,
+            label: `Grid step −${dropPct.toFixed(1)}%`,
+          },
+        }),
+        "grid",
       );
     }
-    case "auto": {
-      /* Auto is the orchestrator, not a private economist. Each strategy
-       * produces a ScoredOpportunity through the SAME gate; Auto ranks by
-       * expected value (net × exec × fresh × inventory × calibration). */
-      const considered: string[] = [];
-      const scored: ScoredOpportunity[] = [];
-      const byFp = new Map<string, Decision>();
+  }
 
-      const pushScored = (d: Decision) => {
-        if ((d.kind === "buy" || d.kind === "arb" || d.kind === "swap") && d.opportunity) {
-          scored.push(d.opportunity);
-          byFp.set(d.opportunity.fingerprint, d);
-          considered.push(`${d.opportunity.source} EV $${d.opportunity.expectedValueUsd.toFixed(4)}`);
-        } else if (d.kind === "hold") {
-          considered.push(d.reason.slice(0, 80));
-        }
+  const mom = momentumPct(series, 6);
+  if (mom <= -input.risk.gridStepPct) {
+    consider(
+      buildOpportunity({
+        strategy: "meanrev",
+        input, snap, bounds, series, gate, weight: gateCtx.weight,
+        thesis: {
+          grossPct: Math.abs(mom) * 0.7,
+          confidence: 0.55,
+          label: `Mean-rev ${mom.toFixed(1)}%`,
+        },
+      }),
+      "meanrev",
+    );
+  }
+
+  const arb = findBestArb(
+    snap,
+    Math.min(bounds.maxIn, (input.balances[input.quote ?? "WAX"] ?? 0)),
+    input.risk.minEdgePct,
+    false,
+    bounds.minIn,
+  );
+  if (arb) {
+    const waxUsd = snap.waxUsd;
+    const netUsd = (arb.waxOut - arb.waxIn) * waxUsd;
+    const opp = buildScoredOpportunity({
+      strategy: "spread",
+      label: `Arb #${arb.buyPool.id}→#${arb.sellPool.id} ${(arb.profitPct * 100).toFixed(2)}%`,
+      kind: "arb",
+      tokenIn: input.quote ?? "WAX",
+      tokenOut: input.quote ?? "WAX",
+      amountIn: arb.waxIn,
+      route: null,
+      arbPlan: arb,
+      expectedGrossPct: arb.profitPct * 100,
+      expectedNetProfitUsd: netUsd,
+      edge: {
+        netEdgePct: arb.profitPct * 100,
+        netProfitUsd: netUsd,
+        score: 90,
+        explain: [`atomic profit ${(arb.profitPct * 100).toFixed(2)}% ≥ ${input.risk.minEdgePct}%`],
+      },
+      complexity: 2,
+      inventoryFit: 1,
+      confidence: 0.95,
+      fingerprint: opportunityFingerprint({ kind: "arb", tokenIn: "WAX", tokenOut: "WAX", poolIds: [arb.buyPool.id, arb.sellPool.id] }),
+      gate,
+    });
+    if (!rejectOpportunity(opp)) candidates.push(opp);
+  }
+
+  const next = planNextAction(snap, input.balances, {
+    minUsd: bounds.minIn * bounds.quoteUsd,
+    minNetPct: input.risk.minNetEdgePct,
+    maxHops: input.risk.maxHops,
+  });
+  if (next) {
+    const opp = buildScoredOpportunity({
+      strategy: "auto",
+      label: `Next hop ${next.tokenIn}→${next.tokenOut} ${next.netPct.toFixed(2)}%`,
+      kind: "swap",
+      tokenIn: next.tokenIn,
+      tokenOut: next.tokenOut,
+      amountIn: next.amountIn,
+      route: next.route,
+      expectedGrossPct: next.netPct,
+      expectedNetProfitUsd: next.netUsd,
+      edge: {
+        netEdgePct: next.netPct,
+        netProfitUsd: next.netUsd,
+        score: 70,
+        explain: [`${next.kind} net ${next.netPct.toFixed(2)}% after costs`],
+      },
+      complexity: routeComplexity(next.route),
+      inventoryFit: 1,
+      confidence: 0.7,
+      fingerprint: opportunityFingerprint({
+        kind: "swap",
+        tokenIn: next.tokenIn,
+        tokenOut: next.tokenOut,
+        poolIds: next.route.poolIds,
+      }),
+      gate,
+    });
+    if (!rejectOpportunity(opp)) candidates.push(opp);
+  }
+
+  const winner = selectBestOpportunity(candidates);
+  if (!winner) {
+    return {
+      kind: "hold",
+      reason: `Auto scan: nothing clears net edge ${input.risk.minNetEdgePct}% (${rejections.join(", ") || "no candidates"}) — HOLD is a successful outcome`,
+    };
+  }
+  if (winner.kind === "arb" && winner.arbPlan) {
+    return {
+      kind: "arb",
+      plan: winner.arbPlan,
+      arbKind: "spread",
+      reason: `Auto: ${winner.label} · EV $${winner.expectedNetProfitUsd.toFixed(4)} · score ${winner.edge.score}`,
+      opportunity: winner,
+    };
+  }
+  if (winner.kind === "swap" && winner.route) {
+    return {
+      kind: "swap",
+      tokenIn: winner.tokenIn,
+      tokenOut: winner.tokenOut,
+      amountIn: winner.amountIn,
+      route: winner.route,
+      minNetPct: input.risk.minNetEdgePct,
+      reason: `Auto: ${winner.label} · EV $${winner.expectedNetProfitUsd.toFixed(4)} · score ${winner.edge.score}`,
+      opportunity: winner,
+    };
+  }
+  if (winner.route) {
+    return {
+      kind: "buy",
+      amountWax: winner.amountIn,
+      route: winner.route,
+      confidence: winner.confidence,
+      expectedGrossPct: winner.expectedGrossPct,
+      edge: winner.edge,
+      reason: `Auto: ${winner.label} · EV $${winner.expectedNetProfitUsd.toFixed(4)} · net ${winner.edge.netEdgePct.toFixed(2)}%`,
+      opportunity: winner,
+    };
+  }
+  return { kind: "hold", reason: "Auto scan: winner had no route" };
+}
+
+/** Unleashed: trade every cycle — mix strategies, clips and hops. */
+function decideUnleashed(input: BotInput, snap: LeefSnapshot, series: PricePoint[]): Decision {
+  const bounds = boundsFor(input, snap);
+  if ("error" in bounds) return { kind: "hold", reason: `Unleashed: ${bounds.error}` };
+  const gateCtx = dangerGate(input, snap, series);
+  if (gateCtx.blockReason) return { kind: "hold", reason: `Unleashed: ${gateCtx.blockReason}` };
+
+  const seed = input.now;
+  const amount = pickClipInBand(bounds.minIn, bounds.maxIn * gateCtx.weight, seed);
+  if (!(amount > 0)) return { kind: "hold", reason: "Unleashed: no deployable balance" };
+
+  const spin = (Math.abs(Math.floor(seed / 1000)) >>> 0) % 5;
+  const quote = input.quote ?? "WAX";
+  const base = input.base ?? "LEEF";
+
+  if (spin === 0) {
+    const arb = findBestArb(snap, amount, input.risk.minEdgePct, false, bounds.minIn);
+    if (arb) {
+      return {
+        kind: "arb",
+        plan: arb,
+        arbKind: "spread",
+        reason: `Unleashed: arb #${arb.buyPool.id}→#${arb.sellPool.id} ${(arb.profitPct * 100).toFixed(2)}%`,
       };
-
-      if (dangerHold) considered.push(dangerHold);
-      if (!dangerHold && maxWax + 1e-12 >= minWax) {
-        const gatePct =
-          ((1 + risk.minEdgePct / 100) / Math.max(0.9, 1 - risk.slippage / 100) - 1) * 100;
-        const arb = findBestArb(snap, maxWax, gatePct, false, minWax);
-        if (arb) {
-          const opp = scoreArbOpportunity({
-            source: "spread",
-            intent: "profit",
-            plan: arb,
-            waxUsd,
-            quoteAgeMs,
-            maxQuoteAgeMs,
-            snap,
-            balances: input.balances,
-            calibration: calOf("spread"),
-            regimeFactor: regW("spread"),
-          });
-          const why = rejectOpportunity(opp, oppGate);
-          if (why) {
-            considered.push(`arb ${why}`);
-          } else {
-            scored.push(opp);
-            byFp.set(opp.fingerprint, {
-              kind: "arb",
-              arbKind: "spread",
-              plan: arb,
-              opportunity: opp,
-              reason: `Auto: arb #${arb.buyPool.id}→#${arb.sellPool.id} · EV $${opp.expectedValueUsd.toFixed(4)} · exec ${(opp.executionProbability * 100).toFixed(0)}%`,
-            });
-            considered.push(`arb EV $${opp.expectedValueUsd.toFixed(4)}`);
-          }
-        } else {
-          const probe = findBestArb(snap, maxWax, -100, false, minWax);
-          considered.push(
-            probe
-              ? `best arb ${(probe.profitPct * 100).toFixed(2)}% < ${risk.minEdgePct}% gate`
-              : "no two WAX books",
-          );
-        }
-      } else {
-        considered.push(
-          `no deployable ${quote} (effective max $${bounds.effectiveMaxUsd.toFixed(2)} < min $${risk.minTradeUsd.toFixed(2)})`,
-        );
-      }
-
-      const theses: { reason: string; expected: number; confidence: number }[] = [];
-      if (
-        signal.warmed &&
-        signal.bias === "buy" &&
-        Math.round(signal.confidence * 100) >= risk.minConfidence &&
-        regW("signal") > 0.4
-      ) {
-        const mom = momentumPct(input.series);
-        theses.push({
-          reason: `Auto: engine vote BUY ${Math.round(signal.confidence * 100)}% conf${regTag}`,
-          expected: goals.takeProfitPct * (mom < 0 ? 0.6 : 1) * regW("signal"),
-          confidence: regW("signal"),
-        });
-      } else if (!signal.warmed) {
-        considered.push(`engines warming up ${input.series.length}/${BOT_WARMUP_POINTS}`);
-      } else if (signal.bias === "buy" && regW("signal") <= 0.4) {
-        considered.push(`signal vetoed by regime${regTag}`);
-      }
-      {
-        const { rsi, pctB, distToMidPct } = reversionRead(input.series);
-        const hooked = regime.regime !== "trend_down" || momentumPct(input.series, 3) > 0;
-        if (
-          rsi != null &&
-          pctB != null &&
-          momentumPct(input.series, 12) >= -0.04 &&
-          rsi <= 30 &&
-          pctB <= 0.1 &&
-          hooked &&
-          regW("meanrev") > 0
-        ) {
-          theses.push({
-            reason: `Auto: oversold RSI ${rsi.toFixed(0)} / %B ${pctB.toFixed(2)}${regTag}`,
-            expected: Math.max(0, (distToMidPct ?? 0) * 0.7) * regW("meanrev"),
-            confidence: regW("meanrev"),
-          });
-        } else if (rsi != null && rsi <= 30 && !hooked) {
-          considered.push(`meanrev held — oversold but no hook${regTag}`);
-        }
-      }
-      {
-        const step = adaptiveGridStepPct(risk.gridStepPct, realizedVolPerSec(input.series));
-        const anchor = input.gridAnchor;
-        if ((anchor == null || baseUsd <= anchor * (1 - step / 100)) && regW("grid") > 0) {
-          theses.push({
-            reason: `Auto: grid step −${step.toFixed(2)}% zone${regTag}`,
-            expected: step * 0.8 * regW("grid"),
-            confidence: regW("grid"),
-          });
-        }
-      }
-      for (const t of theses) pushScored(tryBuyWith(t.reason, t.expected, t.confidence, maxWax));
-
-      // Holdings-based next hop: whatever we actually hold → best one-shot
-      // swap or cycle. HOLD if nothing clears. Never continues a stale path.
-      if (!dangerHold) {
-        const next = planNextAction(snap, input.balances, {
-          minUsd: risk.minTradeUsd,
-          minNetPct: Math.max(0, risk.minNetEdgePct),
-          maxHops: 4,
-        });
-        if (next) {
-          const scoredNext = scoreBuyOpportunity({
-            source: next.kind === "cycle" ? "cycle" : "path",
-            tokenIn: next.tokenIn,
-            tokenOut: next.tokenOut,
-            amountIn: next.amountIn,
-            notionalUsd: next.usdIn,
-            netProfitUsd: next.netUsd,
-            netEdgePct: next.netPct,
-            route: next.route,
-            quoteAgeMs,
-            maxQuoteAgeMs,
-            snap,
-            balances: input.balances,
-            calibration: calOf("auto"),
-            strategyConfidence: 1,
-          });
-          const why = rejectOpportunity(scoredNext, oppGate);
-          if (why) {
-            considered.push(`next-action ${why}`);
-          } else {
-            scored.push(scoredNext);
-            byFp.set(scoredNext.fingerprint, {
-              kind: "swap",
-              tokenIn: next.tokenIn,
-              tokenOut: next.tokenOut,
-              amountIn: next.amountIn,
-              route: next.route,
-              opportunity: scoredNext,
-              minNetPct: Math.max(0, risk.minNetEdgePct),
-              reason: `Auto: ${next.kind} ${next.tokenIn}→${next.tokenOut} · EV $${scoredNext.expectedValueUsd.toFixed(4)} · net ${next.netPct.toFixed(2)}%`,
-            });
-            considered.push(`${next.kind} ${next.tokenIn}→${next.tokenOut} EV $${scoredNext.expectedValueUsd.toFixed(4)}`);
-          }
-        } else {
-          considered.push("no profitable next hop from holdings — HOLD is valid");
-        }
-      }
-
-      const { winner, rejected } = selectBestOpportunity(scored, oppGate, now);
-      if (winner && winner.intent === "profit" && winner.expectedValueUsd > 0) {
-        const d = byFp.get(winner.fingerprint);
-        if (d) return d;
-      }
-      for (const r of rejected) considered.push(`${r.reason}`);
-
-      // Controlled volume ONLY when nothing profitable exists. Same common
-      // gate — never "there is a trade, therefore trade."
-      if (!dangerHold && risk.maxEchoLossPct > 0 && maxWax + 1e-12 >= minWax) {
-        const echo = findBestArb(snap, maxWax, -risk.maxEchoLossPct, true, minWax);
-        if (echo) {
-          const opp = scoreArbOpportunity({
-            source: "volume",
-            intent: "volume",
-            plan: echo,
-            waxUsd,
-            quoteAgeMs,
-            maxQuoteAgeMs,
-            snap,
-            balances: input.balances,
-            calibration: calOf("volume"),
-            regimeFactor: regW("volume"),
-          });
-          const why = rejectOpportunity(opp, oppGate);
-          if (why) {
-            considered.push(`volume ${why}`);
-          } else {
-            const costUsd = Math.max(0, echo.waxIn - echo.waxOut) * waxUsd;
-            return {
-              kind: "arb",
-              arbKind: "volume",
-              plan: echo,
-              opportunity: opp,
-              reason: `Auto: no profitable action — volume echo #${echo.buyPool.id}${
-                echo.sellPool.id === echo.buyPool.id ? " round-trip" : `→#${echo.sellPool.id}`
-              } · cost $${costUsd.toFixed(3)} · exec ${(opp.executionProbability * 100).toFixed(0)}%`,
-            };
-          }
-        }
-      }
-      return hold(`Auto scan${regTag}: ${considered.join(" · ") || "nothing in range"} — waiting`);
     }
-    case "unleashed": {
-      const hops = hopsForStrategy("unleashed", risk.maxHops, now);
-      const mix: Decision[] = [];
-      if (dangerHold) return hold(dangerHold);
-      if (maxWax + 1e-12 >= minWax) {
-        const clip = pickClipInBand(minWax, maxWax, now);
-        const gatePct =
-          ((1 + Math.max(0, risk.minEdgePct) / 100) / Math.max(0.9, 1 - risk.slippage / 100) - 1) * 100;
-        const arb = findBestArb(snap, clip > 0 ? clip : maxWax, Math.min(gatePct, 0), false, minWax);
-        if (arb) {
-          mix.push({
-            kind: "arb",
-            arbKind: "spread",
-            plan: arb,
-            reason: `Unleashed arb #${arb.buyPool.id}→#${arb.sellPool.id} · ${(arb.profitPct * 100).toFixed(2)}%`,
-          });
-        }
-        const echo = findBestArb(snap, clip > 0 ? clip : maxWax, -risk.maxEchoLossPct, true, minWax);
-        if (echo) {
-          mix.push({
-            kind: "arb",
-            arbKind: "volume",
-            plan: echo,
-            reason: `Unleashed echo #${echo.buyPool.id} · clip ${clip.toFixed(4)} ${quote}`,
-          });
-        }
-      }
-      const tape = planLeefTape(snap, input.balances, {
-        minUsd: risk.minTradeUsd,
-        maxUsd: Math.max(risk.minTradeUsd, bounds.effectiveMaxUsd),
-        maxHops: hops,
-        seed: now + 17,
-        maxLossPct: risk.maxEchoLossPct,
-      });
-      if (tape) {
-        mix.push({
-          kind: "swap",
-          tokenIn: tape.tokenIn,
-          tokenOut: tape.tokenOut,
-          amountIn: tape.amountIn,
-          route: tape.route,
-          minNetPct: -risk.maxEchoLossPct,
-          reason: `Unleashed tape ${tape.tokenIn}→${tape.tokenOut} · $${tape.usdIn.toFixed(4)}`,
-        });
-      }
-      const next = planNextAction(snap, input.balances, {
-        minUsd: risk.minTradeUsd,
-        minNetPct: -risk.maxEchoLossPct,
-        maxHops: hops,
-      });
-      if (next) {
-        mix.push({
-          kind: "swap",
-          tokenIn: next.tokenIn,
-          tokenOut: next.tokenOut,
-          amountIn: next.amountIn,
-          route: next.route,
-          minNetPct: -risk.maxEchoLossPct,
-          reason: `Unleashed ${next.kind} ${next.tokenIn}→${next.tokenOut} · ${next.netPct.toFixed(2)}%`,
-        });
-      }
-      if (signal.warmed && signal.bias === "buy") {
-        mix.push(tryBuyWith("Unleashed signal", goals.takeProfitPct, 1, maxWax));
-      }
-      const { rsi, pctB, distToMidPct } = reversionRead(input.series);
-      if (rsi != null && pctB != null && rsi <= 40) {
-        mix.push(
-          tryBuyWith(
-            "Unleashed meanrev",
-            Math.max(0.2, (distToMidPct ?? 1) * 0.5),
-            1,
-            maxWax,
-          ),
-        );
-      }
-      const actionable = mix.filter((d) => d.kind !== "hold");
-      if (actionable.length === 0) {
-        return hold("Unleashed: wallet or book cannot trade this cycle");
-      }
-      const pick = actionable[(now >>> 0) % actionable.length]!;
-      return pick;
-    }
-    case "growth": {
-      if (dangerHold) return hold(dangerHold);
-      const mode = input.growthMode ?? "balanced";
-      const hops = hopsForGrowth(mode, risk.maxHops);
-      const ageMs = now - Date.parse(snap.fetchedAt);
-      // Cap per holding inside the growth engine — do not bind to the quote-token
-      // wallet (the treasure might be bought with TLM/USDC while WAX is empty).
-      const maxUsd = Math.max(risk.minTradeUsd, risk.maxPositionUsd);
-      const planned = planGrowthAction(snap, input.balances, {
-        targets: normalizeTargets(input.growthTargets ?? DEFAULT_GROWTH_TARGETS),
-        mode,
-        minUsd: risk.minTradeUsd,
-        maxUsd,
-        maxHops: hops,
-        seed: now,
-        quoteAgeMs: Number.isFinite(ageMs) ? Math.max(0, ageMs) : 0,
-        maxQuoteAgeMs: risk.maxQuoteAgeSec * 1000,
-      });
-      if ("hold" in planned) return hold(planned.explain.join(" · "));
+  }
+  if (spin === 1) {
+    const next = planNextAction(snap, input.balances, {
+      minUsd: bounds.minIn * bounds.quoteUsd,
+      minNetPct: input.risk.minNetEdgePct,
+      maxHops: hopsForStrategy("unleashed", input.risk.maxHops),
+    });
+    if (next) {
       return {
         kind: "swap",
-        tokenIn: planned.tokenIn,
-        tokenOut: planned.tokenOut,
-        amountIn: planned.amountIn,
-        route: planned.route,
-        reason: planned.explain.join(" · "),
-        growthPlan: planned,
+        tokenIn: next.tokenIn,
+        tokenOut: next.tokenOut,
+        amountIn: next.amountIn,
+        route: next.route,
+        minNetPct: input.risk.minNetEdgePct,
+        reason: `Unleashed: next hop ${next.tokenIn}→${next.tokenOut} net ${next.netPct.toFixed(2)}%`,
       };
     }
-    case "spread":
-    case "volume":
-    case "volume-x":
-      return hold("Scan only");
+  }
+  if (spin === 2) {
+    const tape = planLeefTape(snap, input.balances, {
+      minUsd: bounds.minIn * bounds.quoteUsd,
+      maxUsd: bounds.maxIn * bounds.quoteUsd,
+      seed,
+      maxLossPct: input.risk.maxEchoLossPct,
+    });
+    if (tape) {
+      return {
+        kind: "swap",
+        tokenIn: tape.tokenIn,
+        tokenOut: tape.tokenOut,
+        amountIn: tape.amountIn,
+        route: tape.route,
+        minNetPct: -input.risk.maxEchoLossPct,
+        reason: `Unleashed tape ${tape.tokenIn}→${tape.tokenOut} $${tape.usdIn.toFixed(2)} (${tape.netPct.toFixed(2)}%)`,
+      };
+    }
+  }
+  // Default: directional entry with the signal thesis if warmed, else momentum.
+  const signal = botSignal(series);
+  const mom = momentumPct(series, 6);
+  const grossPct = signal.warmed
+    ? Math.max(0.5, input.goals.takeProfitPct * signal.confidence)
+    : Math.max(0.4, Math.abs(mom) * 0.7);
+  const sized = optimizeEntrySize({
+    snap,
+    tokenIn: quote,
+    tokenOut: base,
+    expectedGrossPct: grossPct,
+    minNetEdgePct: input.risk.minNetEdgePct,
+    minIn: bounds.minIn,
+    maxIn: Math.max(bounds.minIn, amount),
+    volPerSec: realizedVolPerSec(series),
+  });
+  if (sized) {
+    return {
+      kind: "buy",
+      amountWax: sized.best.amountIn,
+      route: sized.best.route,
+      confidence: signal.confidence || 0.5,
+      expectedGrossPct: grossPct,
+      edge: { netEdgePct: sized.best.netEdgePct, netProfitUsd: sized.best.netProfitUsd, score: 60 },
+      reason: `Unleashed: ${quote}→${base} ${sized.best.amountIn.toFixed(2)} ${quote} · net ${sized.best.netEdgePct.toFixed(2)}%`,
+    };
+  }
+  const echo = findBestArb(snap, amount, -input.risk.maxEchoLossPct, true, bounds.minIn);
+  if (echo) {
+    return {
+      kind: "arb",
+      plan: echo,
+      arbKind: "volume",
+      reason: `Unleashed: volume echo ${echo.waxIn.toFixed(2)} WAX (${(echo.profitPct * 100).toFixed(2)}%)`,
+    };
+  }
+  return { kind: "hold", reason: "Unleashed: nothing executable this cycle" };
+}
+
+/* ------------------------------------------------------------------ */
+/* Main entry                                                          */
+/* ------------------------------------------------------------------ */
+
+export function evaluateBot(input: BotInput): Decision {
+  const { snap, series } = input;
+  const quote = input.quote ?? "WAX";
+  const base = input.base ?? "LEEF";
+  const quoteUsd = usdPriceOf(quote, snap);
+  const baseUsd = usdPriceOf(base, snap) || snap.leefUsd;
+
+  // Forced manual clip (desk buttons).
+  if (input.force === "sell") {
+    const walletBase = balanceForIdentifier(input.balances, base, snap.universe);
+    const held = Math.min(input.position?.amountLeef ?? Infinity, walletBase);
+    if (!(held > 0)) return { kind: "hold", reason: `Force sell: no ${base} in the wallet` };
+    const capped = input.position && held < input.position.amountLeef;
+    const route = bestExecutionRoute(snap.pools, snap.aux, held, base, quote);
+    if (!route) return { kind: "hold", reason: "Force sell: no executable route" };
+    return {
+      kind: "sell",
+      amountLeef: held,
+      route,
+      confidence: 1,
+      reason: capped ? `Force sell (capped at wallet balance ${held.toFixed(0)} ${base})` : "Force sell",
+    };
+  }
+  if (input.force === "buy") {
+    const bounds = boundsFor(input, snap);
+    if ("error" in bounds) return { kind: "hold", reason: `Force buy: ${bounds.error}` };
+    const amount = Math.min(bounds.maxIn, balanceForIdentifier(input.balances, quote, snap.universe));
+    if (!(amount > 0)) return { kind: "hold", reason: `Force buy: no deployable ${quote}` };
+    const route = bestExecutionRoute(snap.pools, snap.aux, amount, quote, base);
+    if (!route) return { kind: "hold", reason: "Force buy: no executable route" };
+    return {
+      kind: "buy",
+      amountWax: amount,
+      route,
+      confidence: 1,
+      reason: `Force buy ${amount.toFixed(2)} ${quote}`,
+    };
+  }
+
+  // Session guards.
+  if (input.goals.sessionGoalUsd > 0 && input.sessionRealizedUsd >= input.goals.sessionGoalUsd) {
+    return { kind: "stop", reason: `Session goal reached: +$${input.sessionRealizedUsd.toFixed(2)}` };
+  }
+  if (
+    input.goals.maxDrawdownPct > 0 &&
+    input.sessionStartEquityUsd > 0 &&
+    input.sessionRealizedUsd <= (-input.goals.maxDrawdownPct / 100) * input.sessionStartEquityUsd
+  ) {
+    return {
+      kind: "stop",
+      reason: `Max drawdown hit: $${input.sessionRealizedUsd.toFixed(2)}`,
+    };
+  }
+  if (input.now < input.cooldownUntil) {
+    return { kind: "hold", reason: `Cooldown ${Math.ceil((input.cooldownUntil - input.now) / 1000)}s` };
+  }
+  if (input.tradesThisHour >= input.risk.maxTradesHour) {
+    return { kind: "hold", reason: `Hourly cap ${input.risk.maxTradesHour} reached` };
+  }
+  const quoteAgeSec = (input.now - Date.parse(snap.fetchedAt)) / 1000;
+  if (quoteAgeSec > Math.max(15, input.risk.maxQuoteAgeSec)) {
+    return { kind: "hold", reason: `Book is ${quoteAgeSec.toFixed(0)}s old — waiting for a fresh one` };
+  }
+
+  // Position exits (all strategies with a position).
+  if (input.position && input.position.amountLeef > 0) {
+    const pos = input.position;
+    const pnlPct = baseUsd > 0 && pos.entryUsd > 0 ? (baseUsd / pos.entryUsd - 1) * 100 : 0;
+    const giveback = pos.highUsd > 0 ? (1 - baseUsd / pos.highUsd) * 100 : 0;
+    const walletBase = balanceForIdentifier(input.balances, base, snap.universe);
+    const sellable = Math.min(pos.amountLeef, walletBase);
+    const sellRoute = sellable > 0 ? bestExecutionRoute(snap.pools, snap.aux, sellable, base, quote) : null;
+    const sellDecision = (why: string): Decision =>
+      sellable > 0 && sellRoute
+        ? {
+            kind: "sell",
+            amountLeef: sellable,
+            route: sellRoute,
+            confidence: 0.9,
+            reason: why + (sellable < pos.amountLeef ? " (capped at wallet balance)" : ""),
+          }
+        : { kind: "hold", reason: `${why} — but no sellable ${base}/route` };
+    if (pnlPct >= input.goals.takeProfitPct) {
+      return sellDecision(`Take-profit +${pnlPct.toFixed(1)}% ≥ ${input.goals.takeProfitPct}%`);
+    }
+    if (pnlPct <= -input.goals.stopLossPct) {
+      return sellDecision(`Stop-loss ${pnlPct.toFixed(1)}% ≤ −${input.goals.stopLossPct}%`);
+    }
+    if (pnlPct >= input.goals.trailingPct && giveback >= input.goals.trailingPct) {
+      return sellDecision(`Trailing stop: gave back ${giveback.toFixed(1)}% from the high`);
+    }
+    if (input.strategy === "signal") {
+      const sig = botSignal(series);
+      if (sig.warmed && sig.bias === "sell" && sig.confidence >= input.risk.minConfidence / 100) {
+        return sellDecision(`Signal flipped bearish (${(sig.score * 100).toFixed(0)}%)`);
+      }
+    }
+    if (input.strategy === "meanrev" && pos.entryUsd > 0 && baseUsd >= pos.entryUsd * 1.005) {
+      return sellDecision(`Mean reversion complete (+${pnlPct.toFixed(1)}%)`);
+    }
+    if (input.strategy === "grid") {
+      const anchor = input.gridAnchor ?? pos.entryUsd;
+      if (anchor > 0 && baseUsd >= anchor * (1 + input.risk.gridStepPct / 100)) {
+        return sellDecision(`Grid step up ${input.risk.gridStepPct}%`);
+      }
+    }
+    if (input.strategy === "dca") {
+      // DCA holds to take-profit/stop-loss only (handled above).
+    }
+    return { kind: "hold", reason: `Holding ${pos.amountLeef.toFixed(0)} ${base} (${pnlPct >= 0 ? "+" : ""}${pnlPct.toFixed(1)}%)` };
+  }
+
+  // Entry strategies.
+  switch (input.strategy) {
+    case "auto":
+      return decideAuto(input, snap, series);
+    case "unleashed":
+      return decideUnleashed(input, snap, series);
+    case "growth": {
+      const targets = normalizeTargets(input.growthTargets ?? DEFAULT_GROWTH_TARGETS);
+      const mode: GrowthMode = input.growthMode ?? "balanced";
+      const bounds = boundsFor(input, snap);
+      const plan = planGrowthAction(snap, input.balances, {
+        targets,
+        mode,
+        minUsd: "error" in bounds ? 0 : bounds.minIn * bounds.quoteUsd,
+        maxUsd: "error" in bounds ? 1 : bounds.maxIn * bounds.quoteUsd,
+        maxHops: hopsForGrowth(mode, input.risk.maxHops),
+        seed: input.now,
+      });
+      if ("hold" in plan) return { kind: "hold", reason: `Growth: ${plan.hold}` };
+      return {
+        kind: "swap",
+        tokenIn: plan.tokenIn,
+        tokenOut: plan.tokenOut,
+        amountIn: plan.amountIn,
+        route: plan.route,
+        growthPlan: plan,
+        minNetPct: -input.risk.maxEchoLossPct,
+        reason: `Growth: ${plan.explain.join(" · ")}`,
+      };
+    }
+    case "spread": {
+      const bounds = boundsFor(input, snap);
+      if ("error" in bounds) return { kind: "hold", reason: `Spread: ${bounds.error}` };
+      const plan = findBestArb(
+        snap,
+        Math.min(bounds.maxIn, balanceForIdentifier(input.balances, quote, snap.universe)),
+        input.risk.minEdgePct,
+        false,
+        bounds.minIn,
+      );
+      if (!plan) return { kind: "hold", reason: `No atomic spread ≥ ${input.risk.minEdgePct}%` };
+      return {
+        kind: "arb",
+        plan,
+        arbKind: "spread",
+        reason: `Spread #${plan.buyPool.id}→#${plan.sellPool.id} ${(plan.profitPct * 100).toFixed(2)}%`,
+      };
+    }
+    case "volume": {
+      const bounds = boundsFor(input, snap);
+      if ("error" in bounds) return { kind: "hold", reason: `Volume: ${bounds.error}` };
+      const amount = pickClipInBand(bounds.minIn, bounds.maxIn, input.now);
+      const plan = findBestArb(snap, amount, -input.risk.maxEchoLossPct, true, bounds.minIn);
+      if (!plan) return { kind: "hold", reason: "No echo inside the loss budget" };
+      return {
+        kind: "arb",
+        plan,
+        arbKind: "volume",
+        reason: `Volume echo ${plan.waxIn.toFixed(2)} WAX (${(plan.profitPct * 100).toFixed(2)}%)`,
+      };
+    }
+    case "volume-x": {
+      const bounds = boundsFor(input, snap);
+      if ("error" in bounds) return { kind: "hold", reason: `Volume-X: ${bounds.error}` };
+      const tape = planLeefTape(snap, input.balances, {
+        minUsd: bounds.minIn * bounds.quoteUsd,
+        maxUsd: bounds.maxIn * bounds.quoteUsd,
+        seed: input.now,
+        maxLossPct: input.risk.maxEchoLossPct,
+        maxHops: hopsForStrategy("volume-x", input.risk.maxHops),
+      });
+      if (!tape) return { kind: "hold", reason: "Volume-X: no tape clip inside the loss budget" };
+      return {
+        kind: "swap",
+        tokenIn: tape.tokenIn,
+        tokenOut: tape.tokenOut,
+        amountIn: tape.amountIn,
+        route: tape.route,
+        minNetPct: -input.risk.maxEchoLossPct,
+        reason: `Volume-X ${tape.tokenIn}→${tape.tokenOut} $${tape.usdIn.toFixed(2)} (${tape.netPct.toFixed(2)}%)`,
+      };
+    }
+    case "signal": {
+      const gateCtx = dangerGate(input, snap, series);
+      if (gateCtx.blockReason) return { kind: "hold", reason: gateCtx.blockReason };
+      const sig = botSignal(series);
+      if (!sig.warmed) return { kind: "hold", reason: `Signal warming up (${series.length}/${BOT_WARMUP_POINTS} prints)` };
+      if (sig.bias !== "buy") return { kind: "hold", reason: `Signal ${sig.bias} (${(sig.score * 100).toFixed(0)}%)` };
+      if (sig.confidence < input.risk.minConfidence / 100) {
+        return { kind: "hold", reason: `Signal confidence ${(sig.confidence * 100).toFixed(0)}% < ${input.risk.minConfidence}%` };
+      }
+      const bounds = boundsFor(input, snap);
+      if ("error" in bounds) return { kind: "hold", reason: `Signal: ${bounds.error}` };
+      const grossPct = Math.max(0.5, input.goals.takeProfitPct * sig.confidence);
+      const sized = optimizeEntrySize({
+        snap,
+        tokenIn: quote,
+        tokenOut: base,
+        expectedGrossPct: grossPct,
+        minNetEdgePct: input.risk.minNetEdgePct,
+        minIn: bounds.minIn,
+        maxIn: bounds.maxIn * gateCtx.weight,
+        volPerSec: realizedVolPerSec(series),
+      });
+      if (!sized) return { kind: "hold", reason: "Signal buy clears net edge at no size" };
+      return {
+        kind: "buy",
+        amountWax: sized.best.amountIn,
+        route: sized.best.route,
+        confidence: sig.confidence,
+        expectedGrossPct: grossPct,
+        edge: { netEdgePct: sized.best.netEdgePct, netProfitUsd: sized.best.netProfitUsd, score: 75 },
+        reason: `Signal buy ${(sig.score * 100).toFixed(0)}% · net ${sized.best.netEdgePct.toFixed(2)}%`,
+      };
+    }
+    case "meanrev": {
+      const gateCtx = dangerGate(input, snap, series);
+      if (gateCtx.blockReason) return { kind: "hold", reason: gateCtx.blockReason };
+      const mom = momentumPct(series, 6);
+      if (mom > -input.risk.gridStepPct) return { kind: "hold", reason: `Mean-rev: momentum ${mom.toFixed(1)}% not stretched` };
+      const bounds = boundsFor(input, snap);
+      if ("error" in bounds) return { kind: "hold", reason: `Mean-rev: ${bounds.error}` };
+      const grossPct = Math.abs(mom) * 0.7;
+      const sized = optimizeEntrySize({
+        snap,
+        tokenIn: quote,
+        tokenOut: base,
+        expectedGrossPct: grossPct,
+        minNetEdgePct: input.risk.minNetEdgePct,
+        minIn: bounds.minIn,
+        maxIn: bounds.maxIn * gateCtx.weight,
+        volPerSec: realizedVolPerSec(series),
+      });
+      if (!sized) return { kind: "hold", reason: "Mean-rev clears net edge at no size" };
+      return {
+        kind: "buy",
+        amountWax: sized.best.amountIn,
+        route: sized.best.route,
+        confidence: 0.55,
+        expectedGrossPct: grossPct,
+        edge: { netEdgePct: sized.best.netEdgePct, netProfitUsd: sized.best.netProfitUsd, score: 65 },
+        reason: `Mean-rev buy ${mom.toFixed(1)}% stretch · net ${sized.best.netEdgePct.toFixed(2)}%`,
+      };
+    }
+    case "grid": {
+      const bounds = boundsFor(input, snap);
+      if ("error" in bounds) return { kind: "hold", reason: `Grid: ${bounds.error}` };
+      const anchor = input.gridAnchor;
+      if (!anchor || !(anchor > 0) || !(baseUsd > 0)) {
+        return { kind: "hold", reason: "Grid: no anchor yet" };
+      }
+      const dropPct = (anchor / baseUsd - 1) * 100;
+      if (dropPct < input.risk.gridStepPct) {
+        return { kind: "hold", reason: `Grid: ${dropPct.toFixed(1)}% below anchor < ${input.risk.gridStepPct}% step` };
+      }
+      const grossPct = input.risk.gridStepPct * 0.8;
+      const sized = optimizeEntrySize({
+        snap,
+        tokenIn: quote,
+        tokenOut: base,
+        expectedGrossPct: grossPct,
+        minNetEdgePct: input.risk.minNetEdgePct,
+        minIn: bounds.minIn,
+        maxIn: bounds.maxIn,
+        volPerSec: realizedVolPerSec(series),
+      });
+      if (!sized) return { kind: "hold", reason: "Grid step clears net edge at no size" };
+      return {
+        kind: "buy",
+        amountWax: sized.best.amountIn,
+        route: sized.best.route,
+        confidence: 0.6,
+        expectedGrossPct: grossPct,
+        edge: { netEdgePct: sized.best.netEdgePct, netProfitUsd: sized.best.netProfitUsd, score: 65 },
+        reason: `Grid step −${dropPct.toFixed(1)}% · net ${sized.best.netEdgePct.toFixed(2)}%`,
+      };
+    }
+    case "dca": {
+      const bounds = boundsFor(input, snap);
+      if ("error" in bounds) return { kind: "hold", reason: `DCA: ${bounds.error}` };
+      const grossPct = input.goals.takeProfitPct;
+      const sized = optimizeEntrySize({
+        snap,
+        tokenIn: quote,
+        tokenOut: base,
+        expectedGrossPct: grossPct,
+        minNetEdgePct: input.risk.minNetEdgePct,
+        minIn: bounds.minIn,
+        maxIn: bounds.maxIn,
+        volPerSec: realizedVolPerSec(series),
+      });
+      if (!sized) return { kind: "hold", reason: "DCA clip clears net edge at no size" };
+      return {
+        kind: "buy",
+        amountWax: sized.best.amountIn,
+        route: sized.best.route,
+        confidence: 0.5,
+        expectedGrossPct: grossPct,
+        edge: { netEdgePct: sized.best.netEdgePct, netProfitUsd: sized.best.netProfitUsd, score: 55 },
+        reason: `DCA accumulate · net ${sized.best.netEdgePct.toFixed(2)}%`,
+      };
+    }
+    default:
+      return { kind: "hold", reason: `Unknown strategy ${input.strategy}` };
   }
 }
+
+/** Portfolio USD mark — used by the desk header. */
+export function equityUsd(snap: LeefSnapshot, balances: Record<string, number>): number {
+  return markPortfolioUsd(snap, balances).totalUsd;
+}
+
+/** Exported for the desk's pool-focus picker. */
+export { backedPools, isLeefToken, isWaxToken, virtualLeefPairReserves };
