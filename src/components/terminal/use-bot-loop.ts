@@ -43,6 +43,7 @@ import {
 import { classifyRegime, dangerScore } from "@/lib/leef/regime";
 import { maybeAutoReview } from "@/lib/leef/ai-review";
 import { refreshExecutionState } from "@/lib/market/execution-state";
+import { aggregateFlowRisk, swapFlow } from "@/lib/market/swap-flow";
 import { governTrade, portfolioState } from "@/lib/market/portfolio-governor";
 import type { LeefSnapshot, SwapRoute } from "@/lib/leef/types";
 import { parseAssetAmount, type AlcorRouteQuote } from "@/lib/wallet/alcor-route";
@@ -165,9 +166,13 @@ const MAX_GATE_ATTEMPTS = 3;
 /**
  * Candidate order for an exact-quote gate. The ranked list is rebuilt on
  * the refreshed execution book (never the stale discovery book) with the
- * LEEF near-tie preference applied; a route that no longer ranks (e.g. the
- * governor resized it) still gets its attempt first. Fallbacks that would
- * move the market past the risk cap are not candidates.
+ * LEEF near-tie preference applied — inside a near-tie band, all-Alcor
+ * routes with ≤ 3 legs come first (whole-route venue-verifiable via ONE
+ * swapRouter call; the venue caps maxHops at 3 server-side), then longer
+ * all-Alcor routes, then fresh-model venues; economics still rule outside
+ * the band. A route that no longer ranks (e.g. the governor resized it)
+ * still gets its attempt first. Fallbacks that would move the market past
+ * the risk cap are not candidates.
  */
 function gateCandidates(
   book: LeefSnapshot,
@@ -431,6 +436,11 @@ async function runBotOnceInner(
     recentFailures: b.decisions.filter(
       (d) => d.kind === "error" && isEconomicFailureReason(d.reason) && Date.now() - Date.parse(d.t) < 600_000,
     ).length,
+    // E-1 swap flow → danger score, gated by the terminal-store kill-switch.
+    // Risk context only: flow can raise danger, it can NEVER create an entry.
+    flow: useTerminal.getState().flowGuardEnabled
+      ? aggregateFlowRisk(swapFlow.tracker.allStates(Date.now()), risk.maxQuoteAgeSec * 1000)
+      : null,
     force: opts?.force ?? null,
   });
 
@@ -642,7 +652,7 @@ async function runBotOnceInner(
             reason: verdict.reason, expectedOut: verified.expectedOut,
             guaranteedOut: verified.guaranteedOut, netPct: verdict.netEdgePct,
             exactness: verified.exactness, verifyMs, strategy: b.strategy, mode,
-            modelOut: candidate.amountOut,
+            modelOut: candidate.amountOut, venueImpactPct: verified.venueImpactPct,
             ...routeJournalMeta(candidate, decision.amountWax, bounds.quoteUsd),
             ...ctxOf(),
             leefUsd: book.leefUsd, waxUsd: book.waxUsd,
@@ -938,7 +948,7 @@ async function runBotOnceInner(
             reason: verdict.reason, expectedOut: verified.expectedOut,
             guaranteedOut: verified.guaranteedOut, exactness: verified.exactness,
             verifyMs, strategy: b.strategy, mode,
-            modelOut: candidate.amountOut,
+            modelOut: candidate.amountOut, venueImpactPct: verified.venueImpactPct,
             ...routeJournalMeta(candidate, decision.amountIn, usdPriceOf(decision.tokenIn, book)),
             ...ctxOf(),
             leefUsd: book.leefUsd, waxUsd: book.waxUsd,
@@ -1084,7 +1094,7 @@ async function runBotOnceInner(
             reason: verdict.reason, expectedOut: verified.expectedOut,
             guaranteedOut: verified.guaranteedOut, netPct: verdict.exactNetPct,
             exactness: verified.exactness, verifyMs, strategy: b.strategy, mode,
-            modelOut: candidate.amountOut,
+            modelOut: candidate.amountOut, venueImpactPct: verified.venueImpactPct,
             ...routeJournalMeta(candidate, decision.amountIn, usdPriceOf(decision.tokenIn, book)),
             ...ctxOf(),
             leefUsd: book.leefUsd, waxUsd: book.waxUsd,
@@ -1491,7 +1501,7 @@ async function runBotOnceInner(
         platformFeeCollected:
           live && execStatus === "confirmed" && feeInfo ? true : undefined,
         predEdgePct: position?.predEdgePct ?? undefined,
-        realizedEdgePct:
+        realEdgePct:
           position && position.entryCostUsd > 0
             ? (pnlUsd / position.entryCostUsd) * 100
             : undefined,
@@ -1608,7 +1618,7 @@ async function runBotOnceInner(
         platformFeeToken: feeInfo?.symbol,
         platformFeeCollected:
           live && execStatus === "confirmed" && feeInfo ? true : undefined,
-        realizedEdgePct: inUsd > 0 ? (tapePnl / inUsd) * 100 : undefined,
+        realEdgePct: inUsd > 0 ? (tapePnl / inUsd) * 100 : undefined,
         latencyMs: live ? Date.now() - tExec : undefined,
         ...routeJournalMeta(
           decision.route,
@@ -1787,7 +1797,7 @@ async function runBotOnceInner(
         amountIn: plan.waxIn, expectedOut: plan.waxOut,
         actualOut: realizedWax ?? undefined, txid, status: execStatus, pnlUsd,
         predEdgePct: plan.profitPct * 100,
-        realizedEdgePct:
+        realEdgePct:
           (realizedWax != null ? realizedWax / plan.waxIn : plan.waxOut / plan.waxIn - 1) * 100,
         platformFeeAmount: feeInfo?.amount,
         platformFeeToken: feeInfo?.symbol,
@@ -1856,11 +1866,10 @@ async function runBotOnceInner(
             tokenIn: b.quote || "WAX",
             tokenOut: b.base || "LEEF",
           });
-    const coolMs =
-      code === "QUOTE_FAILURE" || code === "RPC_FAILURE" || code === "API_RATE_LIMIT"
-        ? 30_000
-        : 12_000;
-    markDeadOpportunity(fp, coolMs);
+    // Infrastructure classes (QUOTE_FAILURE/RPC_FAILURE/API_RATE_LIMIT) already
+    // returned above with their own rate-limit backoff; everything left gets
+    // the standard dead-clip cooldown.
+    markDeadOpportunity(fp, 12_000);
     return decision;
   } finally {
     const fetchTiming = lastFetchTiming();
