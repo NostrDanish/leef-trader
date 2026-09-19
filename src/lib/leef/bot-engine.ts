@@ -250,7 +250,7 @@ export const DEFAULT_RISK: BotRisk = {
   // a volume echo is "zero-loss average" after fees — the on-chain min-out
   // still reverts anything worse. Not wash trading: cost is bounded.
   maxEchoLossPct: 1.5,
-  minNetEdgePct: 0,
+  minNetEdgePct: 0.1,
   maxQuoteAgeSec: 45,
   maxHops: 4,
 };
