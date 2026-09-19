@@ -48,7 +48,7 @@ const CHAIN_INFO = {
   head_block_time: "2026-09-11T12:00:00.000",
   last_irreversible_block_num: 287_364_123,
   last_irreversible_block_id:
-    "11264f1b8a0e6f5a4b3c2d1e0f9a8b7c6d5e4f3a2b1c0d9e8f7a6b5c4d3e2f1a0b",
+    "11264f1b8a0e6f5a4b3c2d1e0f9a8b7c6d5e4f3a2b1c0d9e8f7a6b5c4d3e2f1a",
 };
 
 function ourPackedTx(): Uint8Array {

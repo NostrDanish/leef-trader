@@ -158,7 +158,7 @@ describe("assertActionPolicy", () => {
         [{ contract: "eosio", name: "voteproducer", plain: { voter: ACCOUNT } }],
         ACCOUNT,
       ),
-    ).toThrow(/only token transfers/);
+    ).toThrow(/not allowed/);
   });
 
   it("rejects non-allowlisted AMM actions", () => {

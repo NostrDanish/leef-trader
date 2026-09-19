@@ -48,6 +48,12 @@ type TerminalState = {
   /** AI analyst master switch — off = zero calls to the gateway. */
   aiEnabled: boolean;
   /**
+   * Swap-flow danger guard (audit E-1) kill-switch. When ON, Hyperion logswap
+   * flow may RAISE the danger score (veto/size-down entries); it never
+   * creates an entry. OFF = flow is panel-only market data.
+   */
+  flowGuardEnabled: boolean;
+  /**
    * Learning mode: SUGGEST = artifacts shadow until a human promotes;
    * CONTROLLED = the deterministic governor may auto-promote proven artifacts.
    */
@@ -80,6 +86,7 @@ type TerminalState = {
   setSwapMaxHops: (n: number) => void;
   selectRoute: (id: string | null) => void;
   setAiEnabled: (on: boolean) => void;
+  setFlowGuardEnabled: (on: boolean) => void;
   setLearningMode: (mode: "suggest" | "controlled") => void;
   setAiReviewEveryTrades: (n: number) => void;
   flipSwap: () => void;
@@ -103,6 +110,7 @@ export const useTerminal = create<TerminalState>()(
   swapMaxHops: 4,
   selectedRouteSig: null,
   aiEnabled: true,
+  flowGuardEnabled: true,
   learningMode: "suggest",
   aiReviewEveryTrades: 8,
   poolQuery: "",
@@ -129,9 +137,16 @@ export const useTerminal = create<TerminalState>()(
     set({ swapMaxHops: Math.min(10, Math.max(1, Math.round(n))), selectedRouteSig: null }),
   selectRoute: (selectedRouteSig) => set({ selectedRouteSig }),
   setAiEnabled: (aiEnabled) => set({ aiEnabled }),
+  setFlowGuardEnabled: (flowGuardEnabled) => set({ flowGuardEnabled }),
   setLearningMode: (learningMode) => set({ learningMode }),
   setAiReviewEveryTrades: (n) =>
     set({ aiReviewEveryTrades: Math.min(50, Math.max(3, Math.round(n))) }),
+  setPoolQuery: (poolQuery) => set({ poolQuery }),
+  setPoolSort: (poolSort) => set({ poolSort }),
+  togglePoolDir: () => set({ poolDir: get().poolDir === "asc" ? "desc" : "asc" }),
+  setTickPool: (tickPoolId) => set({ tickPoolId }),
+  setSyncSec: (sec) => set({ syncSec: clampSyncSec(sec) }),
+  setAiGatewayUrl: (aiGatewayUrl) => set({ aiGatewayUrl }),
     }),
     {
       name: "leef-terminal-sync",
@@ -141,6 +156,7 @@ export const useTerminal = create<TerminalState>()(
         aiGatewayUrl: s.aiGatewayUrl,
         swapMaxHops: s.swapMaxHops,
         aiEnabled: s.aiEnabled,
+        flowGuardEnabled: s.flowGuardEnabled,
         learningMode: s.learningMode,
         aiReviewEveryTrades: s.aiReviewEveryTrades,
       }),

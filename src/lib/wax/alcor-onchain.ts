@@ -228,6 +228,7 @@ export function applyOnchainToAuxPool(pool: AuxPool, oc: OnchainPool): AuxPool |
     priceA: priceAInB,
     priceB: 1 / priceAInB,
     sqrtPriceX64: oc.sqrtPriceX64,
+    liquidity: oc.liquidity,
   };
 }
 

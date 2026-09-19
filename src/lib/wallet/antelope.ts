@@ -168,6 +168,11 @@ export type AntelopeKeyPair = {
 export function parsePrivateKey(raw: string): AntelopeKeyPair {
   const s = raw.trim().replace(/\s+/g, "");
   if (!s) throw new Error("Paste a WAX private key");
+  // R1 gets its specific guidance even for truncated pastes — the generic
+  // "not a key" would send the user hunting for the wrong fix.
+  if (s.startsWith("PVT_R1_")) {
+    throw new Error("R1 keys aren't supported — import the K1 key (WIF 5… or PVT_K1_)");
+  }
   if (s.length < 16) throw new Error("That does not look like a key");
 
   let priv: Uint8Array | null = null;

@@ -71,7 +71,7 @@ export function metaOf(
  * (`1e-8 WAX` is an invalid amount on-chain). Truncates toward zero so we
  * never round *up* past the wallet balance.
  */
-export function formatAsset(amount: number, token: TokenMeta): string {
+export function formatAsset(amount: number, token: Pick<TokenMeta, "symbol" | "decimals">): string {
   const decimals = Math.max(0, Math.min(18, token.decimals | 0));
   const scale = 10 ** decimals;
   const units = Math.floor(Math.max(0, amount) * scale + 1e-9);

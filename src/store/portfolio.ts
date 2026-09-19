@@ -44,7 +44,7 @@ type PortfolioState = {
 
 export const usePortfolio = create<PortfolioState>()(
   persist(
-    (set, get) => ({
+    (set) => ({
       running: false,
       ladder: [...DEFAULT_LADDER],
       settings: { ...DEFAULT_REBALANCE },
