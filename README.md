@@ -84,6 +84,13 @@ No environment variables are required — the app is fully client-side and
 talks to public WAX RPC / Hyperion / Alcor endpoints. See
 [CONFIGURATION](./docs/CONFIGURATION.md) for every runtime knob.
 
+## Deploy
+
+The app is a static SPA and deploys to Vercel in one step: import the repo,
+Vercel auto-detects Vite, and `vercel.json` already contains the SPA rewrite
+and asset caching rules. No environment variables needed. Full instructions,
+previews, and rollback: [DEPLOYMENT](./docs/DEPLOYMENT.md).
+
 ## Security model (read before live trading)
 
 - Session keys (WIF/PVT_K1) live **in memory only** — never persisted, never
