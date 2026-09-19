@@ -28,7 +28,8 @@ export type JournalKind =
   | "calibration"
   | "ai"
   | "counterfactual"
-  | "learning";
+  | "learning"
+  | "flow";
 
 /**
  * Counterfactual HOLD labels (Phase 2). A HOLD with a concrete candidate is
@@ -290,8 +291,9 @@ export function aggregateEntries(entries: JournalEntry[]): EvidenceStats {
     if (oldestTs == null || e.ts < oldestTs) oldestTs = e.ts;
     if (newestTs == null || e.ts > newestTs) newestTs = e.ts;
     // Analyst calls stay auditable in the raw log but never become a
-    // per-strategy row — they are commentary, not trading performance.
-    if (e.kind === "ai" || e.kind === "learning") continue;
+    // per-strategy row — they are commentary, not trading performance. Flow
+    // checkpoint validation rows are infrastructure evidence, likewise.
+    if (e.kind === "ai" || e.kind === "learning" || e.kind === "flow") continue;
     if (e.kind === "counterfactual") {
       // Counterfactuals are not decisions — tallied separately.
       if (e.cfLabel === "TRUE_HOLD") counterfactuals.trueHolds += 1;
