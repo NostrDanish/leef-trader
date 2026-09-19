@@ -376,6 +376,61 @@ describe("LEEF near-tie preference", () => {
   });
 });
 
+describe("whole-route-verifiable near-tie tier (P-D)", () => {
+  const leg = (venue?: "alcor" | "defibox" | "taco") => ({
+    poolId: 1,
+    pairName: "x",
+    tokenIn: "USDT",
+    tokenOut: "WAX",
+    amountIn: 1,
+    amountOut: 1,
+    feePct: 0.3,
+    priceImpact: 0.01,
+    venue,
+  });
+  const route = (id: string, out: number, legs: ReturnType<typeof leg>[]): SwapRoute => ({
+    id,
+    kind: "hop",
+    label: id,
+    poolIds: legs.map((l) => l.poolId),
+    legs,
+    amountIn: 1,
+    amountOut: out,
+    tokenIn: "USDT",
+    tokenOut: "WAX",
+    feePct: 0.3,
+    priceImpact: 0.01,
+    executionPrice: out,
+    spotPrice: out,
+    vsBestPct: 0,
+    tvlUsd: 100,
+    volume24Usd: 10,
+    notes: [],
+  });
+
+  it("prefers all-Alcor ≤3-leg routes inside the near-tie band", () => {
+    const mixed = route("mixed", 100, [leg("alcor"), leg("defibox")]);
+    const longAlcor = route("long-alcor", 99.9, [leg("alcor"), leg("alcor"), leg("alcor"), leg("alcor")]);
+    const shortAlcor = route("short-alcor", 99.8, [leg("alcor"), leg("alcor")]);
+    const out = preferLeefNearTies([mixed, longAlcor, shortAlcor]);
+    expect(out.map((r) => r.id)).toEqual(["short-alcor", "long-alcor", "mixed"]);
+  });
+
+  it("still ranks longer all-Alcor routes above fresh-model venues", () => {
+    const mixed = route("mixed", 100, [leg("taco")]);
+    const longAlcor = route("long-alcor", 99.9, [leg(), leg(), leg(), leg(), leg()]);
+    const out = preferLeefNearTies([mixed, longAlcor]);
+    expect(out.map((r) => r.id)).toEqual(["long-alcor", "mixed"]);
+  });
+
+  it("never lets a whole-route-verifiable route leapfrog economics", () => {
+    const best = route("best", 100, [leg("defibox")]);
+    const outsideBand = route("verifiable-but-worse", 99, [leg("alcor")]); // 1% worse > 0.5% band
+    const out = preferLeefNearTies([best, outsideBand]);
+    expect(out.map((r) => r.id)).toEqual(["best", "verifiable-but-worse"]);
+  });
+});
+
 /**
  * P-A: Alcor edges quote CP over V3 virtual reserves (tick-price anchored).
  * Pool 217 fixture verified on-chain at audit time (ALCOR_COMPARATIVE_AUDIT

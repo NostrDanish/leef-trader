@@ -703,6 +703,12 @@ export function routeTouchesLeef(route: SwapRoute): boolean {
  * fresh-model (fresh reserves + CP math, min-out guarded). Near-tied routes
  * prefer the one whose quote will be exactly verified.
  *
+ * Within the all-Alcor near-ties, routes with ≤ 3 legs rank first (P-D): the
+ * venue caps maxHops at 3 server-side, so those verify WHOLE-ROUTE with one
+ * swapRouter call — no leg-by-leg re-pick divergence between the evaluated
+ * path and the executed path. Longer all-Alcor routes still outrank
+ * fresh-model venues. Economics still rule: nothing outside the band moves.
+ *
  * Applied on bot gate-attempt ordering (not in the quotes desk, where the
  * user sees the untouched economic ranking and picks for themselves).
  */
@@ -722,11 +728,16 @@ export function preferLeefNearTies(
     else if (routeTouchesLeef(r)) leefNearTies.push(r);
     else otherNearTies.push(r);
   }
-  const exactFirst = (a: SwapRoute, b: SwapRoute) => {
-    const ea = a.legs.every((l) => !l.venue || l.venue === "alcor") ? 1 : 0;
-    const eb = b.legs.every((l) => !l.venue || l.venue === "alcor") ? 1 : 0;
-    return eb - ea; // stable secondary tier
+  // Verifiability tier: 2 = all-Alcor with ≤3 legs (whole-route exact quote
+  // in one swapRouter call — the venue's server-side maxHops cap), 1 =
+  // all-Alcor with more legs (leg-by-leg exact quotes), 0 = fresh-model
+  // venues. Sort is stable, so economics decide inside a tier.
+  const verifiabilityTier = (r: SwapRoute): number => {
+    if (!r.legs.every((l) => !l.venue || l.venue === "alcor")) return 0;
+    return r.legs.length <= 3 ? 2 : 1;
   };
+  const exactFirst = (a: SwapRoute, b: SwapRoute) =>
+    verifiabilityTier(b) - verifiabilityTier(a);
   // Verifiability tier applies to the WHOLE in-band group: LEEF first, then
   // exactly-verifiable all-Alcor before fresh-model venues.
   leefNearTies.sort(exactFirst);

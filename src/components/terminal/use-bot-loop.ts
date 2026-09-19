@@ -165,9 +165,13 @@ const MAX_GATE_ATTEMPTS = 3;
 /**
  * Candidate order for an exact-quote gate. The ranked list is rebuilt on
  * the refreshed execution book (never the stale discovery book) with the
- * LEEF near-tie preference applied; a route that no longer ranks (e.g. the
- * governor resized it) still gets its attempt first. Fallbacks that would
- * move the market past the risk cap are not candidates.
+ * LEEF near-tie preference applied — inside a near-tie band, all-Alcor
+ * routes with ≤ 3 legs come first (whole-route venue-verifiable via ONE
+ * swapRouter call; the venue caps maxHops at 3 server-side), then longer
+ * all-Alcor routes, then fresh-model venues; economics still rule outside
+ * the band. A route that no longer ranks (e.g. the governor resized it)
+ * still gets its attempt first. Fallbacks that would move the market past
+ * the risk cap are not candidates.
  */
 function gateCandidates(
   book: LeefSnapshot,
