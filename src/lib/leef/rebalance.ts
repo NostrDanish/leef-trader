@@ -1,4 +1,3 @@
-import type { LeefSnapshot } from "./types";
 import { findToken, type UniverseToken } from "./universe";
 import { fetchAlcorRouteCached } from "@/lib/leef/quote-verify";
 import { parseAssetAmount, type AlcorRouteQuote } from "@/lib/wallet/alcor-route";
@@ -204,7 +203,6 @@ export function planRebalance(input: {
   const totalUsd = holdings.reduce((s, h) => s + h.usd, 0);
   const maxLegUsd = Math.max(minDustUsd, (totalUsd * maxLegUsdPct) / 100);
   const shares = targetShares(ladder);
-  const ladderSet = new Set(ladder);
   const onLadder = new Map(ladder.map((id, i) => [id, i]));
 
   const legs: PlannedLeg[] = [];

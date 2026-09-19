@@ -242,7 +242,9 @@ export async function refreshVenuePair(
 
 /** Defibox memo: swap,<min_out as integer units>,<pair_id> */
 export function defiboxMemo(minOut: number, decimals: number, pairId: number): string {
-  const units = Math.max(0, Math.floor(minOut * 10 ** decimals));
+  // Truncate toward zero (never demand more than quoted) — +1e-9 absorbs
+  // IEEE-754 dust (12.3456 * 1e4 is 123455.999…), same as tacoMemo/formatAsset.
+  const units = Math.max(0, Math.floor(minOut * 10 ** decimals + 1e-9));
   return `swap,${units},${pairId}`;
 }
 

@@ -228,7 +228,8 @@ export type EvidenceStats = {
 export function reasonSignature(reason: string): string {
   return reason
     .replace(/[0-9a-f]{16,}/gi, "0x…")
-    .replace(/\d+(\.\d+)?/g, "#")
+    // (?!x): don't eat the marker's leading 0 — "0x…" must survive intact.
+    .replace(/\d+(\.\d+)?(?!x)/g, "#")
     .replace(/\s+/g, " ")
     .trim()
     .slice(0, 90);

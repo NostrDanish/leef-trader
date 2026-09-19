@@ -104,6 +104,12 @@ export function classifyTradeError(err: unknown): { code: TradeErrorCode; messag
   if (/\b429\b/.test(msg) || /rate limit/.test(m)) return { code: "API_RATE_LIMIT", message: shown };
   if (/timeout|timed out|aborted/.test(m)) return { code: "QUOTE_TIMEOUT", message: shown };
   if (/stale quote|quote is .* old/.test(m)) return { code: "QUOTE_STALE", message: shown };
+  // Chain greylist: the account tripped its failure limit until a cooldown
+  // (tx_cpu_usage_exceeded with a future "until" timestamp). Transient
+  // infrastructure — never a market signal, so it must not teach conviction.
+  if (/failure limit|tx_cpu_usage_exceeded|greylist/.test(m) || /tx_cpu_usage_exceeded/.test(msg.toLowerCase())) {
+    return { code: "RPC_FAILURE", message: shown };
+  }
   if (/no usable route|no backed route|no executable|no trading route|route disappeared/.test(m)) {
     return { code: "ROUTE_DISAPPEARED", message: shown };
   }

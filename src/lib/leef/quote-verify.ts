@@ -204,7 +204,7 @@ export async function verifyExecutableRoute(opts: {
       throw new TradeError("LIQUIDITY_CHANGED", "Previous route leg produced no spendable output");
     }
     const venue = venueOfLeg(leg);
-    let amountOut = 0;
+    let amountOut: number;
     if (venue === "alcor") {
       const tin = metaOf(leg.tokenIn, opts.snap);
       const tout = metaOf(leg.tokenOut, opts.snap);

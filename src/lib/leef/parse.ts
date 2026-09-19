@@ -342,7 +342,7 @@ export function attachUsdPrices(
     if (!aWax && !bWax) continue;
     const bPerA = q64Price(p.sqrtPriceX64, p.tokenA.decimals, p.tokenB.decimals);
     // WAX per unit of the OTHER token.
-    let waxPerOther = 0;
+    let waxPerOther: number;
     if (aWax) {
       // A=WAX. priceB = A per 1 B → WAX per other. priceA = B per 1 A → invert.
       const spot =

@@ -97,7 +97,9 @@ describe("execution router", () => {
     const hops = [
       aux({
         id: 90,
-        a: { symbol: "USDT", contract: "usdt.alcor", quantity: 2_000 },
+        // 0.2 USDT/WAX — the WAX→USDT→LEEF path nets ≈40k LEEF/WAX, deep
+        // enough to beat the thin direct book's ≈13.3k effective.
+        a: { symbol: "USDT", contract: "usdt.alcor", quantity: 20_000 },
         b: { symbol: "WAX", contract: "eosio.token", quantity: 100_000 },
       }),
     ];
@@ -170,7 +172,9 @@ describe("execution router", () => {
       leefPool({
         id: 81,
         wax: 0,
-        leef: 90_000_000,
+        // 30,000 LEEF per CCC, deep — the 4-hop chain nets ≈29.9k LEEF/WAX,
+        // beating the tiny direct book's ≈22.9k effective.
+        leef: 270_000_000,
         pair: { symbol: "CCC", contract: "tokenccc1111", quantity: 9_000 },
       }),
     ];
@@ -178,7 +182,7 @@ describe("execution router", () => {
       aux({
         id: 201,
         a: { symbol: "AAA", contract: "tokenaaa1111", quantity: 8_000 },
-        b: { symbol: "WAX", contract: "eosio.token", quantity: 80_000 },
+        b: { symbol: "WAX", contract: "eosio.token", quantity: 8_000 },
       }),
       aux({
         id: 202,

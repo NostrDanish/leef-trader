@@ -1,4 +1,4 @@
-import { backedPools, MIN_LEEF_BACKING, quoteConstantProduct } from "./amm";
+import { backedPools, quoteConstantProduct } from "./amm";
 import { rankExecutionRoutes } from "./route-optimizer";
 import type { LeefPool, LeefSnapshot, SwapRoute } from "./types";
 

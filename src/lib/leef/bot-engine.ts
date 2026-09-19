@@ -36,7 +36,6 @@ import {
   opportunityFingerprint,
   rejectOpportunity,
   routeComplexity,
-  routeHops,
   selectBestOpportunity,
   type CalibrationMemory,
   type OpportunityGate,
@@ -471,16 +470,6 @@ export function hopsForStrategy(strategy: BotStrategy, cap: number, seed = Date.
   if (strategy === "growth") return hopsForGrowth("balanced", c);
   if (strategy === "signal" || strategy === "meanrev") return Math.min(c, 3);
   return Math.min(c, 4);
-}
-
-function bestBuyRoute(
-  snap: LeefSnapshot,
-  amountIn: number,
-  quote = "WAX",
-  base = "LEEF",
-): SwapRoute | null {
-  if (amountIn <= 0) return null;
-  return bestExecutionRoute(snap.pools, snap.aux, amountIn, quote, base);
 }
 
 function bestSellRoute(

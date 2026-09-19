@@ -44,9 +44,8 @@ const LS_KEY = "leef-learning-v1";
 /* ------------------------------------------------------------------ */
 
 let profiles: LearningProfiles = {};
-let artifacts: Record<string, LearningArtifact> = {};
+const artifacts: Record<string, LearningArtifact> = {};
 let booted = false;
-let booting: Promise<void> | null = null;
 let dirty = false;
 let persistTimer: ReturnType<typeof setTimeout> | null = null;
 

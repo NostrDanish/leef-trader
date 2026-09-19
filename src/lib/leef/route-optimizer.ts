@@ -399,7 +399,12 @@ function searchPaths(
     if (expansions > MAX_EXPANSIONS) break;
 
     const seen = pareto.get(cur.token) ?? [];
-    if (dominatedByPareto(cur, seen)) {
+    // A completed cycle (from === to) must never be pruned by the seed frame
+    // parked at the same token — the seed has more amount, fewer hops and an
+    // empty pool set, so it dominates every returning ring and cycle
+    // discovery starves.
+    const completesCycle = from === to && cur.token === to && cur.legs.length > 0;
+    if (!completesCycle && dominatedByPareto(cur, seen)) {
       pruned += 1;
       continue;
     }
@@ -688,18 +693,23 @@ export function preferLeefNearTies(
   if (!(best > 0)) return routes;
   const floor = best * (1 - Math.max(0, epsilonPct));
   const leefNearTies: SwapRoute[] = [];
+  const otherNearTies: SwapRoute[] = [];
   const rest: SwapRoute[] = [];
   for (const r of routes) {
-    if (r.amountOut + 1e-12 >= floor && routeTouchesLeef(r)) leefNearTies.push(r);
-    else rest.push(r);
+    if (r.amountOut + 1e-12 < floor) rest.push(r);
+    else if (routeTouchesLeef(r)) leefNearTies.push(r);
+    else otherNearTies.push(r);
   }
   const exactFirst = (a: SwapRoute, b: SwapRoute) => {
     const ea = a.legs.every((l) => !l.venue || l.venue === "alcor") ? 1 : 0;
     const eb = b.legs.every((l) => !l.venue || l.venue === "alcor") ? 1 : 0;
     return eb - ea; // stable secondary tier
   };
+  // Verifiability tier applies to the WHOLE in-band group: LEEF first, then
+  // exactly-verifiable all-Alcor before fresh-model venues.
   leefNearTies.sort(exactFirst);
-  return [...leefNearTies, ...rest];
+  otherNearTies.sort(exactFirst);
+  return [...leefNearTies, ...otherNearTies, ...rest];
 }
 
 /**

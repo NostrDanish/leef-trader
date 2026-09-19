@@ -87,7 +87,10 @@ function auxPool(id: number, symA: string, qtyA: number, symB: string, qtyB: num
   // Contract identity matters: buildRouteGraph rejects WAX-symbol tokens not
   // issued by eosio.token (spoof guard), so fixtures must use real contracts.
   const contractOf = (s: string) =>
-    s === "WAX" ? "eosio.token" : s === "WAXUSDC" ? "eth.token" : `${s.toLowerCase()}.tok`;
+    s === "WAX" ? "eosio.token"
+    : s === "LEEF" ? "leefmaincorp"
+    : s === "WAXUSDC" ? "eth.token"
+    : `${s.toLowerCase()}.tok`;
   return {
     id,
     fee: 3000,
@@ -191,23 +194,26 @@ describe("§5 multi-hop bottleneck", () => {
   // Middle-leg floor: reserveIn ≥ 1.5× arriving → arriving ≤ 266.67 AAA,
   // i.e. ≈ 268 WAX in. The outer books are 10,000 deep and could take 10×
   // more — proof the route is NOT sized from the strongest pool.
+  // CCC (not a trusted stable) prices at the pool observation — a WAXUSDC
+  // endpoint would be re-anchored to its $1 peg by the oracle and break the
+  // 1:1:1 fixture economics.
   const hopTokens = [
     uniToken("AAA", "aaa.tok", WAX_USD),
     uniToken("BBB", "bbb.tok", WAX_USD),
-    uniToken("WAXUSDC", "eth.token", WAX_USD),
+    uniToken("CCC", "ccc.tok", WAX_USD),
   ];
   const thin = mkSnap(
     [],
     [
       auxPool(201, "WAX", 10_000, "AAA", 10_000),
       auxPool(202, "AAA", 400, "BBB", 400),
-      auxPool(203, "BBB", 10_000, "WAXUSDC", 10_000),
+      auxPool(203, "BBB", 10_000, "CCC", 10_000),
     ],
     hopTokens,
   );
   const base = {
     tokenIn: "WAX",
-    tokenOut: "WAXUSDC",
+    tokenOut: "CCC",
     expectedGrossPct: 8,
     minNetEdgePct: 0,
     volPerSec: 0,
@@ -231,7 +237,7 @@ describe("§5 multi-hop bottleneck", () => {
       [
         auxPool(201, "WAX", 10_000, "AAA", 10_000),
         auxPool(202, "AAA", 10_000, "BBB", 10_000),
-        auxPool(203, "BBB", 10_000, "WAXUSDC", 10_000),
+        auxPool(203, "BBB", 10_000, "CCC", 10_000),
       ],
       hopTokens,
     );
@@ -255,14 +261,16 @@ describe("§5 multi-hop bottleneck", () => {
 /* ------------------------------------------------------------------ */
 
 describe("§6 pool fee — counted once, never twice", () => {
-  // Pool 10,000 WAX × 10,000 LEEF (spot 1:1 in WAX terms), 0.3% fee.
-  // 100 WAX in → out = 99.7·10000/(10000+99.7) = 98.7155 LEEF.
+  // Pool 1M WAX × 1M LEEF (spot 1:1 in WAX terms), 0.3% fee. (1M LEEF is the
+  // route-graph depth floor; the 1:100 in:reserve ratio keeps the numbers
+  // identical to a 10k×10k book at 100 in.)
+  // 10,000 WAX in → out = 9970·1e6/(1e6+9970) = 9,871.55 LEEF.
   // executionCostPct vs USD mids = 1.2845% = fee (0.3) + curve impact (0.985),
   // measured from the quote — so the fee is inside amountOut, once.
-  const snap = mkSnap([mkPool(55, 10_000, 10_000)]);
+  const snap = mkSnap([mkPool(55, 1_000_000, 1_000_000)]);
 
   it("execution cost ≈ fee + impact, single-counted", () => {
-    const route = rankExecutionRoutes(snap.pools, snap.aux, 100, "WAX", "LEEF")[0]!;
+    const route = rankExecutionRoutes(snap.pools, snap.aux, 10_000, "WAX", "LEEF")[0]!;
     expect(route.feePct).toBeCloseTo(0.3, 6);
     const cost = executionCostPct(route, snap);
     expect(cost).toBeGreaterThan(1.26);
@@ -275,7 +283,7 @@ describe("§6 pool fee — counted once, never twice", () => {
 
   it("quoteConstantProduct deducts the fee from input exactly once", () => {
     const q = quoteConstantProduct(100, 10_000, 10_000, 3000);
-    expect(q.feePaid).toBeCloseTo(0.03, 9); // 0.3% of 100
+    expect(q.feePaid).toBeCloseTo(0.3, 9); // 0.3% of 100
     expect(q.amountOut).toBeCloseTo(98.7155, 3);
     // priceImpact excludes the fee (measured against fee-adjusted spot):
     expect(q.priceImpact).toBeCloseTo(0.00985, 4);
@@ -287,10 +295,10 @@ describe("§6 pool fee — counted once, never twice", () => {
 /* ------------------------------------------------------------------ */
 
 describe("§7 slippage separation", () => {
-  const snap = mkSnap([mkPool(55, 10_000, 10_000)]);
+  const snap = mkSnap([mkPool(55, 1_000_000, 1_000_000)]);
 
   it("the cost model's slippage allowance never touches the route quote", () => {
-    const route = rankExecutionRoutes(snap.pools, snap.aux, 100, "WAX", "LEEF")[0]!;
+    const route = rankExecutionRoutes(snap.pools, snap.aux, 10_000, "WAX", "LEEF")[0]!;
     const a = estimateRoundTripCosts({ route, exitRoute: null, snap, volPerSec: 0 });
     const b = estimateRoundTripCosts({
       route,
