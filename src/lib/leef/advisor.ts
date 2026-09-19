@@ -105,7 +105,9 @@ export function suggestPair(
     const books = snap.pools.filter((p) => p.pair.symbol.toUpperCase() === q);
     const tvl = books.reduce((s, p) => s + p.tvlUsd, 0);
     const focusBoost = focusUp.includes(q) ? 1.4 : 1;
-    const score = (usd + 1) * (tvl + 1) * focusBoost;
+    // Wallet holdings dominate (linear USD); book depth only breaks ties
+    // between comparably funded quotes (sublinear sqrt).
+    const score = (usd + 1) * Math.sqrt(tvl + 1) * focusBoost;
     if (score > bestScore && (bal > 0 || q === "WAX")) {
       best = q;
       bestScore = score;

@@ -136,6 +136,7 @@ export function parseAllPools(raw: unknown): { leef: LeefPool[]; aux: AuxPool[] 
       priceA: num(p.priceA) > 0 ? num(p.priceA) : undefined,
       priceB: num(p.priceB) > 0 ? num(p.priceB) : undefined,
       sqrtPriceX64: sqrt,
+      liquidity: p.liquidity != null ? String(p.liquidity) : undefined,
     });
   }
 
@@ -214,7 +215,9 @@ export type WaxAnchor = {
   confidence: number;
 };
 
-type WaxObservation = WaxAnchor & { spot: boolean };
+/** One pool's price observation — the aggregate fields (sources, dispersion,
+ *  confidence) only exist once the anchor is chosen. */
+type WaxObservation = Pick<WaxAnchor, "usd" | "tvlUsd" | "poolId"> & { spot: boolean };
 
 /**
  * Every WAX/trusted-stable pool is an observation, in two trust tiers:
@@ -340,7 +343,7 @@ export function attachUsdPrices(
     if (!aWax && !bWax) continue;
     const bPerA = q64Price(p.sqrtPriceX64, p.tokenA.decimals, p.tokenB.decimals);
     // WAX per unit of the OTHER token.
-    let waxPerOther = 0;
+    let waxPerOther: number;
     if (aWax) {
       // A=WAX. priceB = A per 1 B → WAX per other. priceA = B per 1 A → invert.
       const spot =

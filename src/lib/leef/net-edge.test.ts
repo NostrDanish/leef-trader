@@ -12,7 +12,7 @@ import {
   pickClipInBand,
   type BotInput,
 } from "./bot-engine";
-import { executionCostPct, realizedVolPerSec, usdPriceOf } from "./cost-model";
+import { realizedVolPerSec, usdPriceOf } from "./cost-model";
 import { evaluateEntry, optimizeEntrySize, scoreOpportunity } from "./net-edge";
 import type { LeefPool, LeefSnapshot } from "./types";
 
@@ -174,11 +174,13 @@ describe("net edge + optimal size", () => {
   });
 
   it("rejects entries whose costs eat the expected move (do nothing)", () => {
-    // Shallow 100 WAX pool: a 2% expected move cannot survive ~10% round-trip cost.
+    // Shallow 100 WAX pool with a 5 WAX clip floor: every admissible size
+    // pays ~10%+ round-trip impact — a 2% expected move never survives, at
+    // ANY size in the band, so the only correct decision is DO NOTHING.
     const snap = mkSnap([mkPool(100, 1_000_000)]);
     const sized = optimizeEntrySize({
       snap, tokenIn: "WAX", tokenOut: "LEEF", expectedGrossPct: 2,
-      minNetEdgePct: 0.1, minIn: 0.1, maxIn: 10, volPerSec: 0,
+      minNetEdgePct: 0.1, minIn: 5, maxIn: 10, volPerSec: 0,
     });
     expect(sized).toBeNull();
   });

@@ -97,7 +97,9 @@ describe("execution router", () => {
     const hops = [
       aux({
         id: 90,
-        a: { symbol: "USDT", contract: "usdt.alcor", quantity: 2_000 },
+        // 0.2 USDT/WAX — the WAX→USDT→LEEF path nets ≈40k LEEF/WAX, deep
+        // enough to beat the thin direct book's ≈13.3k effective.
+        a: { symbol: "USDT", contract: "usdt.alcor", quantity: 20_000 },
         b: { symbol: "WAX", contract: "eosio.token", quantity: 100_000 },
       }),
     ];
@@ -170,7 +172,9 @@ describe("execution router", () => {
       leefPool({
         id: 81,
         wax: 0,
-        leef: 90_000_000,
+        // 30,000 LEEF per CCC, deep — the 4-hop chain nets ≈29.9k LEEF/WAX,
+        // beating the tiny direct book's ≈22.9k effective.
+        leef: 270_000_000,
         pair: { symbol: "CCC", contract: "tokenccc1111", quantity: 9_000 },
       }),
     ];
@@ -178,7 +182,7 @@ describe("execution router", () => {
       aux({
         id: 201,
         a: { symbol: "AAA", contract: "tokenaaa1111", quantity: 8_000 },
-        b: { symbol: "WAX", contract: "eosio.token", quantity: 80_000 },
+        b: { symbol: "WAX", contract: "eosio.token", quantity: 8_000 },
       }),
       aux({
         id: 202,
@@ -369,5 +373,174 @@ describe("LEEF near-tie preference", () => {
     });
     expect(routeTouchesLeef(mid)).toBe(true);
     expect(routeTouchesLeef(route("plain", 1, false))).toBe(false);
+  });
+});
+
+describe("whole-route-verifiable near-tie tier (P-D)", () => {
+  const leg = (venue?: "alcor" | "defibox" | "taco") => ({
+    poolId: 1,
+    pairName: "x",
+    tokenIn: "USDT",
+    tokenOut: "WAX",
+    amountIn: 1,
+    amountOut: 1,
+    feePct: 0.3,
+    priceImpact: 0.01,
+    venue,
+  });
+  const route = (id: string, out: number, legs: ReturnType<typeof leg>[]): SwapRoute => ({
+    id,
+    kind: "hop",
+    label: id,
+    poolIds: legs.map((l) => l.poolId),
+    legs,
+    amountIn: 1,
+    amountOut: out,
+    tokenIn: "USDT",
+    tokenOut: "WAX",
+    feePct: 0.3,
+    priceImpact: 0.01,
+    executionPrice: out,
+    spotPrice: out,
+    vsBestPct: 0,
+    tvlUsd: 100,
+    volume24Usd: 10,
+    notes: [],
+  });
+
+  it("prefers all-Alcor ≤3-leg routes inside the near-tie band", () => {
+    const mixed = route("mixed", 100, [leg("alcor"), leg("defibox")]);
+    const longAlcor = route("long-alcor", 99.9, [leg("alcor"), leg("alcor"), leg("alcor"), leg("alcor")]);
+    const shortAlcor = route("short-alcor", 99.8, [leg("alcor"), leg("alcor")]);
+    const out = preferLeefNearTies([mixed, longAlcor, shortAlcor]);
+    expect(out.map((r) => r.id)).toEqual(["short-alcor", "long-alcor", "mixed"]);
+  });
+
+  it("still ranks longer all-Alcor routes above fresh-model venues", () => {
+    const mixed = route("mixed", 100, [leg("taco")]);
+    const longAlcor = route("long-alcor", 99.9, [leg(), leg(), leg(), leg(), leg()]);
+    const out = preferLeefNearTies([mixed, longAlcor]);
+    expect(out.map((r) => r.id)).toEqual(["long-alcor", "mixed"]);
+  });
+
+  it("never lets a whole-route-verifiable route leapfrog economics", () => {
+    const best = route("best", 100, [leg("defibox")]);
+    const outsideBand = route("verifiable-but-worse", 99, [leg("alcor")]); // 1% worse > 0.5% band
+    const out = preferLeefNearTies([best, outsideBand]);
+    expect(out.map((r) => r.id)).toEqual(["best", "verifiable-but-worse"]);
+  });
+});
+
+/**
+ * P-A: Alcor edges quote CP over V3 virtual reserves (tick-price anchored).
+ * Pool 217 fixture verified on-chain at audit time (ALCOR_COMPARATIVE_AUDIT
+ * §3.3): tokenA = WAX (8 dec), tokenB = LEEF (4 dec), tick 9501, so
+ * leefIsA = false. Tick price = 25 858.7 LEEF/WAX; the raw reserve ratio
+ * (40 542) was the level-error bug.
+ */
+function pool217(over: { clmm: boolean }): LeefPool {
+  return {
+    id: 217,
+    fee: 3000,
+    feePct: 0.3,
+    leef: { symbol: "LEEF", contract: "leefmaincorp", decimals: 4, quantity: 4_565_638_459 },
+    pair: { symbol: "WAX", contract: "eosio.token", decimals: 8, quantity: 112_613.008 },
+    leefIsA: false,
+    tvlUsd: 10_000,
+    volume24Usd: 500,
+    volumeWeekUsd: 0,
+    volumeUsdMonth: 0,
+    volumeUsd90: 0,
+    volumeLeef24: 0,
+    volumePair24: 0,
+    change24: 0,
+    changeWeek: 0,
+    liquidity: over.clmm ? "20077984976034" : "0",
+    sqrtPriceX64: over.clmm ? "29663563357779418305" : undefined,
+    pairPerLeef: 112_613.008 / 4_565_638_459,
+    leefPerPair: 4_565_638_459 / 112_613.008,
+    waxPerLeef: 112_613.008 / 4_565_638_459,
+    usdPerLeef: null,
+    tickSpacing: 60,
+  };
+}
+
+describe("virtual-reserve CP anchor (P-A)", () => {
+  it("quotes an Alcor CLMM edge at the tick price, not the raw reserve ratio", () => {
+    const r = bestExecutionRoute([pool217({ clmm: true })], [], 1, "WAX", "LEEF")!;
+    expect(r.kind).toBe("direct");
+    // Marginal quote ≈ 25 858.7 × (1 − 0.3%) ≈ 25 781; raw-CP would say ≈40 421.
+    expect(r.amountOut).toBeGreaterThan(24_000);
+    expect(r.amountOut).toBeLessThan(26_000);
+    expect(r.amountOut).toBeCloseTo(25_781, -2);
+  });
+
+  it("falls back to raw reserves when liquidity/sqrtPriceX64 are absent", () => {
+    const r = bestExecutionRoute([pool217({ clmm: false })], [], 1, "WAX", "LEEF")!;
+    expect(r.kind).toBe("direct");
+    expect(r.amountOut).toBeCloseTo(40_421, -2);
+  });
+
+  it("leaves Defibox/Taco (true-CP) books on raw reserves", () => {
+    const book = aux({
+      id: 700,
+      a: { symbol: "LEEF", contract: "leefmaincorp", quantity: 200_000_000 },
+      b: { symbol: "WAX", contract: "eosio.token", quantity: 10_000 },
+    });
+    book.venue = "defibox";
+    // Raw spot = 20 000 LEEF/WAX; tiny clip nets ≈ spot × (1 − fee).
+    const r = bestExecutionRoute([], [book], 1, "WAX", "LEEF")!;
+    expect(r.amountOut).toBeCloseTo(19_938, 0);
+    expect(r.legs[0]!.venue).toBe("defibox");
+  });
+});
+
+/**
+ * P-A parity for AUX Alcor pools: they carry `sqrtPriceX64` and now
+ * `liquidity`, so their edges must quote over the same V3 virtual reserves
+ * as LEEF pools — raw-reserve CP was the same level-error class.
+ */
+function auxClmm217(over: { clmm: boolean }): AuxPool {
+  return {
+    id: 900,
+    fee: 3000,
+    feePct: 0.3,
+    // Pool-217 audit state, as an aux A=WAX / B=LEEF book.
+    tokenA: { symbol: "WAX", contract: "eosio.token", decimals: 8, quantity: 112_613.008 },
+    tokenB: { symbol: "LEEF", contract: "leefmaincorp", decimals: 4, quantity: 4_565_638_459 },
+    tvlUsd: 10_000,
+    volume24Usd: 500,
+    liquidity: over.clmm ? "20077984976034" : undefined,
+    sqrtPriceX64: over.clmm ? "29663563357779418305" : undefined,
+  };
+}
+
+describe("aux Alcor virtual-reserve CP anchor (P-A parity)", () => {
+  it("quotes an aux Alcor CLMM edge at the tick price, not the raw reserve ratio", () => {
+    const r = bestExecutionRoute([], [auxClmm217({ clmm: true })], 1, "WAX", "LEEF")!;
+    expect(r.kind).toBe("direct");
+    // Same fixture as pool 217: ≈25 781 via virtual reserves; raw-CP ≈40 421.
+    expect(r.amountOut).toBeGreaterThan(24_000);
+    expect(r.amountOut).toBeLessThan(26_000);
+    expect(r.amountOut).toBeCloseTo(25_781, -2);
+  });
+
+  it("falls back to raw reserves when the aux pool lacks CLMM state", () => {
+    const r = bestExecutionRoute([], [auxClmm217({ clmm: false })], 1, "WAX", "LEEF")!;
+    expect(r.kind).toBe("direct");
+    expect(r.amountOut).toBeCloseTo(40_421, -2);
+  });
+
+  it("keeps a Defibox aux book raw even with liquidity '0' present", () => {
+    const book = aux({
+      id: 701,
+      a: { symbol: "LEEF", contract: "leefmaincorp", quantity: 200_000_000 },
+      b: { symbol: "WAX", contract: "eosio.token", quantity: 10_000 },
+    });
+    book.venue = "defibox";
+    book.liquidity = "0"; // Defibox rows carry no usable CLMM state.
+    const r = bestExecutionRoute([], [book], 1, "WAX", "LEEF")!;
+    expect(r.amountOut).toBeCloseTo(19_938, 0);
+    expect(r.legs[0]!.venue).toBe("defibox");
   });
 });

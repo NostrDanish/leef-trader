@@ -79,7 +79,12 @@ export function resolveOracleToken(
   if (exact) return exact;
   if (raw.includes("@") || raw.includes("-")) return null;
   const matches = universe.filter((t) => t.symbol.toUpperCase() === up);
-  return matches.length === 1 ? matches[0]! : null;
+  if (matches.length === 1) return matches[0]!;
+  // Symbol collision (clone contracts): the TRUSTED stable contract wins —
+  // a deeper manipulated clone pool must never hijack or DoS the real
+  // token's price. Still fail closed when nothing is trusted.
+  const trusted = matches.filter((t) => isTrustedStable(t.symbol, t.contract));
+  return trusted.length === 1 ? trusted[0]! : null;
 }
 
 function stablePrice(t: UniverseToken, timestamp: number, now: number): TokenPrice {
@@ -148,11 +153,11 @@ export function tokenPrice(
   const t = resolveOracleToken(snap.universe, identifier);
   if (!t) return null;
   const parsedTimestamp = Date.parse(snap.spotAt ?? snap.fetchedAt);
-  // Snapshot/chain spot time is the freshness of the assembled market state;
-  // per-token timestamps are provenance only and can be older after a cached
-  // universe merge. Use the newest trusted timestamp without masking staleness.
   const snapshotTimestamp = Number.isFinite(parsedTimestamp) ? parsedTimestamp : 0;
-  const timestamp = Math.max(t.priceTimestamp ?? 0, snapshotTimestamp) || now;
+  // Per-token timestamp is the honest age of THIS price (a cached universe
+  // merge keeps the old observation time). A fresh snapshot must never
+  // launder a stale token price into a tradeable one.
+  const timestamp = (t.priceTimestamp ?? snapshotTimestamp) || now;
   if (isTrustedStable(t.symbol, t.contract)) return stablePrice(t, timestamp, now);
   const confidence = Math.max(
     0,

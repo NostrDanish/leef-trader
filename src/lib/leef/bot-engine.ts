@@ -1,4 +1,10 @@
-import { backedPools, isLeefToken, isWaxToken, quoteConstantProduct } from "./amm";
+import {
+  backedPools,
+  isLeefToken,
+  isWaxToken,
+  quoteConstantProduct,
+  virtualLeefPairReserves,
+} from "./amm";
 import { bestExecutionRoute } from "./route-optimizer";
 import { planLeefTape, planNextAction } from "./next-action";
 import {
@@ -11,7 +17,7 @@ import {
   type GrowthTarget,
 } from "./growth-engine";
 import { realizedVolPerSec, usdPriceOf } from "./cost-model";
-import { classifyRegime, dangerScore, regimeWeight } from "./regime";
+import { classifyRegime, dangerScore, regimeWeight, type FlowRiskContext } from "./regime";
 import { balanceForIdentifier, markPortfolioUsd } from "@/lib/wallet/balances";
 import {
   decorate,
@@ -26,6 +32,7 @@ import {
   DEFAULT_MIN_TRADE_USD,
   DEFAULT_OPERATIONAL_RESERVE_USD,
   usdToTokenBounds,
+  type UsdBounds,
 } from "./risk-usd";
 import type { LeefPool, LeefSnapshot, SwapRoute } from "./types";
 import {
@@ -35,7 +42,6 @@ import {
   opportunityFingerprint,
   rejectOpportunity,
   routeComplexity,
-  routeHops,
   selectBestOpportunity,
   type CalibrationMemory,
   type OpportunityGate,
@@ -244,7 +250,7 @@ export const DEFAULT_RISK: BotRisk = {
   // a volume echo is "zero-loss average" after fees — the on-chain min-out
   // still reverts anything worse. Not wash trading: cost is bounded.
   maxEchoLossPct: 1.5,
-  minNetEdgePct: 0,
+  minNetEdgePct: 0.1,
   maxQuoteAgeSec: 45,
   maxHops: 4,
 };
@@ -360,6 +366,11 @@ export type BotInput = {
   growthMode?: GrowthMode;
   /** Execution errors in the recent window — feeds the danger score. */
   recentFailures?: number;
+  /**
+   * Swap-flow risk context (E-1, feature-flagged by the caller). Risk only:
+   * it may raise the danger score; it NEVER creates an entry.
+   */
+  flow?: FlowRiskContext | null;
 };
 
 /* ------------------------------------------------------------------ */
@@ -472,16 +483,6 @@ export function hopsForStrategy(strategy: BotStrategy, cap: number, seed = Date.
   return Math.min(c, 4);
 }
 
-function bestBuyRoute(
-  snap: LeefSnapshot,
-  amountIn: number,
-  quote = "WAX",
-  base = "LEEF",
-): SwapRoute | null {
-  if (amountIn <= 0) return null;
-  return bestExecutionRoute(snap.pools, snap.aux, amountIn, quote, base);
-}
-
 function bestSellRoute(
   snap: LeefSnapshot,
   baseAmount: number,
@@ -499,8 +500,10 @@ function bestSellRoute(
 /**
  * Find a two-pool atomic arb: buy LEEF with WAX on the cheaper WAX book,
  * sell it on the richer one — both legs in a single transaction.
- * Constant-product quotes on real reserves are conservative for Alcor's
- * concentrated pools, which is the safe direction for a min-out guard.
+ * Alcor legs quote constant-product over VIRTUAL reserves (tick-price
+ * anchored, exact at the margin for in-range fills); Defibox/Taco legs quote
+ * raw reserves, which are the exact CP reserves there. The venue quote and
+ * min-out memo remain the hard guards at execution.
  */
 /** LEEF/WAX books from Defibox/Taco, shaped as LeefPool so arb can cross venues. */
 function venueWaxLeefPools(snap: LeefSnapshot): LeefPool[] {
@@ -552,11 +555,25 @@ export function findArb(
 
   let best: ArbPlan | null = null;
   for (const buyPool of waxPools) {
-    const q1 = quoteConstantProduct(waxIn, buyPool.pair.quantity, buyPool.leef.quantity, buyPool.fee);
+    // Alcor CLMM pools quote over virtual reserves (tick-price anchored);
+    // Defibox/Taco (and stateless pools) fall back to raw reserves = exact CP.
+    const buyRes = virtualLeefPairReserves(buyPool);
+    const q1 = quoteConstantProduct(
+      waxIn,
+      buyRes?.pair ?? buyPool.pair.quantity,
+      buyRes?.leef ?? buyPool.leef.quantity,
+      buyPool.fee,
+    );
     if (q1.amountOut <= 0 || q1.priceImpact > 0.2) continue;
     for (const sellPool of waxPools) {
       if (!allowSamePool && sellPool.id === buyPool.id) continue;
-      const q2 = quoteConstantProduct(q1.amountOut, sellPool.leef.quantity, sellPool.pair.quantity, sellPool.fee);
+      const sellRes = virtualLeefPairReserves(sellPool);
+      const q2 = quoteConstantProduct(
+        q1.amountOut,
+        sellRes?.leef ?? sellPool.leef.quantity,
+        sellRes?.pair ?? sellPool.pair.quantity,
+        sellPool.fee,
+      );
       if (q2.amountOut <= 0 || q2.priceImpact > 0.2) continue;
       const profitPct = q2.amountOut / waxIn - 1;
       const impactPct = 1 - (1 - q1.priceImpact) * (1 - q2.priceImpact);
@@ -799,6 +816,7 @@ export function evaluateBot(input: BotInput): Decision {
     dislocationPct: regime.dislocationPct,
     liquidityUsd: Math.max(0, ...snap.pools.map((p) => p.tvlUsd)),
     recentFailures: input.recentFailures ?? 0,
+    flow: input.flow ?? null,
   });
   // Hard veto lives at the ENTRY points below — never before the exit block,
   // so stop-losses and take-profits fire even in a danger market.
@@ -821,14 +839,31 @@ export function evaluateBot(input: BotInput): Decision {
   // Treasure growth is inventory-agnostic — a missing quote mark must not
   // block converting TLM/USDC/… into the named treasures.
   if ("error" in bounds && strategy !== "growth") return hold(bounds.error);
-  const minWax = "error" in bounds ? 0 : bounds.minIn;
+  // Growth is inventory-agnostic: a missing quote mark degrades the USD
+  // bounds to zeros (sizing falls back to wallet balances below) — it must
+  // never crash on the error variant.
+  const usdBounds: UsdBounds =
+    "error" in bounds
+      ? {
+          quoteUsd: 0,
+          minIn: 0,
+          maxIn: 0,
+          positionUsd: 0,
+          remainingUsd: 0,
+          walletQuote: 0,
+          walletUsd: 0,
+          spendableUsd: 0,
+          effectiveMaxUsd: 0,
+        }
+      : bounds;
+  const minWax = usdBounds.minIn;
   // Danger score sizes entries down (never up). Manual force keeps full size.
-  const maxWax = ("error" in bounds ? 0 : bounds.maxIn) * (input.force ? 1 : sizeF);
+  const maxWax = usdBounds.maxIn * (input.force ? 1 : sizeF);
 
   if (input.force === "buy") {
     if (maxWax + 1e-12 < minWax) {
       return hold(
-        `Effective max $${bounds.effectiveMaxUsd.toFixed(2)} is under min trade $${risk.minTradeUsd.toFixed(2)} (wallet $${bounds.walletUsd.toFixed(2)}) — sitting out`,
+        `Effective max $${usdBounds.effectiveMaxUsd.toFixed(2)} is under min trade $${risk.minTradeUsd.toFixed(2)} (wallet $${usdBounds.walletUsd.toFixed(2)}) — sitting out`,
       );
     }
     const sized = optimizeEntrySize({
@@ -836,16 +871,16 @@ export function evaluateBot(input: BotInput): Decision {
       tokenIn: quote,
       tokenOut: base,
       expectedGrossPct: Math.max(goals.takeProfitPct, 0.5),
-  // A real hurdle, not "technically non-negative": entries must clear ALL
-  // modeled costs + platform fee by a margin that covers quote uncertainty.
-  minNetEdgePct: 0.1,
+      // A real hurdle, not "technically non-negative": entries must clear ALL
+      // modeled costs + platform fee by a margin that covers quote uncertainty.
+      minNetEdgePct: risk.minNetEdgePct,
       minIn: minWax,
       maxIn: maxWax,
       volPerSec: realizedVolPerSec(input.series),
     });
     if (!sized) {
       return hold(
-        `Manual buy · no size in $${risk.minTradeUsd.toFixed(2)}–$${bounds.effectiveMaxUsd.toFixed(2)} effective max clears costs — sitting out`,
+        `Manual buy · no size in $${risk.minTradeUsd.toFixed(2)}–$${usdBounds.effectiveMaxUsd.toFixed(2)} effective max clears costs — sitting out`,
       );
     }
     const route = sized.best.route;
@@ -878,7 +913,7 @@ export function evaluateBot(input: BotInput): Decision {
     const hops = hopsForStrategy("volume-x", risk.maxHops, now);
     const tape = planLeefTape(snap, input.balances, {
       minUsd: risk.minTradeUsd,
-      maxUsd: Math.max(risk.minTradeUsd, bounds.effectiveMaxUsd || risk.maxPositionUsd),
+      maxUsd: Math.max(risk.minTradeUsd, usdBounds.effectiveMaxUsd || risk.maxPositionUsd),
       maxHops: hops,
       seed: now,
       maxLossPct: risk.maxEchoLossPct,
@@ -1020,7 +1055,7 @@ export function evaluateBot(input: BotInput): Decision {
     if (dangerHold) return hold(dangerHold);
     if (!(maxWaxArg > 0) || maxWaxArg + 1e-12 < minWax) {
       return hold(
-        `Position cap reached ($${bounds.positionUsd.toFixed(2)} / $${risk.maxPositionUsd.toFixed(0)}), remaining room under min trade, or no ${quote}`,
+        `Position cap reached ($${usdBounds.positionUsd.toFixed(2)} / $${risk.maxPositionUsd.toFixed(0)}), remaining room under min trade, or no ${quote}`,
       );
     }
     if (!(expectedGrossPct > 0)) return hold("No positive expected move on this book — sitting out");
@@ -1381,7 +1416,7 @@ export function evaluateBot(input: BotInput): Decision {
         }
       } else {
         considered.push(
-          `no deployable ${quote} (effective max $${bounds.effectiveMaxUsd.toFixed(2)} < min $${risk.minTradeUsd.toFixed(2)})`,
+          `no deployable ${quote} (effective max $${usdBounds.effectiveMaxUsd.toFixed(2)} < min $${risk.minTradeUsd.toFixed(2)})`,
         );
       }
 
@@ -1556,7 +1591,7 @@ export function evaluateBot(input: BotInput): Decision {
       }
       const tape = planLeefTape(snap, input.balances, {
         minUsd: risk.minTradeUsd,
-        maxUsd: Math.max(risk.minTradeUsd, bounds.effectiveMaxUsd),
+        maxUsd: Math.max(risk.minTradeUsd, usdBounds.effectiveMaxUsd),
         maxHops: hops,
         seed: now + 17,
         maxLossPct: risk.maxEchoLossPct,

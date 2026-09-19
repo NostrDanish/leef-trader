@@ -1,6 +1,8 @@
-import { useMemo } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { fallbackSnapshot } from "@/lib/leef/fallback";
 import { rankPools } from "@/lib/leef/rank";
+import { loadSeedSnapshot } from "@/lib/leef/seed";
+import type { LeefSnapshot } from "@/lib/leef/types";
 import { marketEngine } from "@/lib/market/market-engine";
 import { clampSyncSec, DEFAULT_SYNC_SEC, useTerminal } from "@/store/terminal";
 import { useMarketEngine } from "@/hooks/useMarketEngine";
@@ -20,7 +22,22 @@ export function useSnapshot() {
   const engine = useMarketEngine();
   const syncSec = useTerminal((s) => clampSyncSec(s.syncSec ?? DEFAULT_SYNC_SEC));
 
-  const snap = engine.snapshot ?? placeholder;
+  // Instant first paint: the build-time seed book (public/seed-snapshot.json)
+  // fills the gap until the market engine's first live pull lands. The engine
+  // starts fetching immediately on boot, so the seed is refresh-behind by
+  // construction — engine.snapshot replaces it as soon as chain state exists.
+  const [seed, setSeed] = useState<LeefSnapshot | null>(null);
+  useEffect(() => {
+    let live = true;
+    void loadSeedSnapshot().then((s) => {
+      if (live && s) setSeed(s);
+    });
+    return () => {
+      live = false;
+    };
+  }, []);
+
+  const snap = engine.snapshot ?? seed ?? placeholder;
   const ranked = useMemo(() => rankPools(snap.pools, snap), [snap]);
   return {
     snap,

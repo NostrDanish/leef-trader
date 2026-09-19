@@ -149,7 +149,7 @@ describe("learned slippage", () => {
 describe("learned size multiplier", () => {
   it("is 1 without evidence and never above 1", () => {
     expect(learnedSizeMultiplier(null, 5, T0, CFG)).toBe(1);
-    const p = fillProfiles(CFG.minSamplesSizeCurve, { sizeUsd: 0.6, predEdgePct: 1, realizedEdgePct: 0.5 });
+    const p = fillProfiles(CFG.minSamplesSizeCurve, { sizeUsd: 0.6, predEdgePct: 1, realEdgePct: 0.5 });
     const m = learnedSizeMultiplier(p["pool:alcor:217"]!, 0.6, T0 + 86_400_000, CFG);
     expect(m).toBe(1); // bucket 2 is healthy
     expect(m).toBeLessThanOrEqual(1);
@@ -159,11 +159,11 @@ describe("learned size multiplier", () => {
     const p: LearningProfiles = {};
     // Healthy small buckets (8 samples → total crosses the 12 floor with the destructive ones).
     for (let i = 0; i < 8; i++) {
-      applyEntry(p, execEntry({ ts: T0 + i * 60_000, sizeUsd: 1.5, predEdgePct: 1, realizedEdgePct: 0.4 }), CFG);
+      applyEntry(p, execEntry({ ts: T0 + i * 60_000, sizeUsd: 1.5, predEdgePct: 1, realEdgePct: 0.4 }), CFG);
     }
     // Destructive $5–10 bucket.
     for (let i = 0; i < 4; i++) {
-      applyEntry(p, execEntry({ ts: T0 + (10 + i) * 60_000, sizeUsd: 6, predEdgePct: 1, realizedEdgePct: -1 }), CFG);
+      applyEntry(p, execEntry({ ts: T0 + (10 + i) * 60_000, sizeUsd: 6, predEdgePct: 1, realEdgePct: -1 }), CFG);
     }
     const prof = p["pool:alcor:217"]!;
     const m = learnedSizeMultiplier(prof, 6, T0 + 86_400_000, CFG);
@@ -381,7 +381,7 @@ describe("AI-proposed artifacts (defensive parse)", () => {
   });
 
   it("drops size multipliers for pools with no destructive bucket", () => {
-    const healthy = profilesWith(CFG.minSamplesSizeCurve, { sizeUsd: 0.6, predEdgePct: 1, realizedEdgePct: 0.5 });
+    const healthy = profilesWith(CFG.minSamplesSizeCurve, { sizeUsd: 0.6, predEdgePct: 1, realEdgePct: 0.5 });
     const out = extractLearningArtifacts(
       { learning_artifacts: [{ type: "POOL_SIZE_MULTIPLIER", scopeKey: "pool:alcor:217", value: 0.7 }] },
       healthy,
@@ -395,10 +395,10 @@ describe("AI-proposed artifacts (defensive parse)", () => {
   it("accepts a size multiplier with a destructive bucket and sets watchBucket", () => {
     const p: LearningProfiles = {};
     for (let i = 0; i < 8; i++) {
-      applyEntry(p, execEntry({ ts: T0 + i * 60_000, sizeUsd: 1.5, predEdgePct: 1, realizedEdgePct: 0.4 }), CFG);
+      applyEntry(p, execEntry({ ts: T0 + i * 60_000, sizeUsd: 1.5, predEdgePct: 1, realEdgePct: 0.4 }), CFG);
     }
     for (let i = 0; i < 4; i++) {
-      applyEntry(p, execEntry({ ts: T0 + (10 + i) * 60_000, sizeUsd: 6, predEdgePct: 1, realizedEdgePct: -1 }), CFG);
+      applyEntry(p, execEntry({ ts: T0 + (10 + i) * 60_000, sizeUsd: 6, predEdgePct: 1, realEdgePct: -1 }), CFG);
     }
     const out = extractLearningArtifacts(
       { learning_artifacts: [{ type: "POOL_SIZE_MULTIPLIER", scopeKey: "pool:alcor:217", value: 0.6 }] },

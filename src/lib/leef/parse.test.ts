@@ -124,6 +124,15 @@ describe("attachUsdPrices — CLMM WAX/stable pricing", () => {
     });
     expect(waxUsdFromAux([venueReserve])).toBeCloseTo(0.00507, 8);
   });
+
+  it("ignores WAX pools against untrusted stables", () => {
+    const fake = clmmWaxUsdcPool({
+      tokenB: { symbol: "WAXUSDC", contract: "fake.contract", decimals: 6, quantity: 930 },
+      priceA: 0.02,
+      priceB: 50,
+    });
+    expect(waxUsdFromAux([fake])).toBe(0);
+  });
 });
 
 describe("waxUsdAnchor — observation set quality", () => {
@@ -153,18 +162,6 @@ describe("waxUsdAnchor — observation set quality", () => {
       clmmWaxUsdcPool({ id: 3, priceA: 0.0093, priceB: 107.5 }),
     ]);
     expect(a!.confidence).toBeLessThanOrEqual(0.4);
-  });
-});
-    expect(waxUsdFromAux([venueReserve])).toBeCloseTo(0.00507, 8);
-  });
-
-  it("ignores WAX pools against untrusted stables", () => {
-    const fake = clmmWaxUsdcPool({
-      tokenB: { symbol: "WAXUSDC", contract: "fake.contract", decimals: 6, quantity: 930 },
-      priceA: 0.02,
-      priceB: 50,
-    });
-    expect(waxUsdFromAux([fake])).toBe(0);
   });
 });
 

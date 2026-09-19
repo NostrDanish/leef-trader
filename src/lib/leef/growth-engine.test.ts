@@ -93,15 +93,17 @@ describe("normalizeTargets", () => {
     expect(t[0]!.weight + t[1]!.weight).toBeCloseTo(100, 6);
   });
 
-  it("dedupes symbols and caps at 3", () => {
+  it("dedupes symbols and caps at 5", () => {
+    // Engine + UI accept up to 5 targets (CHANGELOG: 5-target AI mixes).
     const t = normalizeTargets([
       { symbol: "LEEF", weight: 60 },
       { symbol: "leef", weight: 10 },
       { symbol: "WAX", weight: 30 },
       { symbol: "TLM", weight: 10 },
       { symbol: "TACO", weight: 5 },
+      { symbol: "WUF", weight: 5 },
     ]);
-    expect(t.map((x) => x.symbol)).toEqual(["LEEF", "WAX", "TLM"]);
+    expect(t.map((x) => x.symbol)).toEqual(["LEEF", "WAX", "TLM", "TACO", "WUF"]);
     expect(t.reduce((s, x) => s + x.weight, 0)).toBeCloseTo(100, 6);
   });
 });

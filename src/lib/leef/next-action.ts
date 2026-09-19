@@ -174,7 +174,6 @@ export function planLeefTape(
   },
 ): TapeClip | null {
   const graph = buildRouteGraph(snap.pools, snap.aux);
-  const hops = Math.min(MAX_ROUTE_HOPS, Math.max(1, opts.maxHops ?? 4));
   const maxLoss = Math.max(0, opts.maxLossPct ?? 1.5);
   const seed = opts.seed ?? Date.now();
   const entries = canonicalBalanceEntries(balances, snap.universe)

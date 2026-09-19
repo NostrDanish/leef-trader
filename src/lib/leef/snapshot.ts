@@ -7,6 +7,7 @@ import { buildUniverse, mergeUniverseFromBook, repriceUniverse, type UniverseTok
 import { fetchExternalVenues } from "./venue-adapters";
 import type { VenuePool } from "./venues";
 import { fetchJson } from "@/lib/fetchJson";
+import { hotPoolIds } from "@/lib/market/execution-state";
 
 const ALCOR_API = "https://wax.alcor.exchange/api/v2";
 const ALCOR_POOLS = `${ALCOR_API}/swap/pools`;
@@ -168,26 +169,23 @@ function applyPoolResults(
 }
 
 /**
- * Hot-path refresh: only the books the router actually needs this cycle
- * (top LEEF by volume, WAX-quoted LEEF, top aux). Remaining tracked ids
- * refresh in the background and never block a trade decision.
+ * Hot-path refresh: only the books the router actually needs this cycle —
+ * the ONE shared hot-pool definition (hotPoolIds, P-C) — plus the head of
+ * the tracked registry (registry maintenance, not freshness semantics).
+ * Remaining tracked ids refresh in the background and never block a trade
+ * decision.
  */
 async function loadTrackedHot(
   prevLeef: LeefPool[],
   prevAux: AuxPool[],
 ): Promise<{ leef: LeefPool[]; aux: AuxPool[] }> {
-  const rankedLeef = [...prevLeef].sort(
-    (a, b) => b.volume24Usd - a.volume24Usd || b.tvlUsd - a.tvlUsd,
-  );
-  const waxIds = rankedLeef
-    .filter((p) => p.pair.symbol.toUpperCase() === "WAX")
-    .slice(0, 4)
-    .map((p) => p.id);
-  const hotLeef = [
-    ...new Set([...waxIds, ...rankedLeef.slice(0, HOT_LEEF).map((p) => p.id), ...tracked.leef.slice(0, HOT_LEEF)]),
+  const ids = [
+    ...new Set([
+      ...hotPoolIds({ pools: prevLeef, aux: prevAux }),
+      ...tracked.leef.slice(0, HOT_LEEF),
+      ...tracked.aux.slice(0, HOT_AUX),
+    ]),
   ];
-  const hotAux = tracked.aux.slice(0, HOT_AUX);
-  const ids = [...hotLeef, ...hotAux];
   const results = await Promise.allSettled(ids.map((id) => fetchPoolById(id, "high")));
   return applyPoolResults(prevLeef, prevAux, ids, results);
 }

@@ -61,9 +61,11 @@ describe("advisor", () => {
     expect(q).not.toContain("LEEF");
   });
 
-  it("never lists WAX as a base or LEEF as a quote", () => {
-    expect(listBaseTokens(snap())).not.toContain("WAX");
+  it("never lists a token as its own quote; any liquid token may be base", () => {
+    // Any-pair trading (7f2412a): WAX is a legitimate base too.
+    expect(listBaseTokens(snap())).toContain("WAX");
     expect(listQuoteTokens(snap(), "LEEF")).not.toContain("LEEF");
+    expect(listQuoteTokens(snap(), "WAX")).not.toContain("WAX");
   });
 
   it("keeps USD min as floor and USD max as ceiling from wallet value", () => {

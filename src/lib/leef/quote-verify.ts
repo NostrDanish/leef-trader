@@ -7,6 +7,12 @@
  *
  * A local Defibox/Taco number is MODEL_ONLY until the pair row is re-read.
  * Stale or missing venue quotes are excluded from live execution.
+ *
+ * Venue cache caveat (verified against alcor-ui server, CACHE_TTL = 5000):
+ * the swapRouter caches each trade for 5 s server-side, so a "fresh" re-quote
+ * inside that window usually returns the IDENTICAL cached trade — re-quoting
+ * more often buys nothing. The on-chain minOut memo, not the re-quote, is
+ * the real freshness guarantee (and it is enforced on every executable leg).
  */
 import { quoteConstantProduct } from "./amm";
 import { defiboxMemo, refreshVenuePair, tacoMemo } from "./venue-adapters";
@@ -34,9 +40,38 @@ export type VerifiedLeg = {
   amountIn: number;
   amountOut: number;
   minOut: number;
+  /**
+   * The venue's own CLMM-exact price impact (percent), parsed from the Alcor
+   * router quote. Present only on venue-exact legs — the sharpest model↔venue
+   * drift evidence there is (journal: venueImpactPct).
+   */
+  venueImpactPct?: number;
   memo?: string;
   alcor?: AlcorRouteQuote;
 };
+
+/** Alcor returns priceImpact as a percent string ("0.12"); keep it finite. */
+function parseVenueImpactPct(raw: string | undefined): number | undefined {
+  const n = raw == null ? NaN : Number.parseFloat(raw);
+  return Number.isFinite(n) ? Math.abs(n) : undefined;
+}
+
+/**
+ * Route-level venue impact from per-leg venue-exact impacts (compounded like
+ * combineImpact), or undefined when no leg reported one (fresh-model venues).
+ */
+export function routeVenueImpactPct(
+  legs: Pick<VerifiedLeg, "venueImpactPct">[],
+): number | undefined {
+  let keep = 1;
+  let seen = false;
+  for (const l of legs) {
+    if (l.venueImpactPct == null) continue;
+    seen = true;
+    keep *= 1 - l.venueImpactPct / 100;
+  }
+  return seen ? Math.max(0, (1 - keep) * 100) : undefined;
+}
 
 /**
  * Combine per-leg min-outs into the route-level guaranteed worst case.
@@ -138,6 +173,8 @@ export async function verifyExecutableRoute(opts: {
   trust: QuoteTrust;
   /** "exact" only when EVERY leg came from the venue's own engine (Alcor router). */
   exactness: QuoteExactness;
+  /** Compounded venue-reported CLMM price impact (percent), when any leg reported one. */
+  venueImpactPct?: number;
   verified: VerifiedLeg[];
 }> {
   const t0 = Date.now();
@@ -150,7 +187,11 @@ export async function verifyExecutableRoute(opts: {
   // each leg's guaranteed min-out chaining into the next leg's input.
   const isCycle =
     opts.route.tokenIn.toUpperCase() === opts.route.tokenOut.toUpperCase();
-  if (allAlcorRoute(opts.route) && !isCycle) {
+  // The venue caps maxHops at 3 server-side: only ≤3-leg routes may take the
+  // single-call fast path. A >3-leg route quoted whole would let Alcor
+  // re-pick a different ≤3-hop path whose executed legs diverge from the
+  // evaluated ones — those verify leg-by-leg like mixed-venue routes.
+  if (allAlcorRoute(opts.route) && !isCycle && opts.route.legs.length <= 3) {
     const tokenIn = metaOf(opts.route.tokenIn, opts.snap);
     const tokenOut = metaOf(opts.route.tokenOut, opts.snap);
     try {
@@ -166,11 +207,13 @@ export async function verifyExecutableRoute(opts: {
       const expectedOut = parseAssetAmount(quote.output);
       if (!(expectedOut > 0)) throw new TradeError("ROUTE_DISAPPEARED", "Alcor returned no output");
       const minOut = parseAssetAmount(quote.minReceived) || expectedOut * (1 - opts.slippagePct / 100);
+      const venueImpactPct = parseVenueImpactPct(quote.priceImpact);
       return {
         expectedOut,
         guaranteedOut: minOut,
         trust: "executable",
         exactness: "exact",
+        venueImpactPct,
         verified: [
           {
             venue: "alcor",
@@ -179,6 +222,7 @@ export async function verifyExecutableRoute(opts: {
             amountIn: opts.amountIn,
             amountOut: expectedOut,
             minOut,
+            venueImpactPct,
             alcor: quote,
           },
         ],
@@ -204,7 +248,7 @@ export async function verifyExecutableRoute(opts: {
       throw new TradeError("LIQUIDITY_CHANGED", "Previous route leg produced no spendable output");
     }
     const venue = venueOfLeg(leg);
-    let amountOut = 0;
+    let amountOut: number;
     if (venue === "alcor") {
       const tin = metaOf(leg.tokenIn, opts.snap);
       const tout = metaOf(leg.tokenOut, opts.snap);
@@ -228,6 +272,7 @@ export async function verifyExecutableRoute(opts: {
         amountIn,
         amountOut,
         minOut: parseAssetAmount(quote.minReceived) || amountOut * (1 - slip),
+        venueImpactPct: parseVenueImpactPct(quote.priceImpact),
         alcor: quote,
       });
     } else {
@@ -284,5 +329,12 @@ export async function verifyExecutableRoute(opts: {
   const exactness: QuoteExactness = verified.every((v) => v.exactness === "exact")
     ? "exact"
     : "fresh_model";
-  return { expectedOut, guaranteedOut, trust: "executable", exactness, verified };
+  return {
+    expectedOut,
+    guaranteedOut,
+    trust: "executable",
+    exactness,
+    venueImpactPct: routeVenueImpactPct(verified),
+    verified,
+  };
 }

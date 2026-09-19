@@ -11,10 +11,19 @@
  * haircut. Splits only win when they beat the best single path by enough to
  * cover extra on-chain actions (SPLIT_IMPROVE_MARGIN).
  *
- * Local quotes use constant-product on published reserves — conservative for
- * Alcor CLMM. Live execution still requotes the winner through Alcor.
+ * Local quotes use constant-product. Alcor CLMM edges quote over V3 VIRTUAL
+ * reserves (tick-price anchored — exact at the margin for in-range fills);
+ * CP on raw balances was not conservative, it was wrong (the 56.8% pool-217
+ * level error). Defibox/Taco edges quote over raw reserves, which ARE the CP
+ * reserves there. Live execution still requotes the winner through Alcor.
  */
-import { isLeefToken, isWaxToken, quoteConstantProduct } from "./amm";
+import {
+  isLeefToken,
+  isWaxToken,
+  quoteConstantProduct,
+  virtualLeefPairReserves,
+  virtualReserves,
+} from "./amm";
 import { isScamToken } from "./token-registry";
 import { LEEF_CONTRACT, LEEF_SYMBOL, WAX_CONTRACT, WAX_SYMBOL } from "./types";
 import type { AuxPool, LeefPool, QuoteLeg, SwapRoute } from "./types";
@@ -46,6 +55,9 @@ type Edge = {
   toSym: string;
   reserveIn: number;
   reserveOut: number;
+  /** CLMM virtual reserves (Alcor only) — tick-price anchored CP depth. */
+  virtIn?: number;
+  virtOut?: number;
   fee: number;
   feePct: number;
   tvlUsd: number;
@@ -73,8 +85,14 @@ function parseId(id: TokenId): { symbol: string; contract: string } {
 }
 
 function quoteEdge(edge: Edge, amountIn: number): QuoteLeg | null {
-  if (!(amountIn > 0) || edge.reserveIn < amountIn * MIN_RESERVE_MULT) return null;
-  const q = quoteConstantProduct(amountIn, edge.reserveIn, edge.reserveOut, edge.fee);
+  // Alcor CLMM: CP over virtual reserves (exact at the margin). Raw balances
+  // only when the pool carries no CLMM state — and always for Defibox/Taco,
+  // whose raw reserves ARE the constant-product reserves.
+  const virt = edge.venue === "alcor" && edge.virtIn != null && edge.virtOut != null;
+  const reserveIn = virt ? edge.virtIn! : edge.reserveIn;
+  const reserveOut = virt ? edge.virtOut! : edge.reserveOut;
+  if (!(amountIn > 0) || reserveIn < amountIn * MIN_RESERVE_MULT) return null;
+  const q = quoteConstantProduct(amountIn, reserveIn, reserveOut, edge.fee);
   if (q.amountOut <= 0 || q.priceImpact >= MAX_IMPACT) return null;
   return {
     poolId: edge.poolId,
@@ -160,6 +178,7 @@ export function buildRouteGraph(
     const a = leefId();
     const b = tokenId(p.pair.symbol, p.pair.contract);
     const name = `LEEF / ${p.pair.symbol}`;
+    const v = virtualLeefPairReserves(p);
     pushEdge(g, {
       poolId: p.id,
       from: a,
@@ -168,6 +187,8 @@ export function buildRouteGraph(
       toSym: p.pair.symbol.toUpperCase(),
       reserveIn: p.leef.quantity,
       reserveOut: p.pair.quantity,
+      virtIn: v?.leef,
+      virtOut: v?.pair,
       fee: p.fee,
       feePct: p.feePct,
       tvlUsd: p.tvlUsd,
@@ -183,6 +204,8 @@ export function buildRouteGraph(
       toSym: LEEF_SYMBOL,
       reserveIn: p.pair.quantity,
       reserveOut: p.leef.quantity,
+      virtIn: v?.pair,
+      virtOut: v?.leef,
       fee: p.fee,
       feePct: p.feePct,
       tvlUsd: p.tvlUsd,
@@ -206,6 +229,14 @@ export function buildRouteGraph(
     const venue = p.venue ?? "alcor";
     const tag = venue === "alcor" ? "" : ` · ${venue}`;
     const name = `${p.tokenA.symbol} / ${p.tokenB.symbol}${tag}`;
+    // Alcor CLMM aux pools quote over V3 VIRTUAL reserves (same level-error
+    // fix as LEEF pools): A is rx, B is ry. Defibox/Taco carry no liquidity,
+    // so virtualReserves returns null and they stay raw (true CP there).
+    const v = virtualReserves(p);
+    const virtA =
+      v && Number.isFinite(Number(v.rx)) ? Number(v.rx) / 10 ** p.tokenA.decimals : undefined;
+    const virtB =
+      v && Number.isFinite(Number(v.ry)) ? Number(v.ry) / 10 ** p.tokenB.decimals : undefined;
     pushEdge(g, {
       poolId: p.id,
       from: a,
@@ -214,6 +245,8 @@ export function buildRouteGraph(
       toSym: p.tokenB.symbol.toUpperCase(),
       reserveIn: p.tokenA.quantity,
       reserveOut: p.tokenB.quantity,
+      virtIn: virtA,
+      virtOut: virtB,
       fee: p.fee,
       feePct: p.feePct,
       tvlUsd: p.tvlUsd,
@@ -229,6 +262,8 @@ export function buildRouteGraph(
       toSym: p.tokenA.symbol.toUpperCase(),
       reserveIn: p.tokenB.quantity,
       reserveOut: p.tokenA.quantity,
+      virtIn: virtB,
+      virtOut: virtA,
       fee: p.fee,
       feePct: p.feePct,
       tvlUsd: p.tvlUsd,
@@ -399,7 +434,12 @@ function searchPaths(
     if (expansions > MAX_EXPANSIONS) break;
 
     const seen = pareto.get(cur.token) ?? [];
-    if (dominatedByPareto(cur, seen)) {
+    // A completed cycle (from === to) must never be pruned by the seed frame
+    // parked at the same token — the seed has more amount, fewer hops and an
+    // empty pool set, so it dominates every returning ring and cycle
+    // discovery starves.
+    const completesCycle = from === to && cur.token === to && cur.legs.length > 0;
+    if (!completesCycle && dominatedByPareto(cur, seen)) {
       pruned += 1;
       continue;
     }
@@ -672,9 +712,17 @@ export function routeTouchesLeef(route: SwapRoute): boolean {
  * downstream still vetoes anything uneconomic. Economics first, always.
  *
  * Second tier within a near-tie group: venue-verifiability. All-Alcor routes
- * get an EXACT venue-router quote at the gate; Defibox/Taco legs are
- * fresh-model (fresh reserves + CP math, min-out guarded). Near-tied routes
- * prefer the one whose quote will be exactly verified.
+ * with ≤ 3 legs get an EXACT whole-route venue quote at the gate (longer
+ * ones verify leg-by-leg — the venue caps maxHops at 3 server-side);
+ * Defibox/Taco legs are fresh-model (fresh reserves + CP math, min-out
+ * guarded). Near-tied routes prefer the one whose quote will be exactly
+ * verified.
+ *
+ * Within the all-Alcor near-ties, routes with ≤ 3 legs rank first (P-D): the
+ * venue caps maxHops at 3 server-side, so those verify WHOLE-ROUTE with one
+ * swapRouter call — no leg-by-leg re-pick divergence between the evaluated
+ * path and the executed path. Longer all-Alcor routes still outrank
+ * fresh-model venues. Economics still rule: nothing outside the band moves.
  *
  * Applied on bot gate-attempt ordering (not in the quotes desk, where the
  * user sees the untouched economic ranking and picks for themselves).
@@ -688,18 +736,28 @@ export function preferLeefNearTies(
   if (!(best > 0)) return routes;
   const floor = best * (1 - Math.max(0, epsilonPct));
   const leefNearTies: SwapRoute[] = [];
+  const otherNearTies: SwapRoute[] = [];
   const rest: SwapRoute[] = [];
   for (const r of routes) {
-    if (r.amountOut + 1e-12 >= floor && routeTouchesLeef(r)) leefNearTies.push(r);
-    else rest.push(r);
+    if (r.amountOut + 1e-12 < floor) rest.push(r);
+    else if (routeTouchesLeef(r)) leefNearTies.push(r);
+    else otherNearTies.push(r);
   }
-  const exactFirst = (a: SwapRoute, b: SwapRoute) => {
-    const ea = a.legs.every((l) => !l.venue || l.venue === "alcor") ? 1 : 0;
-    const eb = b.legs.every((l) => !l.venue || l.venue === "alcor") ? 1 : 0;
-    return eb - ea; // stable secondary tier
+  // Verifiability tier: 2 = all-Alcor with ≤3 legs (whole-route exact quote
+  // in one swapRouter call — the venue's server-side maxHops cap), 1 =
+  // all-Alcor with more legs (leg-by-leg exact quotes), 0 = fresh-model
+  // venues. Sort is stable, so economics decide inside a tier.
+  const verifiabilityTier = (r: SwapRoute): number => {
+    if (!r.legs.every((l) => !l.venue || l.venue === "alcor")) return 0;
+    return r.legs.length <= 3 ? 2 : 1;
   };
+  const exactFirst = (a: SwapRoute, b: SwapRoute) =>
+    verifiabilityTier(b) - verifiabilityTier(a);
+  // Verifiability tier applies to the WHOLE in-band group: LEEF first, then
+  // exactly-verifiable all-Alcor before fresh-model venues.
   leefNearTies.sort(exactFirst);
-  return [...leefNearTies, ...rest];
+  otherNearTies.sort(exactFirst);
+  return [...leefNearTies, ...otherNearTies, ...rest];
 }
 
 /**

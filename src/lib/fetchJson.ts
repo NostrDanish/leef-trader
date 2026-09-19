@@ -3,8 +3,12 @@
  * limits, and 429 backoff.
  *
  * - Direct first; only NETWORK failures (CORS blocks surface as TypeError)
- *   retry through the Shakespeare proxy. HTTP errors (4xx/5xx) are real
- *   answers from the host — proxying them would just double the load.
+ *   on idempotent GETs retry through the Shakespeare proxy. HTTP errors
+ *   (4xx/5xx) are real answers from the host — proxying them would just
+ *   double the load. Non-GET requests are NEVER proxied: a failed POST
+ *   (worst case push_transaction) re-submitted through a third party would
+ *   expose the signed payload and silently double-submit a timed-out
+ *   broadcast — the "exactly one submission" invariant forbids it.
  * - At most 4 in-flight requests per host; the rest queue. Unthrottled bursts
  *   (e.g. 80 pool refreshes at once) are what trip nginx rate limits.
  * - On 429/503 the host gets a cooldown and the caller retries once after it.
@@ -312,8 +316,12 @@ export async function fetchJson(
 
   const host = hostOf(url);
   const proxied = `${CORS_PROXY}${encodeURIComponent(url)}`;
+  // Non-GET requests are never proxied: re-submitting a failed POST through a
+  // third party would expose the signed payload and could double-submit a
+  // timed-out broadcast (the "exactly one submission" invariant).
+  const proxyable = !directOnly && method === "GET";
 
-  if (!directOnly && host && proxyHosts.has(host)) {
+  if (proxyable && host && proxyHosts.has(host)) {
     return await callHost(proxied, init, timeoutMs, priority, context);
   }
 
@@ -322,7 +330,7 @@ export async function fetchJson(
   } catch (err) {
     // Only network/CORS failures (TypeError) get the proxy — HTTP errors are
     // real responses and must not be duplicated.
-    if (directOnly || err instanceof FetchJsonError) throw err;
+    if (!proxyable || err instanceof FetchJsonError) throw err;
     if (host) proxyHosts.add(host);
     return await callHost(proxied, init, timeoutMs, priority, context);
   }
