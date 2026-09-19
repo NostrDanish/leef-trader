@@ -107,7 +107,9 @@ describe("cross-venue routing", () => {
       fee: 3000,
       feePct: 0.3,
       tokenA: { symbol: "WAX", contract: "eosio.token", decimals: 8, quantity: 50_000 },
-      tokenB: { symbol: "LEEF", contract: "leefmaincorp", decimals: 4, quantity: 500_000_000 },
+      // Same 15,000 LEEF/WAX price as the thin Alcor book, 625× the depth —
+      // depth (not a better price) is what must win here.
+      tokenB: { symbol: "LEEF", contract: "leefmaincorp", decimals: 4, quantity: 750_000_000 },
       tvlUsd: 2000,
       volume24Usd: 0,
       venue: "defibox",
@@ -124,7 +126,9 @@ describe("cross-venue routing", () => {
       fee: 3000,
       feePct: 0.3,
       tokenA: { symbol: "WAX", contract: "eosio.token", decimals: 8, quantity: 40 },
-      tokenB: { symbol: "LEEF", contract: "leefmaincorp", decimals: 4, quantity: 1_200_000 },
+      // Same 10,000 LEEF/WAX price as the deep Alcor book but dust-thin —
+      // impact, not price, is what must lose here.
+      tokenB: { symbol: "LEEF", contract: "leefmaincorp", decimals: 4, quantity: 400_000 },
       tvlUsd: 5,
       volume24Usd: 0,
       venue: "taco",

@@ -27,7 +27,9 @@ import {
   applyOnchainToLeefPool,
   fetchOnchainPools,
   onchainDiffers,
+  type OnchainPool,
 } from "@/lib/wax/alcor-onchain";
+import { journal } from "@/lib/leef/journal";
 import { headInfo } from "@/lib/wallet/chain";
 import { hasSecret } from "@/lib/wallet/secret";
 import { hasWalletSession } from "@/lib/wallet/session";
@@ -42,7 +44,9 @@ import { botOnSnapshot } from "@/components/terminal/use-bot-loop";
 import { rebalancerOnSnapshot } from "@/components/terminal/use-portfolio-loop";
 import { syncWalletBalances } from "@/components/terminal/use-wallet-sync";
 import { marketBus } from "./event-bus";
+import { hotPoolIds } from "./execution-state";
 import { routeCache } from "./route-cache";
+import { checkpointDrift, latestCheckpoints, swapFlow } from "./swap-flow";
 
 /* ------------------------------------------------------------------ */
 /* engine state (immutable snapshot object for React)                   */
@@ -137,6 +141,8 @@ function initialState(): EngineState {
 const HEARTBEAT_MS = 1_500;
 /** On-chain pool spot refresh cadence (swap.alcor table reads). */
 const SPOT_EVERY_N_HEARTBEATS = 3; // ~4.5s between API pulls
+/** Swap-flow (Hyperion logswap) poll cadence — one history call per ~10s. */
+const FLOW_EVERY_N_HEARTBEATS = 7;
 /** A head block older than this (ms) means our view of the chain stalled. */
 const BLOCK_STALL_MS = 20_000;
 /** Gap after which a wake/resume forces a full resync. */
@@ -150,6 +156,8 @@ class MarketEngine {
   private heartbeatCount = 0;
   private marketInflight = false;
   private spotInflight = false;
+  /** Wall-clock of the last successful hot-pool table read (checkpoint guard). */
+  private lastSpotRowsAt = 0;
   private lastTickAt = 0;
   private started = false;
 
@@ -206,6 +214,9 @@ class MarketEngine {
 
   private scheduleHeartbeat(delayMs: number): void {
     if (!this.started) return;
+    // Never leave a previous heartbeat pending — onWake/forceResync would
+    // otherwise spawn duplicate self-perpetuating heartbeat chains.
+    if (this.heartbeatTimer) clearTimeout(this.heartbeatTimer);
     const expected = Date.now() + delayMs;
     this.heartbeatTimer = setTimeout(() => {
       // Timer drift = the browser throttled/suspended us. Detect the gap.
@@ -260,6 +271,11 @@ class MarketEngine {
     // On-chain spot refresh between API pulls (block-driven prices).
     if (this.heartbeatCount % SPOT_EVERY_N_HEARTBEATS === 0 && !document.hidden) {
       void this.onchainSpot();
+    }
+    // Swap-flow poll (E-1) — the service itself enforces hidden-tab pause,
+    // backoff and single-flight, so this call is always cheap.
+    if (this.heartbeatCount % FLOW_EVERY_N_HEARTBEATS === 0) {
+      void this.flowPoll();
     }
     // Chain stalled while we think we're live → force a market pull.
     const headAge = Date.now() - this.state.headBlockAt;
@@ -370,42 +386,30 @@ class MarketEngine {
       const hot = this.hotPoolIds(snap);
       if (hot.length === 0) return;
       const rows = await fetchOnchainPools(hot);
-      const leefById = new Map(snap.pools.map((p) => [p.id, p]));
-      const auxById = new Map(snap.aux.map((p) => [p.id, p]));
-      let changed = 0;
-      const nextLeef: LeefPool[] = [...snap.pools];
-      const nextAux: AuxPool[] = [...snap.aux];
-      for (const [id, oc] of rows) {
-        const leef = leefById.get(id);
-        if (leef) {
-          const differs = onchainDiffers(
-            {
-              sqrtPriceX64: leef.sqrtPriceX64,
-              liquidity: leef.liquidity,
-              qtyA: leef.leefIsA ? leef.leef.quantity : leef.pair.quantity,
-              qtyB: leef.leefIsA ? leef.pair.quantity : leef.leef.quantity,
-            },
-            oc,
-          );
-          if (!differs) continue;
-          const patched = applyOnchainToLeefPool(leef, oc);
-          const idx = nextLeef.findIndex((p) => p.id === id);
-          if (patched && idx >= 0) {
-            nextLeef[idx] = patched;
-            changed += 1;
-          } else if (idx >= 0) {
-            nextLeef.splice(idx, 1); // pool delisted on-chain
-            changed += 1;
-          }
-          continue;
-        }
-        const aux = auxById.get(id);
-        if (aux) {
-          const patched = applyOnchainToAuxPool(aux, oc);
-          const idx = nextAux.findIndex((p) => p.id === id);
-          if (patched && idx >= 0) nextAux[idx] = patched;
+      this.lastSpotRowsAt = Date.now();
+      // E-1: each logswap checkpoint is validated ONCE against the first real
+      // table read that supersedes it; mismatches are journaled (rate-limited)
+      // — the checkpoint stream must prove consistent before it is trusted.
+      for (const [id, row] of rows) {
+        const cp = swapFlow.checkpointFor(id);
+        if (!cp || cp.source !== "logswap") continue;
+        const mm = checkpointDrift(cp.row, row);
+        swapFlow.noteTableRow(row);
+        if (mm && swapFlow.shouldJournalMismatch(id, Date.now())) {
+          journal({
+            kind: "flow",
+            reason:
+              `logswap checkpoint pool ${id} vs table read:` +
+              ` sqrt ${mm.sqrtDriftPct.toFixed(2)}% · liq ${mm.liquidityDriftPct.toFixed(2)}%` +
+              ` · reserves ${mm.reserveDriftPct.toFixed(2)}%`,
+            poolIds: [id],
+          });
         }
       }
+      const patched = this.patchPools(snap, rows, true);
+      const changed = patched.changed;
+      const nextLeef = patched.nextLeef;
+      const nextAux = patched.nextAux;
       if (changed > 0) {
         // Recompute USD prices over the patched book (trusted-stable oracle
         // included) — this is what makes prices move BETWEEN API pulls.
@@ -451,23 +455,108 @@ class MarketEngine {
     }
   }
 
-  /** Pools the router actually needs: top LEEF books + WAX/stable aux. */
-  private hotPoolIds(snap: LeefSnapshot): number[] {    const leef = [...snap.pools]
-      .sort((a, b) => b.volume24Usd - a.volume24Usd || b.tvlUsd - a.tvlUsd)
-      .slice(0, 8)
-      .map((p) => p.id);
-    const waxQuoted = snap.pools
-      .filter((p) => p.pair.symbol.toUpperCase() === "WAX")
-      .slice(0, 3)
-      .map((p) => p.id);
-    const aux = snap.aux
-      .filter(
-        (p) => p.tokenA.symbol.toUpperCase() === "WAX" || p.tokenB.symbol.toUpperCase() === "WAX",
-      )
-      .sort((a, b) => b.tvlUsd - a.tvlUsd)
-      .slice(0, 4)
-      .map((p) => p.id);
-    return [...new Set([...leef, ...waxQuoted, ...aux])];
+  /** Pools the router actually needs: the ONE shared hot-pool definition. */
+  private hotPoolIds(snap: LeefSnapshot): number[] {
+    return hotPoolIds(snap);
+  }
+
+  /**
+   * Apply fresh on-chain rows (table reads OR logswap checkpoints) to the
+   * snapshot's pool arrays. `dropInvalid` (table truth only) removes delisted
+   * pools; checkpoints never remove — a swap just proved the pool is live.
+   */
+  private patchPools(
+    snap: LeefSnapshot,
+    rows: Map<number, OnchainPool>,
+    dropInvalid: boolean,
+  ): { nextLeef: LeefPool[]; nextAux: AuxPool[]; changed: number } {
+    const leefById = new Map(snap.pools.map((p) => [p.id, p]));
+    const auxById = new Map(snap.aux.map((p) => [p.id, p]));
+    let changed = 0;
+    const nextLeef: LeefPool[] = [...snap.pools];
+    const nextAux: AuxPool[] = [...snap.aux];
+    for (const [id, oc] of rows) {
+      const leef = leefById.get(id);
+      if (leef) {
+        const differs = onchainDiffers(
+          {
+            sqrtPriceX64: leef.sqrtPriceX64,
+            liquidity: leef.liquidity,
+            qtyA: leef.leefIsA ? leef.leef.quantity : leef.pair.quantity,
+            qtyB: leef.leefIsA ? leef.pair.quantity : leef.leef.quantity,
+          },
+          oc,
+        );
+        if (!differs) continue;
+        const patched = applyOnchainToLeefPool(leef, oc);
+        const idx = nextLeef.findIndex((p) => p.id === id);
+        if (patched && idx >= 0) {
+          nextLeef[idx] = patched;
+          changed += 1;
+        } else if (idx >= 0 && dropInvalid) {
+          nextLeef.splice(idx, 1); // pool delisted on-chain
+          changed += 1;
+        }
+        continue;
+      }
+      const aux = auxById.get(id);
+      if (aux) {
+        const patched = applyOnchainToAuxPool(aux, oc);
+        const idx = nextAux.findIndex((p) => p.id === id);
+        if (patched && idx >= 0) nextAux[idx] = patched;
+      }
+    }
+    return { nextLeef, nextAux, changed };
+  }
+
+  /* ------------------- swap flow (E-1 logswap stream) --------------- */
+
+  /**
+   * One logswap poll pass (~every 7th heartbeat ≈ 10 s): refresh the rolling
+   * per-pool flow state, publish it on the bus, and patch the free post-swap
+   * checkpoints into the hot pools between table reads (routeCache versions
+   * bump through the normal notePools path). Deliberately does NOT re-run
+   * strategies — flow is market data; entries still come from the normal
+   * snapshot/spot cadence. Checkpoints are validated against the next table
+   * read inside onchainSpot().
+   */
+  private async flowPoll(): Promise<void> {
+    const snap = this.state.snapshot;
+    if (!snap || snap.source !== "live" || !this.started) return;
+    const events = await swapFlow.poll();
+    if (!events) return; // hidden tab / backoff / single-flight / failed
+    swapFlow.track(events, snap);
+    marketBus.emit("flow", { states: swapFlow.tracker.allStates(Date.now()) });
+    if (events.length === 0) return;
+    // Ignore checkpoints older than the last chain-truth read (they would
+    // regress pool state the table already superseded). 3s covers block
+    // timestamp vs receipt-time skew.
+    const fresh = events.filter((e) => e.at >= this.lastSpotRowsAt - 3_000);
+    const cps = latestCheckpoints(fresh, snap, this.hotPoolIds(snap));
+    if (cps.length === 0) return;
+    swapFlow.noteCheckpoints(cps);
+    const { nextLeef, nextAux, changed } = this.patchPools(
+      snap,
+      new Map(cps.map((c) => [c.id, c])),
+      false,
+    );
+    if (changed === 0) return;
+    const px = attachUsdPrices(nextLeef, nextAux, snap.waxUsd, undefined);
+    const changedIds = routeCache.notePools(nextLeef);
+    const patchedSnap: LeefSnapshot = {
+      ...snap,
+      pools: nextLeef,
+      aux: nextAux,
+      spotAt: new Date().toISOString(),
+      waxUsd: px.waxUsd,
+      leefUsd: px.leefUsd,
+      waxPerLeef: px.waxPerLeef,
+    };
+    this.commit({ snapshot: patchedSnap, routes: routeCache.stats() });
+    if (changedIds.length > 0) {
+      marketBus.emit("pools", { changedIds, headBlock: this.state.headBlock });
+    }
+    marketBus.emit("snapshot", { snap: patchedSnap });
   }
 
   /* ---------------------- suspension & resume ---------------------- */

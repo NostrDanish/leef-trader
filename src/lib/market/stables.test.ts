@@ -112,6 +112,9 @@ describe("the 53 WAXUSDC valuation bug", () => {
       tvlUSD: 200_000,
       tokenA: { symbol: "WAX", contract: "eosio.token", decimals: 8, quantity: 2_500_000 },
       tokenB: { symbol: "USDT", contract: "usdt.alcor", decimals: 4, quantity: 100_000 },
+      // Venue-quoted spot (b0e9b11: valuation is venue-spot only, never reserves).
+      priceA: 0.04, // USDT per 1 WAX
+      priceB: 25, // WAX per 1 USDT
     };
     const fake = {
       id: 902,
@@ -119,6 +122,8 @@ describe("the 53 WAXUSDC valuation bug", () => {
       tvlUSD: 5_000,
       tokenA: { symbol: "WAX", contract: "eosio.token", decimals: 8, quantity: 50_000 },
       tokenB: { symbol: "USDT", contract: "faketokens.ai", decimals: 4, quantity: 50_000 },
+      priceA: 1, // absurd: 1 USDT per 1 WAX
+      priceB: 1,
     };
     const universe = buildUniverse([real, fake], WAX_USD);
     const a = universe.find((u) => u.symbol === "USDT" && u.contract === "usdt.alcor");
