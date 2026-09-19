@@ -136,6 +136,7 @@ export function parseAllPools(raw: unknown): { leef: LeefPool[]; aux: AuxPool[] 
       priceA: num(p.priceA) > 0 ? num(p.priceA) : undefined,
       priceB: num(p.priceB) > 0 ? num(p.priceB) : undefined,
       sqrtPriceX64: sqrt,
+      liquidity: p.liquidity != null ? String(p.liquidity) : undefined,
     });
   }
 

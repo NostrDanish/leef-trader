@@ -22,6 +22,7 @@ import {
   isWaxToken,
   quoteConstantProduct,
   virtualLeefPairReserves,
+  virtualReserves,
 } from "./amm";
 import { isScamToken } from "./token-registry";
 import { LEEF_CONTRACT, LEEF_SYMBOL, WAX_CONTRACT, WAX_SYMBOL } from "./types";
@@ -228,6 +229,14 @@ export function buildRouteGraph(
     const venue = p.venue ?? "alcor";
     const tag = venue === "alcor" ? "" : ` · ${venue}`;
     const name = `${p.tokenA.symbol} / ${p.tokenB.symbol}${tag}`;
+    // Alcor CLMM aux pools quote over V3 VIRTUAL reserves (same level-error
+    // fix as LEEF pools): A is rx, B is ry. Defibox/Taco carry no liquidity,
+    // so virtualReserves returns null and they stay raw (true CP there).
+    const v = virtualReserves(p);
+    const virtA =
+      v && Number.isFinite(Number(v.rx)) ? Number(v.rx) / 10 ** p.tokenA.decimals : undefined;
+    const virtB =
+      v && Number.isFinite(Number(v.ry)) ? Number(v.ry) / 10 ** p.tokenB.decimals : undefined;
     pushEdge(g, {
       poolId: p.id,
       from: a,
@@ -236,6 +245,8 @@ export function buildRouteGraph(
       toSym: p.tokenB.symbol.toUpperCase(),
       reserveIn: p.tokenA.quantity,
       reserveOut: p.tokenB.quantity,
+      virtIn: virtA,
+      virtOut: virtB,
       fee: p.fee,
       feePct: p.feePct,
       tvlUsd: p.tvlUsd,
@@ -251,6 +262,8 @@ export function buildRouteGraph(
       toSym: p.tokenA.symbol.toUpperCase(),
       reserveIn: p.tokenB.quantity,
       reserveOut: p.tokenA.quantity,
+      virtIn: virtB,
+      virtOut: virtA,
       fee: p.fee,
       feePct: p.feePct,
       tvlUsd: p.tvlUsd,

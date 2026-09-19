@@ -494,3 +494,53 @@ describe("virtual-reserve CP anchor (P-A)", () => {
     expect(r.legs[0]!.venue).toBe("defibox");
   });
 });
+
+/**
+ * P-A parity for AUX Alcor pools: they carry `sqrtPriceX64` and now
+ * `liquidity`, so their edges must quote over the same V3 virtual reserves
+ * as LEEF pools — raw-reserve CP was the same level-error class.
+ */
+function auxClmm217(over: { clmm: boolean }): AuxPool {
+  return {
+    id: 900,
+    fee: 3000,
+    feePct: 0.3,
+    // Pool-217 audit state, as an aux A=WAX / B=LEEF book.
+    tokenA: { symbol: "WAX", contract: "eosio.token", decimals: 8, quantity: 112_613.008 },
+    tokenB: { symbol: "LEEF", contract: "leefmaincorp", decimals: 4, quantity: 4_565_638_459 },
+    tvlUsd: 10_000,
+    volume24Usd: 500,
+    liquidity: over.clmm ? "20077984976034" : undefined,
+    sqrtPriceX64: over.clmm ? "29663563357779418305" : undefined,
+  };
+}
+
+describe("aux Alcor virtual-reserve CP anchor (P-A parity)", () => {
+  it("quotes an aux Alcor CLMM edge at the tick price, not the raw reserve ratio", () => {
+    const r = bestExecutionRoute([], [auxClmm217({ clmm: true })], 1, "WAX", "LEEF")!;
+    expect(r.kind).toBe("direct");
+    // Same fixture as pool 217: ≈25 781 via virtual reserves; raw-CP ≈40 421.
+    expect(r.amountOut).toBeGreaterThan(24_000);
+    expect(r.amountOut).toBeLessThan(26_000);
+    expect(r.amountOut).toBeCloseTo(25_781, -2);
+  });
+
+  it("falls back to raw reserves when the aux pool lacks CLMM state", () => {
+    const r = bestExecutionRoute([], [auxClmm217({ clmm: false })], 1, "WAX", "LEEF")!;
+    expect(r.kind).toBe("direct");
+    expect(r.amountOut).toBeCloseTo(40_421, -2);
+  });
+
+  it("keeps a Defibox aux book raw even with liquidity '0' present", () => {
+    const book = aux({
+      id: 701,
+      a: { symbol: "LEEF", contract: "leefmaincorp", quantity: 200_000_000 },
+      b: { symbol: "WAX", contract: "eosio.token", quantity: 10_000 },
+    });
+    book.venue = "defibox";
+    book.liquidity = "0"; // Defibox rows carry no usable CLMM state.
+    const r = bestExecutionRoute([], [book], 1, "WAX", "LEEF")!;
+    expect(r.amountOut).toBeCloseTo(19_938, 0);
+    expect(r.legs[0]!.venue).toBe("defibox");
+  });
+});

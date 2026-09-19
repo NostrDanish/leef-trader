@@ -50,6 +50,11 @@ export type AuxPool = {
   /** Alcor's quoted spot price (A per 1 B). */
   priceB?: number;
   sqrtPriceX64?: string;
+  /**
+   * Alcor CLMM active liquidity (raw string). With `sqrtPriceX64` it yields
+   * V3 virtual reserves; absent/"0" (Defibox/Taco) → raw-reserve quoting.
+   */
+  liquidity?: string;
 };
 
 export type LiveTrade = {
