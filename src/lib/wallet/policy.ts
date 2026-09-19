@@ -325,7 +325,9 @@ export function arbFloorViolation(opts: {
   }
 
   const floor = buyIn * (1 + minProfitPct / 100);
-  if (minWaxOut < floor) {
+  // One WAX quantum (1e-8) of slack: 10 * 1.012 is 10.120000000000001 in
+  // IEEE-754 — an exactly-at-floor min-out must pass, not die to float dust.
+  if (minWaxOut + 1e-8 < floor) {
     return (
       `route no longer clears the profit floor — enforced min-out ${minWaxOut.toFixed(8)} WAX ` +
       `< required ${floor.toFixed(8)} WAX (${minProfitPct}% over ${buyIn.toFixed(4)} WAX in)`

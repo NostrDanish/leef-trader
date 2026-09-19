@@ -108,6 +108,16 @@ export function swapFromTransfers(
     }
     return { tokenIn: s.symbol, tokenOut: r.symbol, amountIn: s.sent, amountOut: r.received };
   }
+  // Arb/echo through an intermediate token: the pass-through legs cancel to
+  // zero net, leaving one unbalanced token whose GROSS legs are in/out.
+  const unbalanced = nets.filter((n) => n.sent > 0 && n.received > 0 && Math.abs(n.net) > 1e-12);
+  if (
+    unbalanced.length === 1 &&
+    nets.every((n) => n === unbalanced[0] || Math.abs(n.net) <= 1e-12)
+  ) {
+    const b = unbalanced[0]!;
+    return { tokenIn: b.symbol, tokenOut: b.symbol, amountIn: b.sent, amountOut: b.received };
+  }
   return null;
 }
 
