@@ -42,6 +42,7 @@ import { botOnSnapshot } from "@/components/terminal/use-bot-loop";
 import { rebalancerOnSnapshot } from "@/components/terminal/use-portfolio-loop";
 import { syncWalletBalances } from "@/components/terminal/use-wallet-sync";
 import { marketBus } from "./event-bus";
+import { hotPoolIds } from "./execution-state";
 import { routeCache } from "./route-cache";
 
 /* ------------------------------------------------------------------ */
@@ -454,23 +455,9 @@ class MarketEngine {
     }
   }
 
-  /** Pools the router actually needs: top LEEF books + WAX/stable aux. */
-  private hotPoolIds(snap: LeefSnapshot): number[] {    const leef = [...snap.pools]
-      .sort((a, b) => b.volume24Usd - a.volume24Usd || b.tvlUsd - a.tvlUsd)
-      .slice(0, 8)
-      .map((p) => p.id);
-    const waxQuoted = snap.pools
-      .filter((p) => p.pair.symbol.toUpperCase() === "WAX")
-      .slice(0, 3)
-      .map((p) => p.id);
-    const aux = snap.aux
-      .filter(
-        (p) => p.tokenA.symbol.toUpperCase() === "WAX" || p.tokenB.symbol.toUpperCase() === "WAX",
-      )
-      .sort((a, b) => b.tvlUsd - a.tvlUsd)
-      .slice(0, 4)
-      .map((p) => p.id);
-    return [...new Set([...leef, ...waxQuoted, ...aux])];
+  /** Pools the router actually needs: the ONE shared hot-pool definition. */
+  private hotPoolIds(snap: LeefSnapshot): number[] {
+    return hotPoolIds(snap);
   }
 
   /* ---------------------- suspension & resume ---------------------- */
