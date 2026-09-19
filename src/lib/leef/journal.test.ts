@@ -84,6 +84,26 @@ describe("aggregateEntries", () => {
     const s = aggregateEntries([e({ kind: "decision", decision: "hold" })]);
     expect(s.byStrategy[0]!.strategy).toBe("—");
   });
+
+  it("aggregates gateDrift and venue impact from gate entries", () => {
+    const s = aggregateEntries([
+      e({ kind: "gate", gate: "entry", pass: true, modelOut: 100, expectedOut: 102, venueImpactPct: 0.4 }),
+      e({ kind: "gate", gate: "entry", pass: true, modelOut: 100, expectedOut: 98, venueImpactPct: -0.2 }),
+      e({ kind: "gate", gate: "entry", pass: false, reason: "veto" }), // no drift data
+    ]);
+    expect(s.gateDrift.n).toBe(2);
+    expect(s.gateDrift.meanPct).toBeCloseTo(0); // +2% and −2% cancel
+    expect(s.gateDrift.meanAbsPct).toBeCloseTo(2);
+    expect(s.venueImpact.n).toBe(2);
+    expect(s.venueImpact.meanPct).toBeCloseTo(0.1);
+    expect(s.venueImpact.meanAbsPct).toBeCloseTo(0.3);
+  });
+
+  it("reports zero venue impact when no gate entry carries it", () => {
+    const s = aggregateEntries([e({ kind: "gate", gate: "swap", pass: true, modelOut: 5, expectedOut: 5 })]);
+    expect(s.gateDrift.n).toBe(1);
+    expect(s.venueImpact).toEqual({ n: 0, meanPct: 0, meanAbsPct: 0 });
+  });
 });
 
 describe("toNdjson", () => {

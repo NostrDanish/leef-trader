@@ -5,7 +5,7 @@
  * (last-leg-only for splits), which understated the worst case 100+80 → 80.
  */
 import { describe, expect, it } from "vitest";
-import { combineGuaranteedOut } from "./quote-verify";
+import { combineGuaranteedOut, routeVenueImpactPct } from "./quote-verify";
 import { exactSwapVerdict } from "./exact-gate";
 import type { LeefSnapshot, SwapRoute } from "./types";
 
@@ -70,6 +70,23 @@ describe("combineGuaranteedOut", () => {
   it("three-way split sums all three", () => {
     const legs = [{ minOut: 10 }, { minOut: 20 }, { minOut: 30 }];
     expect(combineGuaranteedOut(legs, true)).toBe(60);
+  });
+});
+
+describe("routeVenueImpactPct (P-B)", () => {
+  it("passes a single leg's venue impact through", () => {
+    expect(routeVenueImpactPct([{ venueImpactPct: 0.42 }])).toBeCloseTo(0.42, 10);
+  });
+
+  it("compounds multi-leg impacts like combineImpact", () => {
+    // 1 − (1−0.01)(1−0.02) = 2.98%.
+    expect(routeVenueImpactPct([{ venueImpactPct: 1 }, { venueImpactPct: 2 }])).toBeCloseTo(2.98, 10);
+  });
+
+  it("ignores legs without a venue impact; undefined when none reported", () => {
+    expect(routeVenueImpactPct([{ venueImpactPct: 0.5 }, {}])).toBeCloseTo(0.5, 10);
+    expect(routeVenueImpactPct([{}, {}])).toBeUndefined();
+    expect(routeVenueImpactPct([])).toBeUndefined();
   });
 });
 

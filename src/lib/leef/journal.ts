@@ -68,6 +68,9 @@ export type JournalEntry = {
    *  measure model-vs-venue drift, the live answer to "is CP discovery good
    *  enough or do we need tick-level CLMM discovery?" */
   modelOut?: number;
+  /** The venue router's own CLMM-exact price impact (percent) on the gated
+   *  quote — impact-level drift evidence, sharper than output-level drift. */
+  venueImpactPct?: number;
 
   /** execution entries */
   action?: "buy" | "sell" | "swap" | "arb" | "rebalance";
@@ -219,6 +222,13 @@ export type EvidenceStats = {
    * tick-level CLMM discovery?" — small |meanAbsPct| = CP suffices.
    */
   gateDrift: { n: number; meanPct: number; meanAbsPct: number };
+  /**
+   * Venue-reported CLMM price impact over gate quotes carrying
+   * `venueImpactPct` (Alcor-exact quotes only). Impact-level companion to
+   * gateDrift: "impact differs by pool/size", the input that decides whether
+   * a local tick-walk quoter (E-3) is worth building.
+   */
+  venueImpact: { n: number; meanPct: number; meanAbsPct: number };
 };
 
 /**
@@ -262,6 +272,7 @@ export function aggregateEntries(entries: JournalEntry[]): EvidenceStats {
   const gateFails = new Map<string, number>();
   const counterfactuals = { trueHolds: 0, falseHolds: 0, neutral: 0 };
   const drift = { n: 0, sumPct: 0, sumAbsPct: 0 };
+  const venueImpact = { n: 0, sumPct: 0, sumAbsPct: 0 };
   let oldestTs: number | null = null;
   let newestTs: number | null = null;
 
@@ -308,6 +319,11 @@ export function aggregateEntries(entries: JournalEntry[]): EvidenceStats {
           drift.sumPct += d;
           drift.sumAbsPct += Math.abs(d);
         }
+        if (e.venueImpactPct != null && Number.isFinite(e.venueImpactPct)) {
+          venueImpact.n += 1;
+          venueImpact.sumPct += e.venueImpactPct;
+          venueImpact.sumAbsPct += Math.abs(e.venueImpactPct);
+        }
         break;
       case "execution":
         // Self-impact follow-up entries are observations, not new executions.
@@ -346,6 +362,11 @@ export function aggregateEntries(entries: JournalEntry[]): EvidenceStats {
       n: drift.n,
       meanPct: drift.n > 0 ? drift.sumPct / drift.n : 0,
       meanAbsPct: drift.n > 0 ? drift.sumAbsPct / drift.n : 0,
+    },
+    venueImpact: {
+      n: venueImpact.n,
+      meanPct: venueImpact.n > 0 ? venueImpact.sumPct / venueImpact.n : 0,
+      meanAbsPct: venueImpact.n > 0 ? venueImpact.sumAbsPct / venueImpact.n : 0,
     },
   };
 }

@@ -226,7 +226,11 @@ export function Evidence() {
               value: gateRate != null ? `${gateRate.toFixed(0)}%` : "—",
               sub:
                 stats && stats.gateDrift.n > 0
-                  ? `model↔venue drift ${stats.gateDrift.meanPct >= 0 ? "+" : ""}${stats.gateDrift.meanPct.toFixed(2)}% (|${stats.gateDrift.meanAbsPct.toFixed(2)}%|) × ${fmtNum(stats.gateDrift.n, { digits: 0 })}`
+                  ? `model↔venue drift ${stats.gateDrift.meanPct >= 0 ? "+" : ""}${stats.gateDrift.meanPct.toFixed(2)}% (|${stats.gateDrift.meanAbsPct.toFixed(2)}%|) × ${fmtNum(stats.gateDrift.n, { digits: 0 })}${
+                      stats.venueImpact.n > 0
+                        ? ` · venue impact ${stats.venueImpact.meanPct.toFixed(2)}% × ${fmtNum(stats.venueImpact.n, { digits: 0 })}`
+                        : ""
+                    }`
                   : "exact-quote gate",
             },
             {
