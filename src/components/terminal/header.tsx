@@ -1,5 +1,5 @@
 import { ArrowUpRight, KeyRound, RefreshCw, ShieldAlert } from "lucide-react";
-import { LoginArea } from "@/components/auth/LoginArea";
+import { LazyLoginArea } from "@/components/auth/LazyLoginArea";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { marketStats } from "@/lib/leef/analytics";
@@ -176,7 +176,7 @@ export function TerminalHeader({
               <ArrowUpRight className="size-3.5" />
             </a>
           </Button>
-          <LoginArea className="hidden max-w-36 lg:inline-flex" />
+          <LazyLoginArea className="hidden max-w-36 lg:inline-flex" />
         </div>
       </div>
     </header>

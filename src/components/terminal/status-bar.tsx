@@ -6,6 +6,7 @@ import type { LeefSnapshot, RankedPool } from "@/lib/leef/types";
 import type { LiveTickState } from "./use-live-tick";
 import { useMarketEngine } from "@/hooks/useMarketEngine";
 import { cn } from "@/lib/utils";
+import { VersionBanner } from "./version-banner";
 
 export function StatusBar({
   snap,
@@ -38,6 +39,7 @@ export function StatusBar({
 
   return (
     <div className="border-b border-border bg-surface">
+      <VersionBanner />
       <div className="mx-auto flex max-w-7xl flex-col gap-2 px-4 py-2 text-xs text-muted-foreground sm:flex-row sm:items-center sm:justify-between sm:px-6">
         <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
           <span className="relative flex size-2">

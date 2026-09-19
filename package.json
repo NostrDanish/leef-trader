@@ -8,6 +8,7 @@
   },
   "scripts": {
     "dev": "vite",
+    "prebuild": "node tools/seed-snapshot.mjs",
     "build": "vite build -l error && cp dist/index.html dist/404.html && echo 'Project built successfully!'",
     "lint": "eslint --cache",
     "typecheck": "tsc --noEmit",
