@@ -43,6 +43,7 @@ import {
 import { classifyRegime, dangerScore } from "@/lib/leef/regime";
 import { maybeAutoReview } from "@/lib/leef/ai-review";
 import { refreshExecutionState } from "@/lib/market/execution-state";
+import { aggregateFlowRisk, swapFlow } from "@/lib/market/swap-flow";
 import { governTrade, portfolioState } from "@/lib/market/portfolio-governor";
 import type { LeefSnapshot, SwapRoute } from "@/lib/leef/types";
 import { parseAssetAmount, type AlcorRouteQuote } from "@/lib/wallet/alcor-route";
@@ -435,6 +436,11 @@ async function runBotOnceInner(
     recentFailures: b.decisions.filter(
       (d) => d.kind === "error" && isEconomicFailureReason(d.reason) && Date.now() - Date.parse(d.t) < 600_000,
     ).length,
+    // E-1 swap flow → danger score, gated by the terminal-store kill-switch.
+    // Risk context only: flow can raise danger, it can NEVER create an entry.
+    flow: useTerminal.getState().flowGuardEnabled
+      ? aggregateFlowRisk(swapFlow.tracker.allStates(Date.now()), risk.maxQuoteAgeSec * 1000)
+      : null,
     force: opts?.force ?? null,
   });
 

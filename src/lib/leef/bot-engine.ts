@@ -17,7 +17,7 @@ import {
   type GrowthTarget,
 } from "./growth-engine";
 import { realizedVolPerSec, usdPriceOf } from "./cost-model";
-import { classifyRegime, dangerScore, regimeWeight } from "./regime";
+import { classifyRegime, dangerScore, regimeWeight, type FlowRiskContext } from "./regime";
 import { balanceForIdentifier, markPortfolioUsd } from "@/lib/wallet/balances";
 import {
   decorate,
@@ -366,6 +366,11 @@ export type BotInput = {
   growthMode?: GrowthMode;
   /** Execution errors in the recent window — feeds the danger score. */
   recentFailures?: number;
+  /**
+   * Swap-flow risk context (E-1, feature-flagged by the caller). Risk only:
+   * it may raise the danger score; it NEVER creates an entry.
+   */
+  flow?: FlowRiskContext | null;
 };
 
 /* ------------------------------------------------------------------ */
@@ -811,6 +816,7 @@ export function evaluateBot(input: BotInput): Decision {
     dislocationPct: regime.dislocationPct,
     liquidityUsd: Math.max(0, ...snap.pools.map((p) => p.tvlUsd)),
     recentFailures: input.recentFailures ?? 0,
+    flow: input.flow ?? null,
   });
   // Hard veto lives at the ENTRY points below — never before the exit block,
   // so stop-losses and take-profits fire even in a danger market.

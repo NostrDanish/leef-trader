@@ -52,6 +52,21 @@ export type RegimeInput = {
 
 export type DangerBand = "normal" | "cautious" | "reduced" | "selective" | "hold";
 
+/**
+ * Swap-flow risk context (audit E-1). Produced by market/swap-flow.ts from
+ * the Hyperion logswap stream. Flow is RISK CONTEXT ONLY: it can raise the
+ * danger score (veto / size-down entries, tighten freshness); it never
+ * lowers it and it NEVER creates an entry. Absent = neutral (0 points).
+ */
+export type FlowRiskContext = {
+  /** Age of the most recent swap on a traded book (ms). null = none seen. */
+  lastSwapAgeMs: number | null;
+  /** Largest single-swap book move inside the quote window, percent. */
+  lastMovePct: number;
+  /** Worst one-sided imbalance inside the window, signed percent. */
+  imbalancePct: number;
+};
+
 export type DangerVerdict = {
   /** 0–100. */
   score: number;
@@ -81,6 +96,8 @@ export function dangerScore(opts: {
   liquidityUsd?: number;
   /** Execution errors in the recent window (RPC/quote/venue failures). */
   recentFailures?: number;
+  /** Swap-flow risk context (E-1). Neutral when absent; can only ADD points. */
+  flow?: FlowRiskContext | null;
 }): DangerVerdict {
   const explain: string[] = [];
   let score = 0;
@@ -114,6 +131,25 @@ export function dangerScore(opts: {
   const failPts = Math.min(15, fails * 5);
   if (failPts > 0) explain.push(`${fails} recent error${fails === 1 ? "" : "s"} +${failPts}`);
   score += failPts;
+
+  // Swap flow (E-1) — veto-only risk evidence. A swap that just moved the
+  // book is proof our quote may already be stale; one-sided bursts mark a
+  // tape we should not chase. Flow points are strictly additive: flow can
+  // hold or shrink an entry, never create one.
+  if (opts.flow) {
+    const age = opts.flow.lastSwapAgeMs;
+    const move = Math.abs(opts.flow.lastMovePct);
+    if (age != null && move >= 1) {
+      const movePts = Math.min(20, Math.round((move / 3) * 20));
+      score += movePts;
+      explain.push(`book moved ${move.toFixed(1)}% ${(age / 1000).toFixed(0)}s ago +${movePts}`);
+    }
+    const imb = Math.abs(opts.flow.imbalancePct);
+    if (imb >= 80) {
+      score += 10;
+      explain.push(`one-sided flow ${imb.toFixed(0)}% +10`);
+    }
+  }
 
   score = Math.min(100, score);
   const band: DangerBand =
