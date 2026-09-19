@@ -6,7 +6,9 @@ import {
   assertActionPolicy,
   memoMinOutSum,
   parseSwapMemo,
+  swapFloorViolation,
   type PolicyAction,
+  type SwapFloor,
 } from "./policy";
 import { delegateBwData } from "./antelope";
 
@@ -150,6 +152,15 @@ describe("assertActionPolicy", () => {
         ACCOUNT,
       ),
     ).toThrow(/min-out/);
+  });
+
+  it("rejects a swap memo with a zero min-out — no on-chain guarantee", () => {
+    expect(() =>
+      assertActionPolicy(
+        [transfer({ memo: swapMemo("0.00000000 WAX@eosio.token") })],
+        ACCOUNT,
+      ),
+    ).toThrow(/zero min-out/);
   });
 
   it("rejects arbitrary contract actions", () => {
@@ -320,6 +331,129 @@ describe("arbFloorViolation", () => {
       account: ACCOUNT,
     });
     expect(violation).toMatch(/failed validation/);
+  });
+});
+
+describe("swapFloorViolation (non-arb Alcor swap floor)", () => {
+  const WAX = { symbol: "WAX", contract: "eosio.token", decimals: 8 };
+  const LEEF = { symbol: "LEEF", contract: "leefmaincorp", decimals: 4 };
+  const floor = (over: Partial<SwapFloor> = {}): SwapFloor => ({
+    amountIn: 10,
+    expectedOut: 240_000,
+    slippagePct: 0.5,
+    tokenIn: WAX,
+    tokenOut: LEEF,
+    ...over,
+  });
+  const leg = (waxIn: string, minLeef = "239000.0000") => ({
+    input: `${waxIn} WAX`,
+    memo: swapMemo(`${minLeef} LEEF@leefmaincorp`),
+  });
+
+  it("passes a legitimate quote (min-outs clear the slippage floor)", () => {
+    // 240000 × (1 − 0.5%) = 238800; the memo guarantees 239000.
+    expect(
+      swapFloorViolation({ floor: floor(), legs: [leg("10.00000000")], account: ACCOUNT }),
+    ).toBeNull();
+  });
+
+  it("passes split legs whose min-outs sum over the floor", () => {
+    expect(
+      swapFloorViolation({
+        floor: floor(),
+        legs: [leg("6.00000000", "143400.0000"), leg("4.00000000", "95600.0000")],
+        account: ACCOUNT,
+      }),
+    ).toBeNull();
+  });
+
+  it("rejects a min-out-0 memo", () => {
+    expect(
+      swapFloorViolation({
+        floor: floor(),
+        legs: [leg("10.00000000", "0.0000")],
+        account: ACCOUNT,
+      }),
+    ).toMatch(/zero min-out/);
+  });
+
+  it("rejects min-outs below the slippage floor", () => {
+    // 237000 < 238800 required.
+    expect(
+      swapFloorViolation({
+        floor: floor(),
+        legs: [leg("10.00000000", "237000.0000")],
+        account: ACCOUNT,
+      }),
+    ).toMatch(/slippage floor/);
+  });
+
+  it("rejects an inflated input (router pulling more than approved)", () => {
+    expect(
+      swapFloorViolation({
+        floor: floor(),
+        legs: [leg("1000000.00000000", "999999.0000")],
+        account: ACCOUNT,
+      }),
+    ).toMatch(/pull/);
+  });
+
+  it("rejects a leg input in the wrong token", () => {
+    expect(
+      swapFloorViolation({
+        floor: floor(),
+        legs: [{ input: "10.0000 LEEF", memo: swapMemo("239000.0000 LEEF@leefmaincorp") }],
+        account: ACCOUNT,
+      }),
+    ).toMatch(/isn't a WAX amount/);
+  });
+
+  it("rejects a leg whose min-out token isn't the route's tokenOut", () => {
+    expect(
+      swapFloorViolation({
+        floor: floor(),
+        legs: [{ input: "10.00000000 WAX", memo: swapMemo("2390.00000000 WAX@eosio.token") }],
+        account: ACCOUNT,
+      }),
+    ).toMatch(/isn't LEEF@leefmaincorp/);
+  });
+
+  it("rejects malformed leg memos", () => {
+    expect(
+      swapFloorViolation({
+        floor: floor(),
+        legs: [{ input: "10.00000000 WAX", memo: "trust me bro" }],
+        account: ACCOUNT,
+      }),
+    ).toMatch(/failed validation/);
+  });
+
+  it("the firewall enforces the floor when the context vouches the economics", () => {
+    const ctx = { swapFloor: floor() };
+    // Legitimate: memo guarantees 239000 ≥ 238800 on a 10 WAX spend.
+    expect(() =>
+      assertActionPolicy(
+        [transfer({ quantity: "10.00000000 WAX", memo: swapMemo("239000.0000 LEEF@leefmaincorp") })],
+        ACCOUNT,
+        ctx,
+      ),
+    ).not.toThrow();
+    // Inflated input: 1,000,000 WAX transfer against a 10 WAX approval.
+    expect(() =>
+      assertActionPolicy(
+        [transfer({ quantity: "1000000.00000000 WAX" })],
+        ACCOUNT,
+        ctx,
+      ),
+    ).toThrow(/pull/);
+    // Min-out below the floor.
+    expect(() =>
+      assertActionPolicy(
+        [transfer({ memo: swapMemo("100.0000 LEEF@leefmaincorp") })],
+        ACCOUNT,
+        ctx,
+      ),
+    ).toThrow(/slippage floor/);
   });
 });
 

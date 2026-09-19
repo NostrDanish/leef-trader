@@ -337,9 +337,9 @@ export async function runRebalancer(snap: LeefSnapshot, opts?: { force?: boolean
       const feeLegs: BatchLeg[] = [];
       let feeTotalUsd = 0;
       for (const leg of chunk) {
-        const g =
-          parseAssetAmount(leg.quote!.minReceived) ||
-          parseAssetAmount(leg.quote!.output) * (1 - p.settings.slippage / 100);
+        // Fail closed: the fee rides on the REAL on-chain guarantee only;
+        // a missing minReceived is never replaced by a fabricated floor.
+        const g = parseAssetAmount(leg.quote!.minReceived);
         const fee = platformFeeOn(g, leg.to);
         if (fee) {
           feeLegs.push({

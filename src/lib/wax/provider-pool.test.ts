@@ -3,6 +3,7 @@ import { FetchJsonError } from "@/lib/fetchJson";
 import type { WaxEndpoint } from "./endpoints";
 import {
   BroadcastTimeoutError,
+  isAmbiguousBroadcastError,
   ProviderPool,
   TRADING_MAX_BLOCK_LAG,
   tradingEligibleOf,
@@ -186,6 +187,67 @@ describe("transaction broadcast safety", () => {
       pool.pushTransaction("/v1/chain/push_transaction", { signatures: [] }),
     ).rejects.toBeInstanceOf(BroadcastTimeoutError);
     expect(submissions).toBe(1);
+  });
+
+  /** Broadcast safety for ambiguous HTTP answers (M1). */
+  const httpBroadcastCase = async (status: number, body: string) => {
+    let submissions = 0;
+    const fetcher = vi.fn(async (url: string) => {
+      if (url.includes("/v1/chain/get_info")) return infoBody(500);
+      submissions += 1;
+      throw new FetchJsonError(`HTTP ${status}: ${body}`, status, {
+        operation: "WAX RPC push_transaction",
+        endpoint: "https://a.test/v1/chain/push_transaction",
+        status,
+        body,
+      });
+    });
+    const pool = new ProviderPool({ kind: "rpc", fetcher, endpoints: eps(["https://a.test", "https://b.test"]) });
+    await pool.getInfo();
+    const outcome = pool.pushTransaction("/v1/chain/push_transaction", { signatures: [] });
+    return { outcome, submissions: () => submissions };
+  };
+
+  it("an edge-proxy 429 (no nodeos error body) is ambiguous — UNKNOWN, never a definitive failure", async () => {
+    const { outcome, submissions } = await httpBroadcastCase(429, "<html>rate limited</html>");
+    await expect(outcome).rejects.toBeInstanceOf(BroadcastTimeoutError);
+    expect(submissions()).toBe(1);
+  });
+
+  it("an edge-proxy 503 page is ambiguous — the request may have been forwarded first", async () => {
+    const { outcome, submissions } = await httpBroadcastCase(503, "503 Service Unavailable (edge)");
+    await expect(outcome).rejects.toBeInstanceOf(BroadcastTimeoutError);
+    expect(submissions()).toBe(1);
+  });
+
+  it("a 'duplicate transaction' 500 is ambiguous — the tx LANDED", async () => {
+    const { outcome, submissions } = await httpBroadcastCase(
+      500,
+      '{"code":500,"message":"Internal Service Error","error":{"what":"duplicate transaction"}}',
+    );
+    await expect(outcome).rejects.toBeInstanceOf(BroadcastTimeoutError);
+    expect(submissions()).toBe(1);
+  });
+
+  it("a real nodeos rejection (eosio_assert error body) stays a definitive failure", async () => {
+    const { outcome, submissions } = await httpBroadcastCase(
+      500,
+      '{"code":500,"message":"Internal Service Error","error":{"code":3050003,"name":"eosio_assert_message_exception","what":"eosio_assert_message assertion failure","details":[{"message":"assertion failure with message: min out not met"}]}}',
+    );
+    await expect(outcome).rejects.toThrow(FetchJsonError);
+    await expect(outcome).rejects.not.toBeInstanceOf(BroadcastTimeoutError);
+    expect(submissions()).toBe(1);
+  });
+
+  it("isAmbiguousBroadcastError classifies bodies directly", () => {
+    const mk = (status: number, body?: string) =>
+      new FetchJsonError("x", status, body == null ? undefined : {
+        operation: "op", endpoint: "ep", status, body,
+      });
+    expect(isAmbiguousBroadcastError(mk(429, "<html>edge</html>"))).toBe(true);
+    expect(isAmbiguousBroadcastError(mk(503, ""))).toBe(true);
+    expect(isAmbiguousBroadcastError(mk(500, '…"error":{"what":"duplicate transaction"}…'))).toBe(true);
+    expect(isAmbiguousBroadcastError(mk(500, '{"code":500,"error":{"code":3050003}}'))).toBe(false);
   });
 });
 

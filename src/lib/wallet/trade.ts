@@ -222,7 +222,15 @@ export async function executeSwap(opts: {
           decimalsIn: tin.decimals,
         });
         expectedOut += parseAssetAmount(quote.output);
-        guaranteedOut += parseAssetAmount(quote.minReceived) || parseAssetAmount(quote.output) * (1 - opts.slippage / 100);
+        // Fail closed: never fabricate the slice's guarantee from its
+        // expected output — a missing minReceived means no on-chain floor.
+        const sliceGuaranteed = parseAssetAmount(quote.minReceived);
+        if (!(sliceGuaranteed > 0)) {
+          throw new Error(
+            `Alcor quote for the ${sl.tokenIn}→${sl.tokenOut} slice carried no min-out guarantee — not signing`,
+          );
+        }
+        guaranteedOut += sliceGuaranteed;
         for (const s of quote.swaps) {
           legs.push({
             contract: tin.contract,

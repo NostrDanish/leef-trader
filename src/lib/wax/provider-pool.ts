@@ -212,6 +212,26 @@ function isTimeoutError(err: unknown): boolean {
   return name === "TimeoutError" || name === "AbortError" || /timeout|aborted/i.test(msg);
 }
 
+/**
+ * Is this broadcast HTTP error AMBIGUOUS — i.e. the transaction may have
+ * landed? nodeos answers real rejections with a JSON
+ * `{"code":…,"error":{…}}` body — those are definitive. But:
+ *
+ *  - a body containing "duplicate transaction" means the tx DID land
+ *    (Antelope dedupes by txid), and
+ *  - edge-proxy answers (429/503/5xx HTML or text pages) carry no nodeos
+ *    error object — the proxy may have forwarded the request upstream
+ *    before its own response path died.
+ *
+ * Those must be reconciled by the known txid, never treated as a definitive
+ * failure that unlocks the capital for a re-trade.
+ */
+export function isAmbiguousBroadcastError(err: FetchJsonError): boolean {
+  const body = err.context?.body ?? "";
+  if (/duplicate transaction/i.test(body)) return true; // the tx LANDED
+  return !/"error"\s*:/.test(body); // no nodeos error object → not definitive
+}
+
 export class ProviderPool {
   private records = new Map<string, HealthRecord>();
   private clock: () => number;
@@ -517,16 +537,22 @@ export class ProviderPool {
       return res;
     } catch (err) {
       this.observeFail(target.ep.url, err);
-      // ANY non-HTTP/network failure is ambiguous: the request may have
-      // reached the node before the response path died. Surface it as a
-      // broadcast timeout so the known txid is reconciled, never re-sent.
-      if (!(err instanceof FetchJsonError) || isTimeoutError(err)) {
+      // ANY failure without a definitive nodeos rejection is ambiguous: the
+      // request may have reached the node (or landed outright, for a
+      // "duplicate transaction" body) before the response path died.
+      // Surface it as a broadcast timeout so the known txid is reconciled
+      // and the capital stays locked — never re-sent, never unlocked.
+      if (
+        !(err instanceof FetchJsonError) ||
+        isTimeoutError(err) ||
+        isAmbiguousBroadcastError(err)
+      ) {
         throw new BroadcastTimeoutError(
           `Broadcast to ${target.ep.url} had no definitive response — the transaction may still land; not resubmitting`,
           target.ep.url,
         );
       }
-      throw err; // definitive HTTP answer (safe for chain.ts to classify)
+      throw err; // definitive nodeos rejection (safe for chain.ts to classify)
     }
   }
 

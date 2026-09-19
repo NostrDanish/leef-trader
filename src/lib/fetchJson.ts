@@ -11,7 +11,8 @@
  *   broadcast — the "exactly one submission" invariant forbids it.
  * - At most 4 in-flight requests per host; the rest queue. Unthrottled bursts
  *   (e.g. 80 pool refreshes at once) are what trip nginx rate limits.
- * - On 429/503 the host gets a cooldown and the caller retries once after it.
+ * - On 429/503 the host gets a cooldown and the caller retries once after
+ *   it — but only for bodyless GETs; a POST is never re-submitted.
  */
 const CORS_PROXY = "https://proxy.shakespeare.diy/?url=";
 
@@ -253,6 +254,12 @@ async function callHost(
   } catch (err) {
     const status = err instanceof FetchJsonError ? err.status : undefined;
     if (status === 429 || status === 503) {
+      // Only idempotent, bodyless GETs may auto-retry. Re-POSTing an
+      // identical payload (worst case: push_transaction) after a 429/503
+      // breaks the "exactly one submission" invariant — the first attempt
+      // may have landed; a duplicate-response then looks like a failure.
+      const method = (init.method ?? "GET").toUpperCase();
+      if (method !== "GET" || init.body != null) throw err;
       // Back off the whole host with jitter; bursts cluster otherwise.
       const retryable = (hostCooldown.get(host) ?? 0) < Date.now() + 5_000;
       hostCooldown.set(host, Date.now() + 10_000 + Math.random() * 5_000);
