@@ -23,21 +23,53 @@ export type ExecutionMarketState = {
   source: "cache" | "onchain";
 };
 
-function criticalIds(snap: LeefSnapshot, route?: SwapRoute | null): number[] {
-  const routeIds = route?.poolIds.filter((id) => id < 1_000_000) ?? [];
-  const waxPriceIds = snap.aux
+/* ------------------------------------------------------------------ */
+/* The ONE hot-pool definition (P-C)                                   */
+/* ------------------------------------------------------------------ */
+
+/** Top LEEF books (volume, then TVL) that must always be fresh to trade. */
+const HOT_TOP_LEEF = 8;
+/** WAX-quoted LEEF books — the WAX/LEEF price references. */
+const HOT_WAX_QUOTED_LEEF = 4;
+/** Deepest WAX-side aux books — the WAX/stable price references. */
+const HOT_WAX_AUX = 4;
+
+/**
+ * One definition of "what must be fresh to trade", consumed by all three
+ * hot-pool readers (previously three divergent sets — audit gap D4):
+ *
+ *   - market-engine's on-chain spot loop (patches hot books between API pulls)
+ *   - snapshot's tracked-hot API refresh (also unions its tracked registry ids
+ *     on top — registry maintenance, not freshness semantics)
+ *   - the gate's route-critical refresh below (passes `route`; route pool ids
+ *     are ALWAYS in the set, venue-namespaced ids ≥ 1_000_000 excluded — they
+ *     are not Alcor on-chain rows)
+ *
+ * `snap` is structurally `Pick<LeefSnapshot, "pools" | "aux">` so snapshot's
+ * loader can call it before a full snapshot exists.
+ */
+export function hotPoolIds(
+  snap: Pick<LeefSnapshot, "pools" | "aux">,
+  opts?: { route?: SwapRoute | null },
+): number[] {
+  const routeIds = opts?.route?.poolIds.filter((id) => id < 1_000_000) ?? [];
+  const rankedLeef = [...snap.pools].sort(
+    (a, b) => b.volume24Usd - a.volume24Usd || b.tvlUsd - a.tvlUsd,
+  );
+  const topLeef = rankedLeef.slice(0, HOT_TOP_LEEF).map((p) => p.id);
+  const waxQuoted = rankedLeef
+    .filter((p) => p.pair.symbol.toUpperCase() === "WAX")
+    .slice(0, HOT_WAX_QUOTED_LEEF)
+    .map((p) => p.id);
+  const waxAux = snap.aux
     .filter(
-      (p) => p.tokenA.symbol === "WAX" || p.tokenB.symbol === "WAX",
+      (p) =>
+        p.tokenA.symbol.toUpperCase() === "WAX" || p.tokenB.symbol.toUpperCase() === "WAX",
     )
     .sort((a, b) => b.tvlUsd - a.tvlUsd)
-    .slice(0, 2)
+    .slice(0, HOT_WAX_AUX)
     .map((p) => p.id);
-  const mainLeefWax = snap.pools
-    .filter((p) => p.pair.symbol === "WAX")
-    .sort((a, b) => b.tvlUsd - a.tvlUsd)
-    .slice(0, 1)
-    .map((p) => p.id);
-  return [...new Set([...routeIds, ...waxPriceIds, ...mainLeefWax])];
+  return [...new Set([...routeIds, ...waxQuoted, ...topLeef, ...waxAux])];
 }
 
 export function executionStateFresh(snap: LeefSnapshot, maxAgeMs = 8_000, now = Date.now()): boolean {
@@ -62,7 +94,7 @@ export async function refreshExecutionState(
       source: "cache",
     };
   }
-  const ids = criticalIds(snap, route);
+  const ids = hotPoolIds(snap, { route });
   const rows = await fetchOnchainPools(ids);
   const nextLeef: LeefPool[] = [...snap.pools];
   const nextAux: AuxPool[] = [...snap.aux];

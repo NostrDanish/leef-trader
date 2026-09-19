@@ -18,6 +18,8 @@ export type MarketEvents = {
   health: Record<string, never>;
   /** The browser was suspended and the engine resynced. */
   resume: { gapMs: number };
+  /** Swap-flow rolling state refreshed (E-1 logswap stream, market data). */
+  flow: { states: import("./swap-flow").PoolFlowState[] };
 };
 
 type Handler<K extends keyof MarketEvents> = (payload: MarketEvents[K]) => void;
