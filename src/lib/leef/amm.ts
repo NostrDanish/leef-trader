@@ -51,6 +51,51 @@ export function quoteConstantProduct(
   return { amountOut, priceImpact, feePaid, executionPrice, spotPrice };
 }
 
+/**
+ * Uniswap-V3 virtual constant-product reserves for an Alcor CLMM pool:
+ *   rx = L·2⁶⁴/√P  (token A, raw units)
+ *   ry = L·√P/2⁶⁴  (token B, raw units)
+ * Constant-product over THESE is anchored at the tick price — exact at the
+ * margin, and exact for any fill that stays inside the current tick range.
+ * Raw pool balances are NOT CP reserves for concentrated liquidity (level
+ * error measured at +56.8%/−36.2% on pool 217 — ALCOR_COMPARATIVE_AUDIT §3.3).
+ * Null when the pool carries no usable CLMM state (L ≤ 0 or √P missing);
+ * callers fall back to raw reserves (exact for Defibox/Taco true-CP pools).
+ */
+export function virtualReserves(pool: {
+  liquidity?: string;
+  sqrtPriceX64?: string;
+}): { rx: bigint; ry: bigint } | null {
+  if (!pool.liquidity || !pool.sqrtPriceX64) return null;
+  try {
+    const L = BigInt(pool.liquidity);
+    const sqrtP = BigInt(pool.sqrtPriceX64);
+    if (L <= 0n || sqrtP <= 0n) return null;
+    const Q64 = 1n << 64n;
+    const rx = (L * Q64) / sqrtP;
+    const ry = (L * sqrtP) / Q64;
+    if (rx <= 0n || ry <= 0n) return null;
+    return { rx, ry };
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Human-unit virtual reserves for the leef/pair sides of a LeefPool
+ * (`leefIsA` maps the A/B sides), or null when the pool lacks CLMM state.
+ */
+export function virtualLeefPairReserves(
+  pool: Pick<LeefPool, "liquidity" | "sqrtPriceX64" | "leef" | "pair" | "leefIsA">,
+): { leef: number; pair: number } | null {
+  const v = virtualReserves(pool);
+  if (!v) return null;
+  const leef = Number(pool.leefIsA ? v.rx : v.ry) / 10 ** pool.leef.decimals;
+  const pair = Number(pool.leefIsA ? v.ry : v.rx) / 10 ** pool.pair.decimals;
+  if (!Number.isFinite(leef) || !Number.isFinite(pair) || leef <= 0 || pair <= 0) return null;
+  return { leef, pair };
+}
+
 export function q64Price(
   sqrtPriceX64: string | undefined,
   decA: number,

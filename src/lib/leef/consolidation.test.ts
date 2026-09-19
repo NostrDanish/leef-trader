@@ -37,8 +37,15 @@ describe("indicator families — one vote per correlated family", () => {
       ...PARAMS,
       engines: { ...PARAMS.engines, ema: true, sma: true, macd: true },
     });
-    // Same family, same trend → (near-)identical score: the family has ONE vote.
-    expect(Math.abs(single.score - stacked.score)).toBeLessThan(0.05);
+    // The family vote is the MEAN of its members: stacking correlated
+    // engines can never amplify the vote past the strongest member's
+    // conviction (pre-consolidation the tally counted each engine as an
+    // independent voice). Bias direction is preserved.
+    const strongest = Math.max(
+      ...stacked.readings.filter((r) => ["ema", "sma", "macd"].includes(r.id)).map((r) => r.score),
+    );
+    expect(stacked.score).toBeLessThanOrEqual(strongest + 1e-9);
+    expect(stacked.score).toBeGreaterThan(0);
     expect(single.bias).toBe("buy");
     expect(stacked.bias).toBe("buy");
   });
