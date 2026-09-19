@@ -206,7 +206,16 @@ export async function verifyExecutableRoute(opts: {
       });
       const expectedOut = parseAssetAmount(quote.output);
       if (!(expectedOut > 0)) throw new TradeError("ROUTE_DISAPPEARED", "Alcor returned no output");
-      const minOut = parseAssetAmount(quote.minReceived) || expectedOut * (1 - opts.slippagePct / 100);
+      // Fail closed: a missing/unparseable minReceived means the quote has NO
+      // enforceable floor. Never invent one from expectedOut — the gate, fee
+      // and chained-leg sizing would run on a fabricated guarantee.
+      const minOut = parseAssetAmount(quote.minReceived);
+      if (!(minOut > 0)) {
+        throw new TradeError(
+          "QUOTE_FAILURE",
+          "Alcor quote carried no min-out guarantee (minReceived missing or zero)",
+        );
+      }
       const venueImpactPct = parseVenueImpactPct(quote.priceImpact);
       return {
         expectedOut,
@@ -265,13 +274,22 @@ export async function verifyExecutableRoute(opts: {
       if (!(amountOut > 0)) {
         throw new TradeError("ROUTE_DISAPPEARED", "Alcor route leg returned no output");
       }
+      // Fail closed on a missing/zero minReceived (see the fast path above) —
+      // the guarantee is never fabricated from the expected output.
+      const legMinOut = parseAssetAmount(quote.minReceived);
+      if (!(legMinOut > 0)) {
+        throw new TradeError(
+          "QUOTE_FAILURE",
+          "Alcor route leg carried no min-out guarantee (minReceived missing or zero)",
+        );
+      }
       verified.push({
         venue: "alcor",
         trust: "executable",
         exactness: "exact",
         amountIn,
         amountOut,
-        minOut: parseAssetAmount(quote.minReceived) || amountOut * (1 - slip),
+        minOut: legMinOut,
         venueImpactPct: parseVenueImpactPct(quote.priceImpact),
         alcor: quote,
       });

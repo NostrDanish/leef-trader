@@ -112,9 +112,10 @@ export function chunkSweepLegs(
   for (const leg of legs) {
     // Every conversion carries its platform-fee action when it's above dust —
     // count it toward the per-tx CPU budget.
-    const g = leg.quote
-      ? parseAssetAmount(leg.quote.minReceived) || parseAssetAmount(leg.quote.output)
-      : 0;
+    // Fee planning uses the REAL guarantee only — a quote without a
+    // parseable minReceived has no on-chain floor, so inventing one from the
+    // expected output is forbidden (fail closed).
+    const g = leg.quote ? parseAssetAmount(leg.quote.minReceived) : 0;
     const feeActions =
       leg.quote && platformFeeOn(g, leg.to) ? 1 : 0;
     const actions = (leg.quote?.swaps.length ?? 1) + feeActions;

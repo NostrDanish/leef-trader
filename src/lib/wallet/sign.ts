@@ -31,6 +31,7 @@ import {
   arbFloorViolation,
   assertActionPolicy,
   memoMinOutSum,
+  swapFloorViolation,
   type PolicyContext,
 } from "./policy";
 import {
@@ -119,8 +120,32 @@ async function buildTransfers(opts: {
         `Output rounds to 0 ${tokenOut.symbol} — trade too small to execute`,
       );
     }
-    const guaranteedOut =
-      parseAssetAmount(quote.minReceived) || expectedOut * (1 - opts.slippagePct / 100);
+    // Sign-time guarantee check on the ACTUAL memos being signed: every leg's
+    // on-chain min-out must parse and be > 0, the summed min-outs must clear
+    // the slippage floor under the quote, and the legs may not pull more than
+    // the approved amountIn. The quote's own numbers are not proof.
+    const floorViolation = swapFloorViolation({
+      floor: {
+        amountIn: opts.amountIn,
+        expectedOut,
+        slippagePct: opts.slippagePct,
+        tokenIn,
+        tokenOut,
+      },
+      legs: transfers.map((t) => ({ input: t.quantity, memo: t.memo })),
+      account: opts.account,
+    });
+    if (floorViolation) throw new TradeError("QUOTE_FAILURE", floorViolation);
+    // A missing/unparseable minReceived fails closed — it is never invented
+    // from expectedOut (that would fabricate the guarantee the fee and the
+    // gate then rely on).
+    const guaranteedOut = parseAssetAmount(quote.minReceived);
+    if (!(guaranteedOut > 0)) {
+      throw new TradeError(
+        "QUOTE_FAILURE",
+        "Alcor quote carried no parseable minReceived — refusing to sign without an on-chain floor",
+      );
+    }
     return { transfers, expectedOut, guaranteedOut };
   }
 
@@ -312,6 +337,21 @@ export async function signAndPushSwap(opts: {
   // transaction (a reverted trade reverts the fee too). Precision-floored;
   // skipped when it rounds to zero units.
   const tokenOut = metaOf(opts.route.tokenOut, opts.snap);
+  const tokenIn = metaOf(opts.route.tokenIn, opts.snap);
+  // Firewall-level economic floor for pure Alcor swaps (mixed/cycle routes
+  // chain through venue-verified leg min-outs instead — see buildTransfers).
+  const isCycle =
+    opts.route.tokenIn.toUpperCase() === opts.route.tokenOut.toUpperCase();
+  const swapFloor =
+    allAlcor(opts.route) && !isCycle
+      ? {
+          amountIn: opts.amountIn,
+          expectedOut,
+          slippagePct: opts.slippagePct,
+          tokenIn,
+          tokenOut,
+        }
+      : undefined;
   const fee = platformFeeOn(guaranteedOut, tokenOut);
   const feeTransfers = fee
     ? [
@@ -346,6 +386,7 @@ export async function signAndPushSwap(opts: {
       platformFee: fee
         ? { maxByKey: { [`${fee.token.symbol.toUpperCase()}@${fee.token.contract}`]: fee.amount } }
         : undefined,
+      swapFloor,
     },
   });
   return {

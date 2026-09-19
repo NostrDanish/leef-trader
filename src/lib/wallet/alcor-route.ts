@@ -134,6 +134,11 @@ export async function fetchAlcorRoute(opts: {
   const raw = await fetchJson(`${ROUTER}?${params.toString()}`, {
     timeoutMs: opts.timeoutMs ?? 5_000,
     priority: "high",
+    // Every caller of this router is on an EXECUTION path (gate-approved
+    // quotes get signed). Never fetch them through the CORS proxy: a
+    // malicious proxy could rewrite output/minReceived/memos — direct or
+    // fail closed.
+    directOnly: true,
     context: {
       operation: "Alcor router quote",
       endpoint: ROUTER,

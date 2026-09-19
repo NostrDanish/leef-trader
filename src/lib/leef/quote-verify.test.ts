@@ -4,8 +4,8 @@
  * the FINAL leg's min-out. A caller re-deriving this by hand got it wrong
  * (last-leg-only for splits), which understated the worst case 100+80 → 80.
  */
-import { describe, expect, it } from "vitest";
-import { combineGuaranteedOut, routeVenueImpactPct } from "./quote-verify";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { combineGuaranteedOut, routeVenueImpactPct, verifyExecutableRoute } from "./quote-verify";
 import { exactSwapVerdict } from "./exact-gate";
 import type { LeefSnapshot, SwapRoute } from "./types";
 
@@ -87,6 +87,93 @@ describe("routeVenueImpactPct (P-B)", () => {
     expect(routeVenueImpactPct([{ venueImpactPct: 0.5 }, {}])).toBeCloseTo(0.5, 10);
     expect(routeVenueImpactPct([{}, {}])).toBeUndefined();
     expect(routeVenueImpactPct([])).toBeUndefined();
+  });
+});
+
+describe("verifyExecutableRoute — minReceived fail-closed (C1)", () => {
+  const ACCOUNT = "trader.leef";
+
+  function routerQuote(minReceived: string) {
+    return {
+      route: [1159],
+      memo: `swapexactin#1159#${ACCOUNT}#${minReceived || "238000.0000 LEEF"}@leefmaincorp#0`,
+      swaps: [
+        {
+          input: "10.00000000 WAX",
+          route: [1159],
+          output: "240000.0000 LEEF",
+          percent: 100,
+          memo: `swapexactin#1159#${ACCOUNT}#238000.0000 LEEF@leefmaincorp#0`,
+          maxSent: "10.00000000 WAX",
+          minReceived: "238000.0000 LEEF",
+        },
+      ],
+      input: "10.00000000 WAX",
+      output: "240000.0000 LEEF",
+      minReceived,
+      maxSent: "10.00000000 WAX",
+      priceImpact: "0.12",
+    };
+  }
+
+  function stubRouter(quote: unknown) {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () =>
+        new Response(JSON.stringify(quote), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        }),
+      ),
+    );
+  }
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("a legitimate quote still passes and guarantees its minReceived", async () => {
+    stubRouter(routerQuote("238000.0000 LEEF"));
+    const v = await verifyExecutableRoute({
+      route: route(10, 240_000),
+      amountIn: 10,
+      slippagePct: 0.5,
+      account: ACCOUNT,
+      snap: snap(),
+      deadlineMs: 4_000,
+    });
+    expect(v.trust).toBe("executable");
+    expect(v.exactness).toBe("exact");
+    expect(v.guaranteedOut).toBeCloseTo(238_000, 4);
+  });
+
+  it("a missing minReceived fails closed — the guarantee is never fabricated", async () => {
+    stubRouter(routerQuote(""));
+    // Distinct amount → distinct quote-cache key (the cache is module-level).
+    await expect(
+      verifyExecutableRoute({
+        route: route(11, 264_000),
+        amountIn: 11,
+        slippagePct: 0.5,
+        account: ACCOUNT,
+        snap: snap(),
+        deadlineMs: 4_000,
+      }),
+    ).rejects.toThrow(/min-out guarantee/);
+  });
+
+  it("a zero minReceived fails closed", async () => {
+    stubRouter(routerQuote("0.0000 LEEF"));
+    await expect(
+      verifyExecutableRoute({
+        route: route(12, 288_000),
+        amountIn: 12,
+        slippagePct: 0.5,
+        account: ACCOUNT,
+        snap: snap(),
+        deadlineMs: 4_000,
+      }),
+    ).rejects.toThrow(/min-out guarantee/);
   });
 });
 
