@@ -1,0 +1,36 @@
+name: CI
+
+on:
+  push:
+    branches: [main, "feat/**", "upgrade/**"]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+# Cancel stale runs on the same ref so only the latest push is built.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  ci:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - run: npm ci
+
+      - run: npm run typecheck
+
+      - run: npm run lint
+
+      - run: npx vitest run
+
+      - run: npm run build
