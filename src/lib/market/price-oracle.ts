@@ -157,8 +157,8 @@ export function tokenPrice(
   // Per-token timestamp is the honest age of THIS price (a cached universe
   // merge keeps the old observation time). A fresh snapshot must never
   // launder a stale token price into a tradeable one.
-  const timestamp = (t.priceTimestamp ?? snapshotTimestamp) || now;
-  if (isTrustedStable(t.symbol, t.contract)) return stablePrice(t, timestamp, now);
+  const perTokenTimestamp = (t.priceTimestamp ?? snapshotTimestamp) || now;
+  if (isTrustedStable(t.symbol, t.contract)) return stablePrice(t, perTokenTimestamp, now);
   const confidence = Math.max(
     0,
     Math.min(
@@ -166,6 +166,20 @@ export function tokenPrice(
       t.priceConfidence ?? Math.min(0.95, 0.45 + Math.log10(Math.max(1, t.tvlUsd)) / 10),
     ),
   );
+  // Core WAX/LEEF marks are continuously refreshed by the engine and trusted
+  // with a lower liquidity floor; discovered long-tail tokens still need the
+  // normal confidence score.
+  const core = t.symbol === "WAX" || t.symbol === "LEEF";
+  const effectiveConfidence = core ? Math.max(confidence, 0.85) : confidence;
+  // Core marks: the price VALUE already rides snap.leefUsd/snap.waxUsd, which
+  // the engine refreshes from chain reads (spot patches) between API pulls —
+  // so the honest age of a core price is the fresher of the universe merge
+  // time and the snapshot's own freshness evidence. Long-tail tokens keep
+  // strict per-token staleness (their prices are only as fresh as the last
+  // merge that touched them).
+  const timestamp = core
+    ? Math.max(perTokenTimestamp, snapshotTimestamp || 0) || now
+    : perTokenTimestamp;
   const ageMs = Math.max(0, now - timestamp);
   const priceUsd =
     t.symbol === "WAX"
@@ -173,11 +187,6 @@ export function tokenPrice(
       : t.symbol === "LEEF"
         ? (snap.leefUsd > 0 ? snap.leefUsd : t.usdPrice)
         : t.usdPrice;
-  // Core WAX/LEEF marks are continuously refreshed by the engine and trusted
-  // with a lower liquidity floor; discovered long-tail tokens still need the
-  // normal confidence score.
-  const core = t.symbol === "WAX" || t.symbol === "LEEF";
-  const effectiveConfidence = core ? Math.max(confidence, 0.85) : confidence;
   const tradeAllowed =
     priceUsd > 0 &&
     effectiveConfidence >= MIN_TRADING_PRICE_CONFIDENCE &&
@@ -201,7 +210,9 @@ export function tokenPrice(
     tradeAllowed,
     reason: tradeAllowed
       ? `${sourceFor(t)} price with ${(effectiveConfidence * 100).toFixed(0)}% confidence`
-      : `price is stale or confidence ${(effectiveConfidence * 100).toFixed(0)}% is below trading minimum`,
+      : ageMs > MAX_TRADING_PRICE_AGE_MS
+        ? `price is stale (last chain read ${(ageMs / 1000).toFixed(0)}s ago, limit ${MAX_TRADING_PRICE_AGE_MS / 1000}s)`
+        : `confidence ${(effectiveConfidence * 100).toFixed(0)}% is below trading minimum`,
   };
 }
 

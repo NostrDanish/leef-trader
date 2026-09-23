@@ -1,28 +1,24 @@
 /**
- * Volume-gate HOLD surfacing dedupe: the gate decision still happens every
- * cycle, but an identical volume-gate HOLD reason is surfaced to the
- * decision log at most once per 5 minutes.
+ * HOLD-reason surfacing dedupe: gate decisions still happen every cycle, but
+ * an identical HOLD reason (volume gate, stale-price governor, …) is surfaced
+ * to the decision log at most once per 5 minutes.
  */
 import { beforeEach, describe, expect, it } from "vitest";
-import {
-  resetHoldDedupe,
-  shouldSurfaceHold,
-  VOLUME_GATE_HOLD_DEDUPE_MS,
-} from "./use-bot-loop";
+import { resetHoldDedupe, shouldSurfaceHold, HOLD_REASON_DEDUPE_MS } from "./use-bot-loop";
 
 const T0 = Date.parse("2026-09-19T12:00:00Z");
 const GATED =
   "Volume gated: pool #217: no third-party swap observed this session — volume gate fails closed";
 
-describe("volume-gate HOLD surfacing dedupe", () => {
+describe("HOLD-reason surfacing dedupe", () => {
   beforeEach(() => resetHoldDedupe());
 
-  it("surfaces an identical volume-gate reason once per 5 min", () => {
+  it("surfaces an identical reason once per 5 min", () => {
     expect(shouldSurfaceHold(GATED, T0)).toBe(true);
     // Every cycle for the next 5 minutes: still blocked, but NOT re-surfaced.
     expect(shouldSurfaceHold(GATED, T0 + 15_000)).toBe(false);
-    expect(shouldSurfaceHold(GATED, T0 + VOLUME_GATE_HOLD_DEDUPE_MS - 1)).toBe(false);
-    expect(shouldSurfaceHold(GATED, T0 + VOLUME_GATE_HOLD_DEDUPE_MS)).toBe(true);
+    expect(shouldSurfaceHold(GATED, T0 + HOLD_REASON_DEDUPE_MS - 1)).toBe(false);
+    expect(shouldSurfaceHold(GATED, T0 + HOLD_REASON_DEDUPE_MS)).toBe(true);
   });
 
   it("dedupes per reason string — a different reason surfaces immediately", () => {
@@ -33,10 +29,12 @@ describe("volume-gate HOLD surfacing dedupe", () => {
     expect(shouldSurfaceHold(other, T0 + 2_000)).toBe(false);
   });
 
-  it("never dedupes non-volume-gate holds (legacy streak logic decides)", () => {
-    const plain = "Not enough WAX for the $1.00 min trade";
-    expect(shouldSurfaceHold(plain, T0)).toBe(true);
-    expect(shouldSurfaceHold(plain, T0 + 1_000)).toBe(true);
+  it("governor stale-price holds dedupe the same way (the 30s spam class)", () => {
+    const governor =
+      "Portfolio governor: LEEF price uncertain: price is stale (last chain read 212s ago, limit 75s)";
+    expect(shouldSurfaceHold(governor, T0)).toBe(true);
+    expect(shouldSurfaceHold(governor, T0 + 30_000)).toBe(false);
+    expect(shouldSurfaceHold(governor, T0 + HOLD_REASON_DEDUPE_MS)).toBe(true);
   });
 
   it("covers every reason shape volumeGateReason produces", () => {

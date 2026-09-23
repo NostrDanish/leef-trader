@@ -199,42 +199,41 @@ let lastHoldReason = "";
 let holdStreak = 0;
 
 /**
- * Volume-gate HOLD reasons repeat verbatim every cycle while a book is dead
- * (e.g. "Volume gated: pool #217: no third-party swap observed …"). The gate
- * DECISION still happens every cycle — only the decision-log surfacing is
- * deduped: one entry per identical reason per 5 minutes (same discipline as
- * the swap-flow mismatch journal).
+ * Repeated identical HOLD reasons spam the decision log every cycle while a
+ * blocking condition persists (a dead book under the volume gate, a stale
+ * price under the portfolio governor, …). The gate DECISION still happens
+ * every cycle — only the decision-log surfacing is deduped: one entry per
+ * identical reason per 5 minutes (same discipline as the swap-flow mismatch
+ * journal). Reasons that CHANGE are always surfaced — the log stays truthful
+ * about state transitions.
  */
-export const VOLUME_GATE_HOLD_DEDUPE_MS = 5 * 60_000;
-const volumeGateHoldAt = new Map<string, number>();
-
-/** Reasons produced by volumeGateReason (any strategy prefix). */
-function isVolumeGateHoldReason(reason: string): boolean {
-  return /volume gate|volume gated|third-party swap|swap-flow data|echo budget/i.test(reason);
-}
+export const HOLD_REASON_DEDUPE_MS = 5 * 60_000;
+const holdReasonSurfacedAt = new Map<string, number>();
 
 /**
- * True when a HOLD reason may be surfaced to the decision log NOW. Reasons
- * that are not volume-gate holds are always surfaceable (the legacy
- * change/streak logic decides); identical volume-gate reasons surface at
- * most once per VOLUME_GATE_HOLD_DEDUPE_MS.
+ * True when a HOLD reason may be surfaced to the decision log NOW. An
+ * identical, already-surfaced reason re-surfaces at most once per
+ * HOLD_REASON_DEDUPE_MS; any new reason surfaces immediately.
  */
 export function shouldSurfaceHold(reason: string, now: number = Date.now()): boolean {
-  if (!isVolumeGateHoldReason(reason)) return true;
-  const last = volumeGateHoldAt.get(reason) ?? 0;
-  if (now - last < VOLUME_GATE_HOLD_DEDUPE_MS) return false;
-  volumeGateHoldAt.set(reason, now);
+  const last = holdReasonSurfacedAt.get(reason);
+  if (last === undefined) {
+    holdReasonSurfacedAt.set(reason, now);
+    return true;
+  }
+  if (now - last < HOLD_REASON_DEDUPE_MS) return false;
+  holdReasonSurfacedAt.set(reason, now);
   // Bound the map: dead reasons expire with the map, not the session.
-  if (volumeGateHoldAt.size > 64) {
-    const oldest = volumeGateHoldAt.keys().next().value;
-    if (oldest !== undefined) volumeGateHoldAt.delete(oldest);
+  if (holdReasonSurfacedAt.size > 64) {
+    const oldest = holdReasonSurfacedAt.keys().next().value;
+    if (oldest !== undefined) holdReasonSurfacedAt.delete(oldest);
   }
   return true;
 }
 
-/** Test hook: clear the volume-gate HOLD dedupe map. */
+/** Test hook: clear the HOLD-reason dedupe map. */
 export function resetHoldDedupe(): void {
-  volumeGateHoldAt.clear();
+  holdReasonSurfacedAt.clear();
   lastHoldReason = "";
   holdStreak = 0;
 }
