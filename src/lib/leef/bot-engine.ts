@@ -1945,6 +1945,7 @@ export function evaluateBot(input: BotInput): Decision {
           amountIn: next.amountIn,
           route: next.route,
           minNetPct: Math.max(0, risk.minNetEdgePct),
+          opportunity: opp,
           reason: `Unleashed ${next.kind} ${next.tokenIn}→${next.tokenOut} · EV $${opp.expectedValueUsd.toFixed(4)} · net ${next.netPct.toFixed(2)}%`,
         });
       }
