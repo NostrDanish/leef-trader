@@ -544,3 +544,100 @@ describe("formatAsset / formatAmountParam", () => {
     expect(formatAsset(0, wax)).toBe("0.00000000 WAX");
   });
 });
+
+describe("Nefty venue firewall (swap.nefty)", () => {
+  it("accepts a pinned Nefty swap memo with a real min-out", () => {
+    // Live format verified 2026-09-23: `swap:<CODE>,min:<rawUnits>`.
+    expect(() =>
+      assertActionPolicy(
+        [transfer({ to: "swap.nefty", memo: "swap:USDANO,min:70800", quantity: "0.0531 USDT", contract: "usdt.alcor" })],
+        ACCOUNT,
+        { extraTokens: [{ symbol: "USDT", contract: "usdt.alcor", decimals: 4 }] },
+      ),
+    ).not.toThrow();
+  });
+
+  it("rejects a Nefty memo with no min clause (WaxOnEdge-style zero floor)", () => {
+    expect(() =>
+      assertActionPolicy([transfer({ to: "swap.nefty", memo: "swap:USDANO" })], ACCOUNT),
+    ).toThrow(/Nefty memo/);
+  });
+
+  it("rejects a zero min-out (C1: no on-chain guarantee)", () => {
+    expect(() =>
+      assertActionPolicy([transfer({ to: "swap.nefty", memo: "swap:USDANO,min:0" })], ACCOUNT),
+    ).toThrow(/zero min-out/);
+    expect(() =>
+      assertActionPolicy([transfer({ to: "swap.nefty", memo: "swap:USDANO,min:000" })], ACCOUNT),
+    ).toThrow(/zero min-out/);
+  });
+
+  it("rejects malformed Nefty memos (format pinned)", () => {
+    for (const memo of [
+      "swap:usdano,min:5", // lowercase code
+      "swap:USDANO,min:1.5", // raw units are integers
+      "swap:USDANO,min:5,foo", // trailing junk
+      "swap:USDANO ,min:5", // whitespace inside
+      "swap:,min:5",
+      "swap:TOOLONGCODE8,min:5",
+      "SWAP:USDANO,min:5",
+    ]) {
+      expect(() => assertActionPolicy([transfer({ to: "swap.nefty", memo })], ACCOUNT)).toThrow(
+        /Nefty memo/,
+      );
+    }
+  });
+});
+
+describe("swapFloorViolation — dust-safe min-outs (roundingSafeMin)", () => {
+  const WAX = { symbol: "WAX", contract: "eosio.token", decimals: 8 };
+  const floor = (over: Partial<SwapFloor> = {}): SwapFloor => ({
+    amountIn: 0.001,
+    expectedOut: 0.000005, // 500 raw units at 8 decimals → dust
+    slippagePct: 0.5,
+    tokenIn: WAX,
+    tokenOut: WAX,
+    ...over,
+  });
+
+  it("dust trades floor at exactly 1 raw unit, not the slippage ask", () => {
+    // Strict ask would be 0.000005 × 0.995 = 497.5 raw units — unattainable
+    // tick-rounding noise (the waxterminal revert). The floor is 1 unit.
+    expect(
+      swapFloorViolation({
+        floor: floor(),
+        legs: [{ input: "0.00100000 WAX", memo: swapMemo("0.00000001 WAX@eosio.token") }],
+        account: ACCOUNT,
+      }),
+    ).toBeNull();
+  });
+
+  it("dust trades still reject a zero min-out (C1 semantics intact)", () => {
+    expect(
+      swapFloorViolation({
+        floor: floor(),
+        legs: [{ input: "0.00100000 WAX", memo: swapMemo("0.00000000 WAX@eosio.token") }],
+        account: ACCOUNT,
+      }),
+    ).toMatch(/zero min-out/);
+  });
+
+  it("normal trades keep the strict slippage floor", () => {
+    const normal = floor({ amountIn: 10, expectedOut: 240 });
+    // 240 × 0.995 = 238.8 exactly → quantized floor 238.80000000.
+    expect(
+      swapFloorViolation({
+        floor: normal,
+        legs: [{ input: "10.00000000 WAX", memo: swapMemo("238.80000000 WAX@eosio.token") }],
+        account: ACCOUNT,
+      }),
+    ).toBeNull();
+    expect(
+      swapFloorViolation({
+        floor: normal,
+        legs: [{ input: "10.00000000 WAX", memo: swapMemo("238.79000000 WAX@eosio.token") }],
+        account: ACCOUNT,
+      }),
+    ).toMatch(/slippage floor/);
+  });
+});

@@ -17,6 +17,7 @@ import {
   type GrowthTarget,
 } from "@/lib/leef/growth-engine";
 import { journal } from "@/lib/leef/journal";
+import { setNeftyVenueEnabled } from "@/lib/leef/venue-adapters";
 
 export type BotDecisionKind = "buy" | "sell" | "arb" | "swap" | "hold" | "skip" | "stop" | "error";
 
@@ -54,8 +55,14 @@ export type BotStats = {
   echoCostUsd: number;
   /** Last closed trade's P&L — feeds the adaptive cooldown (anti-tilt). */
   lastPnlUsd: number;
-  /** Calibration memory per strategy id. */
+  /** Calibration memory per strategy id (LIVE fills only). */
   byStrategy: Record<string, StrategyPerf>;
+  /**
+   * Paper-mode calibration memory, kept strictly separate: paper fills never
+   * revert and fill at model prices, so they must NOT move live calibration
+   * (calibrationHaircut feeds live EV ranking).
+   */
+  byStrategyPaper: Record<string, StrategyPerf>;
   startedAt: number;
   startEquityUsd: number;
   equity: { t: number; usd: number }[];
@@ -95,6 +102,12 @@ type BotState = {
   lastReason: string;
   /** One-shot notice after migrating WAX clip/max → USD value. */
   riskMigrationNotice: string | null;
+  /**
+   * NeftyBlocks venue kill-switch (persisted, default ON). The swap.nefty
+   * table schema is reverse-engineered — flipping this off pulls Nefty books
+   * out of discovery/routing without a redeploy.
+   */
+  neftyVenue: boolean;
 
   start: (equityUsd: number) => void;
   stop: (reason?: string) => void;
@@ -124,6 +137,7 @@ type BotState = {
   resetSession: (equityUsd: number) => void;
   setLastReason: (s: string) => void;
   clearRiskMigrationNotice: () => void;
+  setNeftyVenue: (on: boolean) => void;
 };
 
 const freshStats = (equityUsd: number): BotStats => ({
@@ -134,6 +148,7 @@ const freshStats = (equityUsd: number): BotStats => ({
   echoCostUsd: 0,
   lastPnlUsd: 0,
   byStrategy: {},
+  byStrategyPaper: {},
   startedAt: Date.now(),
   startEquityUsd: equityUsd,
   equity: [{ t: Date.now(), usd: equityUsd }],
@@ -163,6 +178,7 @@ export const useBot = create<BotState>()(
       tradesThisHour: 0,
       lastReason: "Bot is stopped",
       riskMigrationNotice: null,
+      neftyVenue: true,
 
       start: (equityUsd) =>
         set((s) => ({
@@ -265,19 +281,22 @@ export const useBot = create<BotState>()(
             equity: [...s.stats.equity, { t: Date.now(), usd: equityUsd }].slice(-120),
           },
         })),
-      recordStrategyPerf: (strategy, r) => {
+      recordStrategyPerf: (strategy, r, mode = "live") => {
         // Evidence journal: per-trade calibration (the store keeps only the
         // aggregates; the journal keeps each predicted-vs-realized pair).
         journal({
           kind: "calibration",
-          strategy,
+          strategy: mode === "paper" ? `paper:${strategy}` : strategy,
           pnlUsd: r.pnlUsd,
           predEdgePct: r.predEdgePct ?? undefined,
           realEdgePct: r.realEdgePct,
           latencyMs: r.latencyMs ?? undefined,
         });
         set((s) => {
-          const prev = s.stats.byStrategy[strategy] ?? {
+          // Paper fills never revert and fill at model prices — they are
+          // tracked apart and NEVER feed the live calibration haircut.
+          const map = mode === "paper" ? "byStrategyPaper" : "byStrategy";
+          const prev = s.stats[map][strategy] ?? {
             trades: 0,
             wins: 0,
             pnlUsd: 0,
@@ -288,8 +307,8 @@ export const useBot = create<BotState>()(
           return {
             stats: {
               ...s.stats,
-              byStrategy: {
-                ...s.stats.byStrategy,
+              [map]: {
+                ...s.stats[map],
                 [strategy]: {
                   trades: prev.trades + 1,
                   wins: prev.wins + (r.pnlUsd > 0 ? 1 : 0),
@@ -324,13 +343,19 @@ export const useBot = create<BotState>()(
         }),
       setLastReason: (lastReason) => set({ lastReason }),
       clearRiskMigrationNotice: () => set({ riskMigrationNotice: null }),
+      setNeftyVenue: (on) => {
+        setNeftyVenueEnabled(on);
+        set({ neftyVenue: on, lastReason: on ? "Nefty venue enabled" : "Nefty venue disabled" });
+      },
     }),
     {
       name: "leef-bot-v1",
       // Versioned + merging migrate: fields added to the schema after a user
       // saved state (e.g. risk.minNetEdgePct, stats.byStrategy) get filled
       // from defaults instead of crashing selectors with undefined.
-      version: 10,
+      // v11: stats.byStrategyPaper — paper/live calibration split. The merge
+      // below ({ ...freshStats(0), ...p.stats }) fills it for old saves.
+      version: 11,
       migrate: (persisted) => {
         const p = (
           persisted && typeof persisted === "object" ? persisted : {}
@@ -407,7 +432,13 @@ export const useBot = create<BotState>()(
         series: s.series.slice(-MAX_SERIES),
         decisions: s.decisions.slice(0, 30),
         riskMigrationNotice: s.riskMigrationNotice,
+        neftyVenue: s.neftyVenue,
       }),
+      // Keep the venue-adapter kill-switch in sync with the persisted
+      // setting after rehydrate (and on fresh defaults).
+      onRehydrateStorage: () => (state) => {
+        setNeftyVenueEnabled(state?.neftyVenue !== false);
+      },
     },
   ),
 );

@@ -148,7 +148,7 @@ export type LeefSnapshot = {
   trades: LiveTrade[];
   /** Priced tradable token universe on Alcor (for the rebalancer). */
   universe: import("./universe").UniverseToken[];
-  /** Defibox + TacoSwap CP books (namespaced ids). Empty when discovery failed. */
+  /** Defibox + TacoSwap + Nefty CP books (namespaced ids). Empty when discovery failed. */
   venues?: import("./venues").VenuePool[];
   warning?: string;
 };

@@ -28,12 +28,12 @@ import {
   PLATFORM_FEE_ACCOUNT,
   PLATFORM_FEE_MEMO,
 } from "@/lib/leef/platform-fee";
-import { DEFIBOX_SWAP, TACO_SWAP } from "@/lib/leef/venues";
+import { DEFIBOX_SWAP, NEFTY_SWAP, TACO_SWAP, dustSafeMinOut } from "@/lib/leef/venues";
 import { isAccountName, parseAsset, tokenCatalog } from "./tokens";
 
 /** Alcor's on-chain AMM contract on WAX. Swaps execute as token transfers into it. */
 export const ALCOR_SWAP_CONTRACT = "swap.alcor";
-const ALLOWED_SWAP_TO = new Set([ALCOR_SWAP_CONTRACT, DEFIBOX_SWAP, TACO_SWAP]);
+const ALLOWED_SWAP_TO = new Set([ALCOR_SWAP_CONTRACT, DEFIBOX_SWAP, TACO_SWAP, NEFTY_SWAP]);
 
 /** The only actions this app may ever call on the AMM contract itself. */
 const ALCOR_AMM_ACTIONS = new Set(["addliquid", "subliquid", "collect"]);
@@ -214,6 +214,18 @@ function checkTransfer(
     const minToken = tokens.get(m[2]!);
     if (!minToken || minToken.contract !== m[3]) {
       fail(`Taco min-out ${m[2]}@${m[3]} isn't the verified token for that symbol`);
+    }
+    return;
+  }
+  if (to === NEFTY_SWAP) {
+    // Format pinned to the live contract: `swap:<CODE>,min:<rawUnits>`.
+    // WaxOnEdge sends `swap:<CODE>` with NO min — a zero floor. After the C1
+    // hardening every swap leg must carry a real (> 0) min-out we computed,
+    // so the `,min:` clause is mandatory here and must ask ≥ 1 raw unit.
+    const m = memo.trim().match(/^swap:([A-Z0-9]{1,7}),min:(\d+)$/);
+    if (!m) fail("Nefty memo must be `swap:<PAIRCODE>,min:<units>`");
+    if (!/^[1-9]\d*$/.test(m[2]!)) {
+      fail("Nefty memo carries a zero min-out — no on-chain guarantee");
     }
     return;
   }
@@ -426,7 +438,18 @@ export function swapFloorViolation(opts: {
     );
   }
 
-  const minFloor = floor.expectedOut * (1 - Math.max(0, floor.slippagePct) / 100);
+  // The floor is the SAME ask the memos are built from (dustSafeMinOut —
+  // never a fabricated number): slippage-adjusted and quantized for normal
+  // trades, exactly 1 raw unit for dust outputs (waxterminal roundingSafeMin
+  // lesson: a strict slippage ask below ~1000 raw units reverts on pool tick
+  // rounding it cannot honor). Dust trades therefore accept any non-zero
+  // execution rather than reverting — gated by size, so sandwich risk is
+  // bounded to dust. Every leg's min-out must still be > 0 (checked above).
+  const minFloor = dustSafeMinOut(
+    floor.expectedOut,
+    Math.max(0, floor.slippagePct) / 100,
+    floor.tokenOut.decimals,
+  );
   // One output-token quantum of slack for IEEE-754 dust (see arbFloorViolation).
   if (minOut + 1e-8 < minFloor) {
     return (

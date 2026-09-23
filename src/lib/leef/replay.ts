@@ -69,7 +69,9 @@ function fixturePoolToAux(p: FixturePool): AuxPool {
     tokenB: { symbol: p.bSym, contract: p.bContract, decimals: p.bDec, quantity: p.bQty },
     tvlUsd: p.tvlUsd,
     volume24Usd: 0,
-    venue: (p.venue === "defibox" || p.venue === "taco" ? p.venue : "alcor") as AuxPool["venue"],
+    venue: (
+      p.venue === "defibox" || p.venue === "taco" || p.venue === "nefty" ? p.venue : "alcor"
+    ) as AuxPool["venue"],
   };
 }
 
