@@ -578,9 +578,25 @@ export class SwapFlowService {
     return fresh;
   }
 
-  /** Feed fresh events into the rolling state, resolving LEEF/A-B sides. */
-  track(events: LogswapEvent[], snap: Pick<LeefSnapshot, "pools" | "aux">): void {
+  /**
+   * Feed fresh events into the rolling state, resolving LEEF/A-B sides.
+   * `opts.selfAccount`: the bot's own swaps are NOT third-party flow — the
+   * volume gate needs evidence someone else is trading these books.
+   */
+  track(
+    events: LogswapEvent[],
+    snap: Pick<LeefSnapshot, "pools" | "aux">,
+    opts?: { selfAccount?: string | null },
+  ): void {
+    const self = opts?.selfAccount?.trim().toLowerCase() || null;
     for (const ev of events) {
+      if (
+        self &&
+        (ev.sender.trim().toLowerCase() === self ||
+          ev.recipient.trim().toLowerCase() === self)
+      ) {
+        continue;
+      }
       const leef = snap.pools.find((p) => p.id === ev.poolId);
       if (leef) {
         this.tracker.note(ev, leef.leefIsA ? "A" : "B");
