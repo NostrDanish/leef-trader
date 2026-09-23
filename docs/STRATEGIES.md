@@ -134,7 +134,9 @@ named assets. See [below](#treasure-growth--dont-trade-pairs-grow-assets).
   require a THIRD-PARTY swap on every involved pool within this window and
   FAIL CLOSED to HOLD when flow data is unavailable. On a chain where the
   median swap is $0.005 and pools see 45-minute droughts, printing tape on
-  a dead book buys nothing. Flow never gates profit intents (arb, signal…).
+  a dead book buys nothing — it just burns LP fees (dead-book fee burn).
+  Flow never gates profit intents (arb, signal…). **0 disables the gate**
+  (the `$` echo budget is a separate control and still applies).
 - `echoBudgetUsd = $5` — session cap on `stats.echoCostUsd`; once spent,
   volume intents stop until the session resets.
 - `minConfidence = 65` + 2-print confirmation — on dead books the price
@@ -161,15 +163,33 @@ known, bounded price.
 
 **Flow gate (2026-09 discipline pass).** Echoes/tape additionally require
 evidence the book is alive: a third-party swap on every involved pool within
-`volumeFlowGateMin` minutes (default 10), with the bot's own swaps excluded
-from the flow tracker, and a session echo budget (`echoBudgetUsd`, default
-$5) that stops volume intents once spent. No flow data → FAIL CLOSED to
-HOLD. This applies to volume intents only; profit intents (arb, signal,
-meanrev, grid, path/cycle, growth) are never flow-gated. Unleashed keeps
-its wide candidate mix but routes every candidate through the same scoring
-+ reject gate as Auto and picks the highest expected value — the dice are
-gone; the only admissible volume intent there is a flow-gated,
-spread-funded (net ≥ 0) echo.
+`volumeFlowGateMin` minutes (default 10, **0 = off**), with the bot's own
+swaps excluded from the flow tracker, and a session echo budget
+(`echoBudgetUsd`, default $5) that stops volume intents once spent. No flow
+data → FAIL CLOSED to HOLD. This applies to volume intents only; profit
+intents (arb, signal, meanrev, grid, path/cycle, growth) are never
+flow-gated. Unleashed keeps its wide candidate mix but routes every
+candidate through the same scoring + reject gate as Auto and picks the
+highest expected value — the dice are gone; the only admissible volume
+intent there is a flow-gated, spread-funded (net ≥ 0) echo.
+
+**Why the gate exists:** an echo on a book nobody else trades is
+self-dealing at a cost — every round trip burns LP fees and impact with no
+price discovery in return (dead-book fee burn). The gate buys evidence, not
+hope.
+
+**Where the evidence comes from at startup.** The flow poller's first poll
+backfills the last 30 minutes of chain-wide logswaps (paged in parallel,
+hard-capped at 8 × 100 actions; if the tape is busier than that, partial
+coverage is accepted and incremental polling resumes normally), so a fresh
+session sees the recent past instead of starting blind. Independently, the
+snapshot's tape (`snap.trades` — recent real swaps of the top pools from the
+Alcor API) is seeded into the flow tracker on every snapshot commit as
+last-swap evidence: tape entries set `lastSwapAt`/`lastSwapAgeMs` but never
+count toward swaps-per-window rate metrics, and the wallet's own account is
+excluded. Repeated identical volume-gate HOLD reasons are surfaced to the
+decision log at most once per 5 minutes — the gate still blocks every
+cycle; only the logging is deduped.
 
 ## Predicted vs realized edge (calibration)
 

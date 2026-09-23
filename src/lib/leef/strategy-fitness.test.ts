@@ -163,6 +163,46 @@ describe("volume flow gate", () => {
     );
     expect(why).toMatch(/echo budget/);
   });
+  it("volumeFlowGateMin = 0 disables the flow gate entirely (off-switch)", () => {
+    // No flow data at all → normally fails closed; with 0 the gate is off.
+    expect(
+      volumeGateReason({ flowStates: null }, { volumeFlowGateMin: 0, echoBudgetUsd: 5 }, [1159]),
+    ).toBeNull();
+    expect(
+      volumeGateReason(
+        { flowStates: undefined },
+        { volumeFlowGateMin: 0, echoBudgetUsd: 5 },
+        [1159],
+      ),
+    ).toBeNull();
+    // Stale flow that would fail the 10-min gate passes when the gate is off.
+    expect(
+      volumeGateReason(
+        { flowStates: [liveFlow(1159, 30 * 60_000)] },
+        { volumeFlowGateMin: 0, echoBudgetUsd: 5 },
+        [1159],
+      ),
+    ).toBeNull();
+    // The echo budget is a separate control — it still applies with the gate off.
+    expect(
+      volumeGateReason(
+        { flowStates: null, echoCostUsd: 5.01 },
+        { volumeFlowGateMin: 0, echoBudgetUsd: 5 },
+        [1159],
+      ),
+    ).toMatch(/echo budget/);
+  });
+  it("evaluateBot: gate off at 0 lets the volume strategy past the flow check", () => {
+    const d = evaluateBot(
+      botInput({
+        strategy: "volume",
+        balances: { WAX: 50 },
+        risk: { ...DEFAULT_RISK, minTradeUsd: 0, volumeFlowGateMin: 0 },
+      }),
+    );
+    // Whatever it decides, it must NOT be the flow gate holding it back.
+    if (d.kind === "hold") expect(d.reason.toLowerCase()).not.toContain("flow");
+  });
   it("volume-x fails closed without flow data", () => {
     const d = evaluateBot(
       botInput({ strategy: "volume-x", balances: { WAX: 50 }, risk: { ...DEFAULT_RISK, minTradeUsd: 0 } }),

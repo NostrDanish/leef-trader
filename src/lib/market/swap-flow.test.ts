@@ -13,7 +13,10 @@ import {
   CHECKPOINT_TOLERANCE_PCT,
   FLOW_BACKOFF_BASE_MS,
   FLOW_BACKOFF_MAX_MS,
+  FLOW_INITIAL_WINDOW_MS,
+  FLOW_MAX_PAGES,
   FLOW_OVERLAP_MS,
+  FLOW_PAGE_LIMIT,
   FLOW_WINDOW_MS,
   FlowTracker,
   SeqDedupe,
@@ -412,7 +415,58 @@ describe("poller discipline", () => {
     });
     const events = await svc.poll();
     expect(events).toHaveLength(100);
-    expect(skips).toEqual([0, 100, 200, 300, 400]); // page 1 + 4 parallel pages
+    // page 1 + (FLOW_MAX_PAGES − 1) parallel pages, then the hard cap stops it
+    expect(skips).toEqual(
+      Array.from({ length: FLOW_MAX_PAGES }, (_, i) => i * FLOW_PAGE_LIMIT),
+    );
+  });
+
+  it("backfills the 30-min initial window on the first poll", async () => {
+    const h = harness([hyperionAction(1, { at: T0 - 500 })]);
+    await h.svc.poll();
+    const afterParam = new URLSearchParams(h.paths[0]!.split("?")[1]!).get("after")!;
+    expect(Date.parse(afterParam)).toBe(T0 - FLOW_INITIAL_WINDOW_MS);
+    expect(FLOW_INITIAL_WINDOW_MS).toBe(1_800_000); // ≥ any sane gate window
+  });
+
+  it("caps catch-up paging and accepts partial coverage of a busy window", async () => {
+    // Every page is FULL (a tape busier than the page cap): the poller must
+    // stop at FLOW_MAX_PAGES and still advance lastSeen normally.
+    const skips: number[] = [];
+    const svc = new SwapFlowService({
+      now: () => T0,
+      isHidden: () => false,
+      call: async (path: string) => {
+        const skip = Number(new URLSearchParams(path.split("?")[1]!).get("skip") ?? 0);
+        skips.push(skip);
+        // Distinct global_sequences per page, newest first within a page.
+        const page = Math.floor(skip / FLOW_PAGE_LIMIT);
+        return {
+          actions: Array.from({ length: FLOW_PAGE_LIMIT }, (_, i) =>
+            hyperionAction(page * FLOW_PAGE_LIMIT + i + 1, { at: T0 - 1_000 - i * 100 }),
+          ),
+        };
+      },
+    });
+    const events = await svc.poll();
+    expect(skips).toHaveLength(FLOW_MAX_PAGES); // hard page cap respected
+    expect(events).toHaveLength(FLOW_MAX_PAGES * FLOW_PAGE_LIMIT); // partial coverage kept
+    expect(svc.stats().lastSeenMs).toBe(T0 - 1_000); // lastSeen advances to the newest row
+    // …and the next poll is incremental (after = lastSeen − overlap).
+    skips.length = 0;
+    await svc.poll();
+    expect(skips[0]).toBe(0);
+  });
+
+  it("keeps lastSwapAt evidence alive past the rolling rate window", () => {
+    // The gate window (default 10 min) is wider than FLOW_WINDOW_MS (5 min):
+    // rate counts prune, but the last-swap timestamp must not.
+    const t = new FlowTracker();
+    t.note(event(1, { at: T0 - 8 * 60_000 }), "A");
+    const s = t.stateFor(217, T0);
+    expect(s.swapsInWindow).toBe(0); // pruned from the rate window
+    expect(s.lastSwapAt).toBe(T0 - 8 * 60_000);
+    expect(s.lastSwapAgeMs).toBe(8 * 60_000); // gate still sees the swap
   });
 
   it("rate-limits mismatch journaling per pool", () => {
@@ -421,6 +475,74 @@ describe("poller discipline", () => {
     expect(svc.shouldJournalMismatch(217, T0 + 60_000)).toBe(false);
     expect(svc.shouldJournalMismatch(218, T0 + 60_000)).toBe(true); // per-pool
     expect(svc.shouldJournalMismatch(217, T0 + 5 * 60_000 + 1)).toBe(true);
+  });
+});
+
+describe("tape seeding (snapshot trades → last-swap evidence)", () => {
+  const trade = (
+    poolId: number,
+    timestamp: number,
+    over: { account?: string; txHash?: string } = {},
+  ) => ({
+    poolId,
+    timestamp,
+    account: over.account ?? "trader.wam",
+    txHash: over.txHash ?? `tx-${poolId}-${timestamp}`,
+  });
+
+  it("feeds lastSwapAt for hot pools instantly, without touching rate counts", () => {
+    const svc = new SwapFlowService({ now: () => T0 });
+    const seeded = svc.seedTape([
+      trade(217, T0 - 7 * 60_000), // 7 min ago: older than the 5-min rate window
+      trade(217, T0 - 20 * 60_000),
+      trade(999, T0 - 2 * 60_000),
+    ]);
+    expect(seeded).toBe(3);
+    const s = svc.tracker.stateFor(217, T0);
+    expect(s.lastSwapAt).toBe(T0 - 7 * 60_000); // newest tape entry wins
+    expect(s.lastSwapAgeMs).toBe(7 * 60_000);
+    // Tape is NEVER flow-rate evidence: no swaps-per-window, no volume.
+    expect(s.swapsInWindow).toBe(0);
+    expect(s.buys).toBe(0);
+    expect(s.volumeQuotePerMin).toBe(0);
+    // Pools with ONLY tape evidence are still listed for the gate.
+    const all = svc.tracker.allStates(T0);
+    expect(all.map((x) => x.poolId).sort((a, b) => a - b)).toEqual([217, 999]);
+  });
+
+  it("excludes the wallet's own account (self-dealing is not flow evidence)", () => {
+    const svc = new SwapFlowService({ now: () => T0 });
+    const seeded = svc.seedTape(
+      [trade(217, T0 - 60_000, { account: "Bot.Leef" }), trade(218, T0 - 60_000)],
+      { selfAccount: "bot.leef" },
+    );
+    expect(seeded).toBe(1);
+    expect(svc.tracker.stateFor(217, T0).lastSwapAt).toBe(0);
+    expect(svc.tracker.stateFor(218, T0).lastSwapAt).toBe(T0 - 60_000);
+  });
+
+  it("dedupes repeated snapshot commits carrying the same tape", () => {
+    const svc = new SwapFlowService({ now: () => T0 });
+    const tape = [trade(217, T0 - 60_000)];
+    expect(svc.seedTape(tape)).toBe(1);
+    expect(svc.seedTape(tape)).toBe(0); // same txHash → no-op
+    expect(svc.seedTape([trade(217, T0 - 30_000)])).toBe(1); // newer entry lands
+    expect(svc.tracker.stateFor(217, T0).lastSwapAt).toBe(T0 - 30_000);
+  });
+
+  it("skips entries without a usable timestamp and never regresses lastSwapAt", () => {
+    const svc = new SwapFlowService({ now: () => T0 });
+    expect(
+      svc.seedTape([
+        trade(217, 0),
+        trade(217, Number.NaN),
+        { poolId: 217, timestamp: T0 - 60_000, account: "trader.wam", txHash: "" },
+      ]),
+    ).toBe(1); // the timestamp-only fallback key still seeds
+    expect(svc.tracker.stateFor(217, T0).lastSwapAt).toBe(T0 - 60_000);
+    svc.tracker.noteTape(217, T0 - 10_000); // fresher logswap/tape evidence
+    svc.seedTape([trade(217, T0 - 50_000, { txHash: "older" })]);
+    expect(svc.tracker.stateFor(217, T0).lastSwapAt).toBe(T0 - 10_000); // no regression
   });
 });
 

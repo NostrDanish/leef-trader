@@ -26,7 +26,7 @@
  */
 import { q64Price } from "@/lib/leef/amm";
 import type { FlowRiskContext } from "@/lib/leef/regime";
-import type { AuxPool, LeefPool, LeefSnapshot } from "@/lib/leef/types";
+import type { AuxPool, LeefPool, LeefSnapshot, LiveTrade } from "@/lib/leef/types";
 import type { OnchainPool } from "@/lib/wax/alcor-onchain";
 import { ALCOR_SWAP } from "@/lib/wax/alcor-onchain";
 import { historyPool } from "@/lib/wax/provider-pool";
@@ -126,13 +126,13 @@ export function parseLogswapAction(raw: unknown): LogswapEvent | null {
 /* global_sequence dedupe (multi-hop routes share a trx — never trx_id) */
 /* ------------------------------------------------------------------ */
 
-export class SeqDedupe {
-  private seen = new Set<number>();
+export class SeqDedupe<K = number> {
+  private seen = new Set<K>();
 
   constructor(private cap = 4_096) {}
 
-  /** True when the sequence is new; false for an already-seen duplicate. */
-  note(seq: number): boolean {
+  /** True when the key is new; false for an already-seen duplicate. */
+  note(seq: K): boolean {
     if (this.seen.has(seq)) return false;
     this.seen.add(seq);
     while (this.seen.size > this.cap) {
@@ -143,7 +143,7 @@ export class SeqDedupe {
     return true;
   }
 
-  has(seq: number): boolean {
+  has(seq: K): boolean {
     return this.seen.has(seq);
   }
 
@@ -193,6 +193,14 @@ export class FlowTracker {
   private swaps = new Map<number, TrackedSwap[]>();
   private lastSqrt = new Map<number, string>();
   private lastMove = new Map<number, number>();
+  /**
+   * Newest swap timestamp per pool from ANY source — never pruned with the
+   * rolling rate window. The volume gate's window (default 10 min) is wider
+   * than FLOW_WINDOW_MS (5 min): without this, lastSwapAt evidence would be
+   * destroyed by rate-window pruning and the gate would fail closed on a
+   * book that traded 6 minutes ago.
+   */
+  private lastSwapAt = new Map<number, number>();
 
   /**
    * Record one swap. `baseSide` is the pool side whose buy/sell imbalance we
@@ -211,6 +219,7 @@ export class FlowTracker {
     });
     if (list.length > MAX_TRACKED_PER_POOL) list.splice(0, list.length - MAX_TRACKED_PER_POOL);
     this.swaps.set(ev.poolId, list);
+    if (ev.at > (this.lastSwapAt.get(ev.poolId) ?? 0)) this.lastSwapAt.set(ev.poolId, ev.at);
 
     // Book move of THIS swap: previous post-swap sqrt price ≈ this swap's
     // pre-swap price (barring liquidity events in between).
@@ -229,6 +238,17 @@ export class FlowTracker {
       }
     }
     if (ev.sqrtPriceX64 !== "0") this.lastSqrt.set(ev.poolId, ev.sqrtPriceX64);
+  }
+
+  /**
+   * Record a tape-sourced swap (snapshot `trades` from the Alcor API cold
+   * path). Tape entries are LAST-SWAP evidence only — they never enter the
+   * rolling window, so swaps-per-window / volume-rate counts stay truthful
+   * (the tape is a curated recent slice, not a complete flow record).
+   */
+  noteTape(poolId: number, at: number): void {
+    if (!Number.isFinite(at) || at <= 0) return;
+    if (at > (this.lastSwapAt.get(poolId) ?? 0)) this.lastSwapAt.set(poolId, at);
   }
 
   /** Rolling state for one pool at `now` (prunes the window as a side effect). */
@@ -263,6 +283,9 @@ export class FlowTracker {
       if (s.at > lastAt) lastAt = s.at;
       if (oldest === 0 || s.at < oldest) oldest = s.at;
     }
+    // Windowed rate swaps plus any un-pruned last-swap evidence (logswap or
+    // tape) — lastSwapAt/lastSwapAgeMs must survive the 5-min rate window.
+    lastAt = Math.max(lastAt, this.lastSwapAt.get(poolId) ?? 0);
     const volSum = buyVol + sellVol;
     const spanMs =
       list.length === 0 ? 0 : Math.max(60_000, Math.min(FLOW_WINDOW_MS, now - oldest));
@@ -282,10 +305,10 @@ export class FlowTracker {
     };
   }
 
-  /** Rolling state for every pool with any tracked swap. */
+  /** Rolling state for every pool with any tracked swap or tape evidence. */
   allStates(now: number): PoolFlowState[] {
     const out: PoolFlowState[] = [];
-    for (const id of this.swaps.keys()) {
+    for (const id of new Set([...this.swaps.keys(), ...this.lastSwapAt.keys()])) {
       const s = this.stateFor(id, now);
       if (s.swapsInWindow > 0 || s.lastSwapAt > 0) out.push(s);
     }
@@ -431,12 +454,23 @@ export function checkpointDrift(cp: OnchainPool, row: OnchainPool): CheckpointMi
 /* ------------------------------------------------------------------ */
 
 export const FLOW_PAGE_LIMIT = 100;
-/** Parallel catch-up pages beyond the first when a window overflows one page. */
-export const FLOW_MAX_PAGES = 5;
+/**
+ * HARD CAP on catch-up pages when a window overflows one page (1 first page +
+ * up to this many−1 parallel pages). 30 min of chain-wide logswaps can exceed
+ * the cap (~58 actions/min ≈ 1700 rows > 800): partial coverage is accepted
+ * and `lastSeenMs` advances normally, so the next poll resumes incrementally.
+ */
+export const FLOW_MAX_PAGES = 8;
 /** Re-query overlap so boundary actions are never missed (dedupe absorbs repeats). */
 export const FLOW_OVERLAP_MS = 4_000;
-/** First poll looks back this far (enough to seed the flow window). */
-export const FLOW_INITIAL_WINDOW_MS = 60_000;
+/**
+ * First poll looks back this far. 30 min ≥ any sane volume-gate window
+ * (default 10 min): a fresh session must see the last third-party swap on
+ * books that trade every few minutes, or the gate fails closed until one
+ * happens live while the tab is open. One startup burst (≤ FLOW_MAX_PAGES
+ * requests), then normal incremental polling resumes.
+ */
+export const FLOW_INITIAL_WINDOW_MS = 1_800_000;
 export const FLOW_BACKOFF_BASE_MS = 10_000;
 export const FLOW_BACKOFF_MAX_MS = 60_000;
 
@@ -478,6 +512,8 @@ export type SwapFlowStats = {
 export class SwapFlowService {
   readonly tracker = new FlowTracker();
   private dedupe = new SeqDedupe();
+  /** Tape seeding dedupe (txHash, or poolId:timestamp when the API omits one). */
+  private tapeDedupe = new SeqDedupe<string>(1_024);
   /** Latest known pool state + provenance. Only "logswap" entries are
    * validated against the next table read (a table row IS the truth). */
   private checkpoints = new Map<number, { row: OnchainPool; source: "logswap" | "table" }>();
@@ -605,6 +641,35 @@ export class SwapFlowService {
       const aux = snap.aux.find((p) => p.id === ev.poolId);
       if (aux) this.tracker.note(ev, "A");
     }
+  }
+
+  /**
+   * Seed last-swap evidence from the snapshot tape (`snap.trades` — recent
+   * real swaps of the top pools from the Alcor API cold path). Hot pools get
+   * instant truthful `lastSwapAt` evidence at startup instead of waiting for
+   * the 30-min logswap backfill. Tape entries are source "tape": they NEVER
+   * count as flow-rate evidence (swaps-per-window), only lastSwapAt. The
+   * wallet's own swaps are excluded (same rule as track()).
+   *
+   * Returns the number of newly seeded entries (deduped by txHash across the
+   * repeated snapshot commits that carry the same tape).
+   */
+  seedTape(
+    trades: Pick<LiveTrade, "poolId" | "timestamp" | "account" | "txHash">[],
+    opts?: { selfAccount?: string | null },
+  ): number {
+    const self = opts?.selfAccount?.trim().toLowerCase() || null;
+    let seeded = 0;
+    for (const t of trades) {
+      if (!Number.isFinite(t.timestamp) || t.timestamp <= 0) continue;
+      if (self && t.account.trim().toLowerCase() === self) continue;
+      // poolId in the key: one multi-hop trx can appear on several pools.
+      const key = t.txHash ? `tx:${t.txHash}:${t.poolId}` : `pt:${t.poolId}:${t.timestamp}`;
+      if (!this.tapeDedupe.note(key)) continue;
+      this.tracker.noteTape(t.poolId, t.timestamp);
+      seeded += 1;
+    }
+    return seeded;
   }
 
   /* ------------------------- checkpoint store ----------------------- */

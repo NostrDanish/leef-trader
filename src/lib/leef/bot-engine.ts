@@ -216,7 +216,7 @@ export type BotRisk = {
    * Volume gate: no echo/volume trade unless the pool saw a THIRD-PARTY swap
    * within this many minutes (flow evidence the book is alive). Fail closed
    * when flow data is unavailable. Volume intents only — profit intents are
-   * never flow-gated.
+   * never flow-gated. 0 disables the gate (the echo budget still applies).
    */
   volumeFlowGateMin: number;
   /**
@@ -711,7 +711,8 @@ function hold(reason: string): Decision {
  * evidence: every involved pool must have seen a third-party swap within
  * `risk.volumeFlowGateMin` minutes, and the session echo budget must not be
  * spent. FAILS CLOSED when flow data is unavailable. Profit intents (arb,
- * signal, …) NEVER pass through here.
+ * signal, …) NEVER pass through here. `volumeFlowGateMin = 0` disables the
+ * flow-evidence check (off-switch); the echo budget is unaffected.
  *
  * Returns a HOLD reason when gated, null when the volume intent may proceed.
  * `poolIds` empty = pre-flight (budget + data availability only).
@@ -727,11 +728,14 @@ export function volumeGateReason(
       `$${risk.echoBudgetUsd.toFixed(2)} cap) — volume intents off until session reset`
     );
   }
+  // 0 = off: the user takes responsibility for printing tape on dead books.
+  // (The echo budget above is a separate control and still applies.)
+  if (risk.volumeFlowGateMin <= 0) return null;
   const states = input.flowStates;
   if (!states) {
     return "no swap-flow data — volume intents fail closed (need evidence of third-party activity)";
   }
-  const maxAgeMs = Math.max(0.5, risk.volumeFlowGateMin) * 60_000;
+  const maxAgeMs = risk.volumeFlowGateMin * 60_000;
   for (const id of [...new Set(poolIds)]) {
     const s = states.find((x) => x.poolId === id);
     if (!s || !(s.lastSwapAt > 0)) {

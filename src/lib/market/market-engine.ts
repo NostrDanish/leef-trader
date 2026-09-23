@@ -329,6 +329,17 @@ class MarketEngine {
         });
         marketBus.emit("snapshot", { snap });
 
+        // Tape seeding (E-1): the snapshot carries recent REAL swaps for the
+        // top pools — feed them as last-swap evidence (never rate evidence)
+        // so the volume gate has instant truthful data at startup instead of
+        // waiting for the 30-min logswap backfill. Deduped by txHash, so the
+        // repeated commits carrying the same tape are cheap no-ops.
+        if (snap.source === "live" && snap.trades.length > 0) {
+          swapFlow.seedTape(snap.trades, {
+            selfAccount: useWallet.getState().account || null,
+          });
+        }
+
         // Stale-market gate: never trade from a book older than the cadence
         // window allows (e.g. right after a long suspension).
         // F0: freshness = max(fetchedAt, spotAt) — a pool hot-patched from

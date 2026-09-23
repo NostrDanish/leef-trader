@@ -199,6 +199,47 @@ let lastHoldReason = "";
 let holdStreak = 0;
 
 /**
+ * Volume-gate HOLD reasons repeat verbatim every cycle while a book is dead
+ * (e.g. "Volume gated: pool #217: no third-party swap observed …"). The gate
+ * DECISION still happens every cycle — only the decision-log surfacing is
+ * deduped: one entry per identical reason per 5 minutes (same discipline as
+ * the swap-flow mismatch journal).
+ */
+export const VOLUME_GATE_HOLD_DEDUPE_MS = 5 * 60_000;
+const volumeGateHoldAt = new Map<string, number>();
+
+/** Reasons produced by volumeGateReason (any strategy prefix). */
+function isVolumeGateHoldReason(reason: string): boolean {
+  return /volume gate|volume gated|third-party swap|swap-flow data|echo budget/i.test(reason);
+}
+
+/**
+ * True when a HOLD reason may be surfaced to the decision log NOW. Reasons
+ * that are not volume-gate holds are always surfaceable (the legacy
+ * change/streak logic decides); identical volume-gate reasons surface at
+ * most once per VOLUME_GATE_HOLD_DEDUPE_MS.
+ */
+export function shouldSurfaceHold(reason: string, now: number = Date.now()): boolean {
+  if (!isVolumeGateHoldReason(reason)) return true;
+  const last = volumeGateHoldAt.get(reason) ?? 0;
+  if (now - last < VOLUME_GATE_HOLD_DEDUPE_MS) return false;
+  volumeGateHoldAt.set(reason, now);
+  // Bound the map: dead reasons expire with the map, not the session.
+  if (volumeGateHoldAt.size > 64) {
+    const oldest = volumeGateHoldAt.keys().next().value;
+    if (oldest !== undefined) volumeGateHoldAt.delete(oldest);
+  }
+  return true;
+}
+
+/** Test hook: clear the volume-gate HOLD dedupe map. */
+export function resetHoldDedupe(): void {
+  volumeGateHoldAt.clear();
+  lastHoldReason = "";
+  holdStreak = 0;
+}
+
+/**
  * Per-cycle market context for journal enrichment — computed lazily on the
  * first gate/execution of a cycle (never on HOLD-only paths), cached for the
  * cycle. Same regime/danger math the engine gates on.
@@ -474,7 +515,12 @@ async function runBotOnceInner(
 
   if (decision.kind === "hold") {
     holdStreak += 1;
-    if (decision.reason !== lastHoldReason || holdStreak % 10 === 0) {
+    if (
+      (decision.reason !== lastHoldReason || holdStreak % 10 === 0) &&
+      // Volume-gate holds re-fire verbatim every cycle on a dead book —
+      // surface them at most once per 5 min per reason (gate still blocks).
+      shouldSurfaceHold(decision.reason)
+    ) {
       b.pushDecision({ kind: "hold", mode, reason: decision.reason, priceUsd: snap.leefUsd });
     }
     lastHoldReason = decision.reason;

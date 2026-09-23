@@ -1369,6 +1369,18 @@ function RiskCard({ strategy, snap }: { strategy: BotStrategy; snap: LeefSnapsho
             onChange={(maxEchoLossPct) => setRisk({ maxEchoLossPct })}
           />
         )}
+        {(strategy === "volume" || strategy === "volume-x" || strategy === "auto" || strategy === "unleashed") && (
+          <Knob
+            ready={slidersOn}
+            label="Volume gate — third-party swap freshness (0 = off)"
+            value={risk.volumeFlowGateMin}
+            min={0}
+            max={60}
+            step={1}
+            format={(v) => (v <= 0 ? "off" : `${Math.round(v)}m`)}
+            onChange={(volumeFlowGateMin) => setRisk({ volumeFlowGateMin })}
+          />
+        )}
         <Knob
           ready={slidersOn}
           label="Max hops"
