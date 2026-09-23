@@ -146,6 +146,13 @@ export function estimateRoundTripCosts(opts: {
   exitRoute: SwapRoute | null;
   snap: LeefSnapshot;
   volPerSec: number;
+  /**
+   * Age of the book this decision is priced on, seconds. Decay charges for
+   * the FULL information gap: staleness already accrued plus the expected
+   * quote→confirm latency — a stale-book decision pays for its staleness in
+   * cost, not only in the EV freshness factor.
+   */
+  quoteAgeSec?: number;
   config?: Partial<CostConfig>;
 }): CostBreakdown {
   const cfg: CostConfig = { ...DEFAULT_COSTS, ...(opts.config ?? {}) };
@@ -154,7 +161,8 @@ export function estimateRoundTripCosts(opts: {
     ? executionCostPct(opts.exitRoute, opts.snap)
     : execInPct;
   const slippagePct = Math.max(0, cfg.slippageBufferPct);
-  const decayPct = Math.max(0, opts.volPerSec * cfg.latencySec * cfg.decaySigma * 100);
+  const decayWindowSec = Math.max(0, opts.quoteAgeSec ?? 0) + cfg.latencySec;
+  const decayPct = Math.max(0, opts.volPerSec * decayWindowSec * cfg.decaySigma * 100);
   const resourceUsd = Math.max(0, cfg.txCostUsd) * 2; // entry + exit
   const failureUsd = cfg.failureProb * cfg.txCostUsd * 2;
   // Platform fee: charged on the guaranteed output of entry AND exit.
