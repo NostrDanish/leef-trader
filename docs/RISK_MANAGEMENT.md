@@ -18,7 +18,7 @@ the execution loop (`use-bot-loop.ts`). Both fail closed.
 | Entry impact cap | `risk.maxImpactPct` | 3% |
 | Min confidence (signal) | `risk.minConfidence` | 55% |
 | Min arb edge (on-chain floor) | `risk.minEdgePct` | 0.3% |
-| Min NET edge after all costs | `risk.minNetEdgePct` | 0 (WAX micro-edge: a dust clip with a $1e-10 net is a win) |
+| Min NET edge after all costs | `risk.minNetEdgePct` | 0.1% (WAX micro-edge: dust net wins count, but the floor is not zero) |
 | Volume echo loss budget (on-chain) | `risk.maxEchoLossPct` | 1.5% |
 
 These are the shipped defaults. The desk can tighten every one of them —

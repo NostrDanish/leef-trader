@@ -1,8 +1,10 @@
 # Liquidity venues
 
-Status: Alcor is production (CLMM router). Defibox and TacoSwap are
-**on-chain CP adapters** plugged into the same route graph. Ranking quotes
-are APPROXIMATE; live Alcor legs remain EXACT.
+Status: Alcor is production (CLMM router). Defibox, TacoSwap **and
+NeftyBlocks** are **on-chain CP adapters** plugged into the same route
+graph — the Nefty venue is live (verified on-chain 2026-09-23; persisted
+`neftyVenue` kill-switch, default ON). Ranking quotes are APPROXIMATE;
+live Alcor legs remain EXACT.
 
 ## Alcor token registry
 
