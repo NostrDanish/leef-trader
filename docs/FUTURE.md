@@ -86,3 +86,26 @@ the KEEP list (see ALCOR_COMPARATIVE_AUDIT.md §6/§14).
   LEEF Trader already beats both. Their remaining UX leads worth copying:
   read-only any-account portfolio lookup (light-api), one-click
   compound/zap flows, watchlist "what moved since you looked" baselines.
+
+## From the WaxOnEdge recon (2026-09-23) — swap.we relay contract
+- WaxOnEdge's backend is dead (NXDOMAIN), but its **on-chain router contract
+  `swap.we`** is live and hammered by arb bots: stateless relay, one atomic tx
+  per route regardless of hops, per-hop minOut=0 with a single global
+  `min_return` checked at payout (balance-difference hop chaining — natively
+  fee-on-transfer safe, dust-refunding). ABI: `runstep(original_from,
+  min_return, ticker_return, contract_return, fee, send_balance_difference,
+  previous_bal, pair_ids[])`, code hash ac793e22….
+- **Project: build our own relay contract modeled on runstep.** Transformative:
+  atomic multi-venue execution (Alcor CLMM + order book + Taco + Defibox +
+  Nefty + A-DEX), zero per-hop reverts, trustless fee collection, risk-free
+  atomic arb attempts (revert = CPU only). Until then, routing through
+  `swap.we` directly is possible at its 0.30% fee as a stopgap.
+- Execution lesson adopted already: dust-safe min-outs (waxterminal
+  roundingSafeMin — shipped in feat/strategy-wax-optimization).
+- Alcor comma-separated multi-pool memo (`swapexactin#314,4505,4528#…`)
+  crosses N pools in one transfer — use for Alcor-only subpaths to cut CPU.
+- Alcor order book (alcordexmain) as a venue: measured at ~8 matches/hour
+  chain-wide (0.2% of DEX flow) — deprioritized; revisit if book flow returns.
+- Competition note: arb bots jerrytown111 / novyautomat2 run 3–5-hop circular
+  routes on swap.we with min_return = input×1.0006 — that's the bar for our
+  spread strategy's freshness discipline.

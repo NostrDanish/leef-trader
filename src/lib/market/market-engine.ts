@@ -21,7 +21,7 @@
  */
 import { attachUsdPrices } from "@/lib/leef/parse";
 import { getLeefSnapshot } from "@/lib/leef/snapshot";
-import type { AuxPool, LeefPool, LeefSnapshot } from "@/lib/leef/types";
+import { snapFreshAtMs, type AuxPool, type LeefPool, type LeefSnapshot } from "@/lib/leef/types";
 import {
   applyOnchainToAuxPool,
   applyOnchainToLeefPool,
@@ -331,7 +331,9 @@ class MarketEngine {
 
         // Stale-market gate: never trade from a book older than the cadence
         // window allows (e.g. right after a long suspension).
-        const ageMs = Date.now() - (Date.parse(snap.fetchedAt) || Date.now());
+        // F0: freshness = max(fetchedAt, spotAt) — a pool hot-patched from
+        // chain 2 s ago is fresh even if the last full API pull is not.
+        const ageMs = Date.now() - (snapFreshAtMs(snap) || Date.now());
         const maxAgeMs = this.cadenceMs() + 15_000;
         if (snap.source === "live" && ageMs <= maxAgeMs) {
           // Balances refresh without blocking the strategy cycle (the bot
@@ -433,7 +435,8 @@ class MarketEngine {
         marketBus.emit("pools", { changedIds, headBlock: this.state.headBlock });
         marketBus.emit("snapshot", { snap: patchedSnap });
         // Strategies reevaluate on chain-truth changes too (staleness gated).
-        const ageMs = Date.now() - (Date.parse(snap.fetchedAt) || Date.now());
+        // F0: the just-applied spot patch counts toward freshness.
+        const ageMs = Date.now() - (snapFreshAtMs(patchedSnap) || Date.now());
         if (ageMs <= this.cadenceMs() + 15_000) {
           // Same single lane for chain-spot updates: settle profit selection
           // before maintenance is allowed to inspect/spend inventory.
@@ -525,7 +528,9 @@ class MarketEngine {
     if (!snap || snap.source !== "live" || !this.started) return;
     const events = await swapFlow.poll();
     if (!events) return; // hidden tab / backoff / single-flight / failed
-    swapFlow.track(events, snap);
+    // Third-party flow only: the bot's own swaps must not count as volume
+    // evidence for the volume gate.
+    swapFlow.track(events, snap, { selfAccount: useWallet.getState().account || null });
     marketBus.emit("flow", { states: swapFlow.tracker.allStates(Date.now()) });
     if (events.length === 0) return;
     // Ignore checkpoints older than the last chain-truth read (they would

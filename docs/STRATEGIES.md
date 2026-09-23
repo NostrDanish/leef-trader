@@ -101,13 +101,14 @@ named assets. See [below](#treasure-growth--dont-trade-pairs-grow-assets).
 
 | Strategy | Entry logic | Exit logic | Cost awareness | Liquidity awareness | Verdict |
 |---|---|---|---|---|---|
-| Signal rider | 7-indicator vote (BB/MACD/RSI/EMA/Stoch/VWAP) flips bullish with confidence ≥ `minConfidence` | vote flips sell, TP, SL, trailing | ✅ full cost model via NetEdgeEngine | ✅ impact cap + edge sizing | KEEP (edge-gated since Phase 2b) |
-| Mean reversion | RSI ≤ 30 **and** %B ≤ 0.1 (tag of the lower band) | RSI ≥ 62 or %B ≥ 0.9, plus guards | ✅ expected move = 70% of measured distance to midline | ✅ same | KEEP |
-| Spread arb | two WAX books diverge ≥ `minEdgePct` + slippage headroom (CP scan) | atomic — same transaction | ✅ exact: Alcor CLMM re-quote, on-chain min-out floor | ✅ router legs carry real depth | KEEP (floor now enforced on the actual memos) |
-| Grid stepper | price drops one `gridStepPct` below the anchor | price rises one step above the anchor sell | ✅ expected = 80% of one step vs round-trip costs | ✅ same | KEEP |
-| DCA accumulator | every cycle until position cap | TP / SL / trailing | ✅ entries still must clear net edge | ✅ same | KEEP |
-| Volume maker | atomic WAX→LEEF→WAX echo whenever round-trip cost ≤ `maxEchoLossPct` | atomic — same transaction | ✅ exact quote + on-chain loss-budget floor | ✅ router legs | KEEP (budget-bounded; not wash trading — see below) |
-| Treasure growth | maximize 1–5 target token counts from whatever you hold (direct, multi-hop, cycle) | HOLD unless expected target growth clears the firewall | ✅ fees, impact, value-drop cap, harvest floor | ✅ exec probability + impact cap | KEEP (objective = target units, not USD) |
+| Signal rider | 7-indicator vote (BB/MACD/RSI/EMA/Stoch/VWAP) flips bullish with confidence ≥ `minConfidence` (65) **on two consecutive prints** | vote flips sell, TP, SL, trailing | ✅ full cost model via NetEdgeEngine | ✅ impact cap + edge sizing | KEEP (edge-gated since Phase 2b) |
+| Mean reversion | RSI ≤ 30 **and** %B ≤ 0.1 (tag of the lower band) **and** BB width ≥ 2× round-trip cost | RSI ≥ 62 or %B ≥ 0.9, plus guards | ✅ expected move = 70% of measured distance to midline | ✅ same | KEEP |
+| Spread arb | two WAX books diverge ≥ `minEdgePct` (0.45%) + slippage headroom; **both legs must be hot/fresh pools** | atomic — same transaction | ✅ exact: Alcor CLMM re-quote, on-chain min-out floor | ✅ router legs carry real depth | KEEP (floor now enforced on the actual memos) |
+| Grid stepper | price drops one adaptive step below the anchor (step sized off the **book's actual fee tier**, not a hardcoded 0.3%) | price rises one step above the anchor sell | ✅ expected = 80% of one step vs round-trip costs | ✅ same | KEEP |
+| DCA accumulator | every ~5 min (20× adaptive cooldown) until position cap; **refuses clips when the accumulated bag's exit route already exceeds the impact cap** | TP / SL / trailing | ✅ entries still must clear net edge | ✅ same + exit-impact preflight | KEEP |
+| Volume maker | atomic WAX→LEEF→WAX echo when round-trip cost ≤ `maxEchoLossPct` **and third-party flow is fresh (≤ `volumeFlowGateMin`) and the `$` echo budget is unspent** | atomic — same transaction | ✅ exact quote + on-chain loss-budget floor | ✅ router legs | KEEP (flow-gated + budget-bounded; not wash trading — see below) |
+| Unleashed | widest candidate mix (arb, echo, tape, next-hop, signal, meanrev) **EV-ranked through the shared opportunity gate — never random**; admissible = profit intents + flow-gated spread-funded echoes | per-candidate exits | ✅ every candidate is scored (`selectBestOpportunity`) or dropped | ✅ same | KEEP (identity = breadth, not dice) |
+| Treasure growth | maximize 1–5 target token counts from whatever you hold (direct, multi-hop, cycle); **regime-weighted, ≥5pp mix gap to convert** | HOLD unless expected target growth clears the firewall | ✅ fees, impact, value-drop cap, harvest floor | ✅ exec probability + impact cap | KEEP (objective = target units, not USD) |
 
 ## Notes on hard thresholds (and why they exist)
 
@@ -117,12 +118,35 @@ named assets. See [below](#treasure-growth--dont-trade-pairs-grow-assets).
   misquote routes and can't absorb even micro clips.
 - `maxEchoLossPct = 1.5%` default — two 0.3% fee tiers plus impact typically
   cost 0.6–1.5%; below that the echo would always revert.
-- `minNetEdgePct = 0` default — WAX micropayments. A $1e-10 net on a
-  dust clip is a win; the engine still refuses negative-EV directional
-  entries. Volume is gated by `maxEchoLossPct` (LP-fee budget), not by
-  a dollar profit floor.
+- `minNetEdgePct = 0.1%` default — WAX micropayments: dust net wins count,
+  but the floor is not zero; the engine still refuses negative-EV
+  directional entries. Volume is gated by `maxEchoLossPct` (LP-fee budget)
+  plus the flow gate below, not by a dollar profit floor.
 - `maxQuoteAgeSec = 45s` — the book refreshes every 30s; 45s tolerates
-  exactly one missed pull, then fails closed.
+  exactly one missed pull, then fails closed. Freshness keys off
+  `max(fetchedAt, spotAt)` (fix F0): a hot pool re-read from chain 2s ago
+  never scores as stale just because the last full API pull is old.
+  Freshness is per-SNAPSHOT (a hot-pool patch freshens the whole snapshot);
+  the bound is per-pool: arb requires both legs hot, the volume gate needs
+  per-pool third-party flow, and the exact-quote gate re-reads the involved
+  rows from chain before signing.
+- `volumeFlowGateMin = 10` — volume intents (echo, volume, volume-x tape)
+  require a THIRD-PARTY swap on every involved pool within this window and
+  FAIL CLOSED to HOLD when flow data is unavailable. On a chain where the
+  median swap is $0.005 and pools see 45-minute droughts, printing tape on
+  a dead book buys nothing. Flow never gates profit intents (arb, signal…).
+- `echoBudgetUsd = $5` — session cap on `stats.echoCostUsd`; once spent,
+  volume intents stop until the session resets.
+- `minConfidence = 65` + 2-print confirmation — on dead books the price
+  series is a step function and one print can fake a confident vote, so
+  signal entries require the blend to vote BUY on two consecutive prints.
+- `minEdgePct = 0.45%` — quote→sign latency is 2–4s and the arb is enforced
+  on-chain, so a higher floor only skips dust. Both arb legs must be
+  hot/fresh pools (recently table-read): stale aux books create phantom
+  spreads.
+- `GROWTH_MIX_GAP_MIN_PP = 5pp` — growth converts/rebalances only toward a
+  treasure whose wallet gap is at least 5 percentage points; near-balanced
+  wallets don't churn fees.
 
 ## Volume maker is not wash trading
 
@@ -134,6 +158,18 @@ hides its cost: `volumeUsd` and `echoCostUsd` are tracked separately in the
 bot stats. Per the project philosophy, volume is never the objective
 function — the budget exists so volume, when it happens, is bought at a
 known, bounded price.
+
+**Flow gate (2026-09 discipline pass).** Echoes/tape additionally require
+evidence the book is alive: a third-party swap on every involved pool within
+`volumeFlowGateMin` minutes (default 10), with the bot's own swaps excluded
+from the flow tracker, and a session echo budget (`echoBudgetUsd`, default
+$5) that stops volume intents once spent. No flow data → FAIL CLOSED to
+HOLD. This applies to volume intents only; profit intents (arb, signal,
+meanrev, grid, path/cycle, growth) are never flow-gated. Unleashed keeps
+its wide candidate mix but routes every candidate through the same scoring
++ reject gate as Auto and picks the highest expected value — the dice are
+gone; the only admissible volume intent there is a flow-gated,
+spread-funded (net ≥ 0) echo.
 
 ## Predicted vs realized edge (calibration)
 
@@ -156,10 +192,14 @@ treasures and a mix (e.g. LEEF 60 / WAX 30 / TLM 10) plus a mode:
 | Compound | ~22% | 0.85% | 1.1% | Tiny conversions and cycles. Small edges, rebuilt every fill |
 
 **Objective:** weighted target-token growth (target units), haircut by
-execution probability, quote freshness and impact. Mix gaps are
+execution probability, quote freshness, impact **and the market regime
+weight** (`regimeWeight(regime, "growth")` — wired into `regimeFactor`;
+high-vol regimes scale candidates down, uptrends up). Mix gaps are
 **wallet-relative** ("LEEF 70%" = 70% of the whole portfolio), so a wallet
 full of USDC shows a huge LEEF gap — that working capital is exactly what
-the engine wants to deploy. Underweight treasures score higher.
+the engine wants to deploy. Underweight treasures score higher. Converts
+and rebalances require a destination gap of at least **5 percentage
+points** (`GROWTH_MIX_GAP_MIN_PP`) — near-balanced wallets don't churn fees.
 
 **Exact-quote gate (graph proposes, venue decides):** the candidate's
 growth thesis is re-run on the fresh venue quote for the exact size before

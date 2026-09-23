@@ -1,7 +1,7 @@
 import type { ArbPlan } from "@/lib/leef/bot-engine";
 import type { LeefSnapshot, SwapRoute } from "@/lib/leef/types";
 import { LEEF_CONTRACT, WAX_CONTRACT, WAX_SYMBOL } from "@/lib/leef/types";
-import { swapContractOf, venueOfPoolId } from "@/lib/leef/venues";
+import { dustSafeMinOut, isDustOutput, swapContractOf, venueOfPoolId } from "@/lib/leef/venues";
 import { verifyExecutableRoute } from "@/lib/leef/quote-verify";
 import { TradeError } from "./trade-error";
 import { fetchAlcorRoute, parseAssetAmount, type AlcorRouteQuote } from "./alcor-route";
@@ -60,6 +60,47 @@ function allAlcor(route: SwapRoute): boolean {
 }
 
 /**
+ * Dust-safe min-out rewrite (waxterminal roundingSafeMin lesson): when the
+ * expected output is below ~1000 raw units, a slippage-adjusted memo min-out
+ * is precision noise the pool's tick rounding cannot honor — the swap REVERTS
+ * on-chain ("Received lower than minTokenOut: 30, poolId: 7801"). For dust
+ * outputs we ask exactly 1 raw unit instead: the trade accepts any non-zero
+ * execution rather than reverting. Gated by size, so sandwich risk is bounded
+ * to dust (< 1000 raw units ≈ sub-cent). Returns null when the memo is not a
+ * well-formed swapexactin paying `tokenOut` — the caller fails closed.
+ */
+function dustSafeAlcorMemo(
+  memo: string,
+  tokenOut: { symbol: string; contract: string; decimals: number },
+): string | null {
+  const parts = memo.split("#");
+  if (parts.length !== 5) return null;
+  const min = parts[3]!.trim().match(/^(\d+(?:\.\d+)?)\s+([A-Z0-9]+)@([a-z1-5.]{1,13})$/);
+  if (!min) return null;
+  if (min[2] !== tokenOut.symbol.toUpperCase() || min[3] !== tokenOut.contract) return null;
+  const oneUnit = (1 / 10 ** tokenOut.decimals).toFixed(tokenOut.decimals);
+  parts[3] = `${oneUnit} ${min[2]}@${min[3]}`;
+  return parts.join("#");
+}
+
+/**
+ * Rewrite every router memo's min-out to the 1-unit dust ask. Throws when any
+ * memo is unparseable — a dust trade signs only fully understood memos.
+ */
+function dustRewriteMemos(
+  memos: string[],
+  tokenOut: { symbol: string; contract: string; decimals: number },
+): string[] {
+  return memos.map((m) => {
+    const rewritten = dustSafeAlcorMemo(m, tokenOut);
+    if (!rewritten) {
+      throw new TradeError("QUOTE_FAILURE", "dust-safe rewrite met an unparseable router memo");
+    }
+    return rewritten;
+  });
+}
+
+/**
  * Alcor-only routes still requote through Alcor's CLMM router (executable
  * truth). Defibox/Taco legs use on-chain CP min-out memos — there is no
  * equivalent public router. Mixed routes are sequential transfers in one tx.
@@ -100,18 +141,6 @@ async function buildTransfers(opts: {
         maxHops: Math.min(10, Math.max(2, opts.route.legs.length)),
         decimalsIn: tokenIn.decimals,
       }));
-    const transfers = quote.swaps.map((s) => ({
-      tokenContract: tokenIn.contract,
-      to: ALCOR_SWAP_CONTRACT,
-      quantity: s.input,
-      memo: s.memo.replaceAll("<receiver>", opts.account),
-    }));
-    for (const t of transfers) {
-      const a = parseAsset(t.quantity);
-      if (!a || !(a.amount > 0)) {
-        throw new TradeError("MIN_OUT_FAILED", `Invalid amount "${t.quantity}"`);
-      }
-    }
     const expectedOut = parseAssetAmount(quote.output) || opts.route.amountOut;
     const outScale = 10 ** tokenOut.decimals;
     if (Math.floor(expectedOut * outScale) <= 0) {
@@ -119,6 +148,26 @@ async function buildTransfers(opts: {
         "MIN_OUT_FAILED",
         `Output rounds to 0 ${tokenOut.symbol} — trade too small to execute`,
       );
+    }
+    // Dust outputs (roundingSafeMin): ask exactly 1 raw unit per leg — the
+    // router's slippage-adjusted min is unattainable at this size and the
+    // swap would revert. quote-verify computed the same 1-unit ask, so the
+    // gate-approved guarantee and the signed memos stay identical.
+    const dust = isDustOutput(expectedOut, tokenOut.decimals);
+    const transfers = quote.swaps.map((s) => ({
+      tokenContract: tokenIn.contract,
+      to: ALCOR_SWAP_CONTRACT,
+      quantity: s.input,
+      memo: s.memo.replaceAll("<receiver>", opts.account),
+    }));
+    if (dust) {
+      for (const t of transfers) t.memo = dustRewriteMemos([t.memo], tokenOut)[0]!;
+    }
+    for (const t of transfers) {
+      const a = parseAsset(t.quantity);
+      if (!a || !(a.amount > 0)) {
+        throw new TradeError("MIN_OUT_FAILED", `Invalid amount "${t.quantity}"`);
+      }
     }
     // Sign-time guarantee check on the ACTUAL memos being signed: every leg's
     // on-chain min-out must parse and be > 0, the summed min-outs must clear
@@ -138,8 +187,11 @@ async function buildTransfers(opts: {
     if (floorViolation) throw new TradeError("QUOTE_FAILURE", floorViolation);
     // A missing/unparseable minReceived fails closed — it is never invented
     // from expectedOut (that would fabricate the guarantee the fee and the
-    // gate then rely on).
-    const guaranteedOut = parseAssetAmount(quote.minReceived);
+    // gate then rely on). Dust routes are the roundingSafeMin exception: the
+    // guarantee is exactly what the rewritten memos ask — 1 raw unit per leg.
+    const guaranteedOut = dust
+      ? transfers.length * dustSafeMinOut(expectedOut, opts.slippagePct / 100, tokenOut.decimals)
+      : parseAssetAmount(quote.minReceived);
     if (!(guaranteedOut > 0)) {
       throw new TradeError(
         "QUOTE_FAILURE",
@@ -171,12 +223,17 @@ async function buildTransfers(opts: {
       if (!quote) {
         throw new TradeError("VENUE_UNAVAILABLE", "Alcor leg missing fresh quote");
       }
+      // Dust leg (roundingSafeMin): quote-verify verified a 1-unit ask for
+      // this leg — sign exactly that, not the router's unattainable strict min.
+      const tout = metaOf(leg.tokenOut, opts.snap);
+      const legDust = v != null && isDustOutput(v.amountOut, tout.decimals);
       for (const s of quote.swaps) {
+        const memo = s.memo.replaceAll("<receiver>", opts.account);
         transfers.push({
           tokenContract: tin.contract,
           to: ALCOR_SWAP_CONTRACT,
           quantity: s.input,
-          memo: s.memo.replaceAll("<receiver>", opts.account),
+          memo: legDust ? dustRewriteMemos([memo], tout)[0]! : memo,
         });
       }
       continue;

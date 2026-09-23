@@ -287,6 +287,23 @@ describe("bot edge gate (evaluateBot)", () => {
         strategy: "volume",
         balances: { WAX: 50 },
         risk: { ...DEFAULT_RISK, maxEchoLossPct: 1.5, minTradeUsd: 0 },
+        // Flow gate: volume intents need evidence of third-party activity.
+        flowStates: [
+          {
+            poolId: 1159,
+            swapsInWindow: 2,
+            buys: 1,
+            sells: 1,
+            signedBaseFlow: 0,
+            signedQuoteFlow: 0,
+            imbalancePct: 0,
+            volumeQuotePerMin: 1,
+            largestSwapQuote: 5,
+            lastSwapAt: Date.now() - 60_000,
+            lastSwapAgeMs: 60_000,
+            lastMovePct: 0,
+          },
+        ],
       }),
     );
     expect(d.kind).toBe("arb");

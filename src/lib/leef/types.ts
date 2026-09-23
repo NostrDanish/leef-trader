@@ -44,7 +44,7 @@ export type AuxPool = {
   tvlUsd: number;
   volume24Usd: number;
   /** Liquidity venue. Omitted = Alcor (legacy aux books). */
-  venue?: "alcor" | "defibox" | "taco";
+  venue?: "alcor" | "defibox" | "taco" | "nefty";
   /** Alcor's quoted spot price (B per 1 A) — CLMM-aware, unlike raw reserves. */
   priceA?: number;
   /** Alcor's quoted spot price (A per 1 B). */
@@ -81,7 +81,7 @@ export type QuoteLeg = {
   amountOut: number;
   feePct: number;
   priceImpact: number;
-  venue?: "alcor" | "defibox" | "taco";
+  venue?: "alcor" | "defibox" | "taco" | "nefty";
 };
 
 export type SwapRoute = {
@@ -148,10 +148,30 @@ export type LeefSnapshot = {
   trades: LiveTrade[];
   /** Priced tradable token universe on Alcor (for the rebalancer). */
   universe: import("./universe").UniverseToken[];
-  /** Defibox + TacoSwap CP books (namespaced ids). Empty when discovery failed. */
+  /** Defibox + TacoSwap + Nefty CP books (namespaced ids). Empty when discovery failed. */
   venues?: import("./venues").VenuePool[];
   warning?: string;
 };
+
+/**
+ * ms epoch of the freshest book content: the API pull (`fetchedAt`) OR a
+ * later on-chain spot patch (`spotAt`). Hot pools re-read from swap.alcor
+ * between API pulls must NOT score as stale just because the last full API
+ * pull is old (freshness bug F0).
+ *
+ * NOTE: freshness is SNAPSHOT-wide — a hot-pool-only patch marks the whole
+ * snapshot fresh. That is safe because the per-pool gates bound it: spread
+ * arb requires BOTH legs to be hot/fresh pools (recently table-read), the
+ * volume gate needs per-pool third-party flow, and the exact-quote gate
+ * re-reads the involved rows from chain before signing. Stale aux books can
+ * never carry a trade on a "fresh" timestamp alone.
+ */
+export function snapFreshAtMs(snap: Pick<LeefSnapshot, "fetchedAt" | "spotAt">): number {
+  const fetched = Date.parse(snap.fetchedAt);
+  const spot = snap.spotAt ? Date.parse(snap.spotAt) : NaN;
+  if (!Number.isFinite(fetched)) return spot;
+  return Number.isFinite(spot) ? Math.max(fetched, spot) : fetched;
+}
 
 export const LEEF_CONTRACT = "leefmaincorp";
 export const LEEF_SYMBOL = "LEEF";

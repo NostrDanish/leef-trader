@@ -309,6 +309,13 @@ function growthScoreOf(o: {
   return Math.round(100 * g * o.execProb * drop * impact);
 }
 
+/**
+ * Mix-gap threshold (pp of wallet): only convert/rebalance toward a treasure
+ * when its gap to target is at least this large. Near-balanced wallets must
+ * not churn fees on sub-noise corrections.
+ */
+export const GROWTH_MIX_GAP_MIN_PP = 5;
+
 function firewall(
   o: {
     kind: GrowthKind;
@@ -328,6 +335,14 @@ function firewall(
   },
   p: ModePolicy,
 ): string | null {
+  // Mix-gap gate: a conversion only makes sense when the destination is
+  // meaningfully underweight. (Cycles/harvests repair no mix — exempt.)
+  if (
+    (o.kind === "convert" || o.kind === "rebalance") &&
+    o.toGap < GROWTH_MIX_GAP_MIN_PP - 1e-9
+  ) {
+    return `mix gap to ${o.to} is ${o.toGap.toFixed(1)}pp < ${GROWTH_MIX_GAP_MIN_PP}pp — near-balanced, converting would just churn fees`;
+  }
   const dropCap = o.acquiringTreasure ? p.acquireDropCapPct : p.dropCapPct;
   if (o.dropPct > dropCap + 1e-9) {
     return `portfolio would drop ${o.dropPct.toFixed(2)}% > ${dropCap}% cap (anti-destruction)`;
@@ -419,6 +434,11 @@ export function planGrowthAction(
     seed?: number;
     quoteAgeMs?: number;
     maxQuoteAgeMs?: number;
+    /**
+     * Regime multiplier on expected growth (regimeWeight(regime, "growth")).
+     * Scales candidates down in hostile regimes, up in favorable ones.
+     */
+    regimeFactor?: number;
   },
 ): GrowthPlan | GrowthHold {
   const targets = normalizeTargets(opts.targets);
@@ -434,6 +454,7 @@ export function planGrowthAction(
   const quoteAge = opts.quoteAgeMs ?? 0;
   const maxAge = Math.max(1, opts.maxQuoteAgeMs ?? 45_000);
   const fresh = freshnessFactor(quoteAge, maxAge);
+  const regF = Math.max(0, opts.regimeFactor ?? 1);
 
   const entries = canonicalBalanceEntries(balances, snap.universe)
     .map((e) => ({ ...e, usd: e.amount * (usdPriceOf(e.token.symbol, snap) || 0) }))
@@ -481,7 +502,7 @@ export function planGrowthAction(
       actions: cx.actions,
     });
     const impactHaircut = Math.min(1, Math.max(0.55, 1 - route.priceImpact / 0.12));
-    const expectedGrowth = growthUnits * execProb * fresh * impactHaircut;
+    const expectedGrowth = growthUnits * execProb * fresh * impactHaircut * regF;
     const need = p.minGrowthFrac * Math.max(0.01, usdIn);
     const cycleGainPct = isCycle && spend > 0 ? ((route.amountOut - spend) / spend) * 100 : 0;
     const fromGap = gaps.get(from) ?? 0;

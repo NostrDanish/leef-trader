@@ -32,6 +32,8 @@ import type { LeefSnapshot, SwapRoute } from "./types";
 export type EdgeVerdict = {
   route: SwapRoute;
   exitRoute: SwapRoute | null;
+  /** Price impact of the modeled exit route, percent (null = none quotable). */
+  exitImpactPct: number | null;
   amountIn: number;
   notionalUsd: number;
   expectedGrossPct: number;
@@ -55,6 +57,8 @@ export function evaluateEntry(opts: {
   /** Required clearance above all costs, percent of notional. */
   minNetEdgePct: number;
   volPerSec: number;
+  /** Age of the book being priced, seconds — charged into decay. */
+  quoteAgeSec?: number;
   costs?: Partial<CostConfig>;
 }): EdgeVerdict | null {
   const route = bestExecutionRoute(
@@ -80,6 +84,7 @@ export function evaluateEntry(opts: {
     exitRoute,
     snap: opts.snap,
     volPerSec: opts.volPerSec,
+    quoteAgeSec: opts.quoteAgeSec,
     config: opts.costs,
   });
 
@@ -104,6 +109,7 @@ export function evaluateEntry(opts: {
   return {
     route,
     exitRoute,
+    exitImpactPct: exitRoute ? exitRoute.priceImpact * 100 : null,
     amountIn: opts.amountIn,
     notionalUsd,
     expectedGrossPct: opts.expectedGrossPct,
@@ -142,6 +148,8 @@ export function optimizeEntrySize(opts: {
   /** Inclusive ceiling (remaining room under max position ∧ wallet). */
   maxIn: number;
   volPerSec: number;
+  /** Age of the book being priced, seconds — charged into decay. */
+  quoteAgeSec?: number;
   costs?: Partial<CostConfig>;
 }): SizedEntry | null {
   const minIn = Math.max(0, opts.minIn);

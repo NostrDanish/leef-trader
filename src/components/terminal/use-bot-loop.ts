@@ -45,7 +45,7 @@ import { maybeAutoReview } from "@/lib/leef/ai-review";
 import { refreshExecutionState } from "@/lib/market/execution-state";
 import { aggregateFlowRisk, swapFlow } from "@/lib/market/swap-flow";
 import { governTrade, portfolioState } from "@/lib/market/portfolio-governor";
-import type { LeefSnapshot, SwapRoute } from "@/lib/leef/types";
+import { snapFreshAtMs, type LeefSnapshot, type SwapRoute } from "@/lib/leef/types";
 import { parseAssetAmount, type AlcorRouteQuote } from "@/lib/wallet/alcor-route";
 import { WAX_CONTRACT } from "@/lib/leef/types";
 import { waxResourceBlock } from "@/lib/wallet/chain";
@@ -409,6 +409,13 @@ async function runBotOnceInner(
     ...b.risk,
     maxQuoteAgeSec: Math.max(b.risk.maxQuoteAgeSec, syncSec + 15),
   };
+  const live = w.canSign();
+  const mode: "paper" | "live" = live ? "live" : "paper";
+  // Per-pool third-party flow states: feed BOTH the danger context and the
+  // volume gate. Kill-switch off → null → volume intents fail closed.
+  const flowStates = useTerminal.getState().flowGuardEnabled
+    ? swapFlow.tracker.allStates(Date.now())
+    : null;
 
   let decision = evaluateBot({
     now: Date.now(),
@@ -425,7 +432,9 @@ async function runBotOnceInner(
     tradesThisHour: b.tradesThisHour,
     sessionRealizedUsd: b.stats.realizedUsd,
     sessionStartEquityUsd: b.stats.startEquityUsd,
-    calibration: b.stats.byStrategy,
+    // Per-mode calibration: live fills rank live EV; paper fills are tracked
+    // apart and calibrate paper decisions only (they never revert).
+    calibration: mode === "live" ? b.stats.byStrategy : b.stats.byStrategyPaper,
     quote: b.quote,
     base: b.base,
     growthTargets: b.growthTargets,
@@ -438,14 +447,14 @@ async function runBotOnceInner(
     ).length,
     // E-1 swap flow → danger score, gated by the terminal-store kill-switch.
     // Risk context only: flow can raise danger, it can NEVER create an entry.
-    flow: useTerminal.getState().flowGuardEnabled
-      ? aggregateFlowRisk(swapFlow.tracker.allStates(Date.now()), risk.maxQuoteAgeSec * 1000)
+    flow: flowStates
+      ? aggregateFlowRisk(flowStates, risk.maxQuoteAgeSec * 1000)
       : null,
+    // Volume gate inputs: per-pool third-party flow + session echo budget.
+    flowStates,
+    echoCostUsd: b.stats.echoCostUsd,
     force: opts?.force ?? null,
   });
-
-  const live = w.canSign();
-  const mode: "paper" | "live" = live ? "live" : "paper";
 
   // A position opened live can't be managed in paper mode (and vice versa).
   if (
@@ -559,6 +568,8 @@ async function runBotOnceInner(
       minIn: bounds.minIn,
       maxIn: bounds.maxIn,
       volPerSec: realizedVolPerSec(b.series),
+      // Cost decay pays for book staleness too, not just quote→sign latency.
+      quoteAgeSec: Math.max(0, (Date.now() - snapFreshAtMs(book)) / 1000),
       ...(learnedSlip != null ? { costs: { slippageBufferPct: learnedSlip } } : {}),
     });
     timings.sizeOptimizationMs = Date.now() - tSize;
@@ -1482,7 +1493,7 @@ async function runBotOnceInner(
         realEdgePct:
           position && position.entryCostUsd > 0 ? (pnlUsd / position.entryCostUsd) * 100 : 0,
         latencyMs: live ? Date.now() - t0 : null,
-      });
+      }, mode);
       b.pushDecision({
         kind: "sell",
         mode,
@@ -1779,7 +1790,7 @@ async function runBotOnceInner(
         realEdgePct:
           (realizedWax != null ? realizedWax / plan.waxIn : plan.waxOut / plan.waxIn - 1) * 100,
         latencyMs: live ? Date.now() - t0 : null,
-      });
+      }, mode);
       if (isEcho) {
         b.recordVolume((plan.waxIn + plan.waxOut) * snap.waxUsd, -pnlUsd);
       }
