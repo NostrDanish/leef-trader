@@ -44,7 +44,7 @@ export type AuxPool = {
   tvlUsd: number;
   volume24Usd: number;
   /** Liquidity venue. Omitted = Alcor (legacy aux books). */
-  venue?: "alcor" | "defibox" | "taco";
+  venue?: "alcor" | "defibox" | "taco" | "nefty";
   /** Alcor's quoted spot price (B per 1 A) — CLMM-aware, unlike raw reserves. */
   priceA?: number;
   /** Alcor's quoted spot price (A per 1 B). */
@@ -81,7 +81,7 @@ export type QuoteLeg = {
   amountOut: number;
   feePct: number;
   priceImpact: number;
-  venue?: "alcor" | "defibox" | "taco";
+  venue?: "alcor" | "defibox" | "taco" | "nefty";
 };
 
 export type SwapRoute = {
@@ -148,7 +148,7 @@ export type LeefSnapshot = {
   trades: LiveTrade[];
   /** Priced tradable token universe on Alcor (for the rebalancer). */
   universe: import("./universe").UniverseToken[];
-  /** Defibox + TacoSwap CP books (namespaced ids). Empty when discovery failed. */
+  /** Defibox + TacoSwap + Nefty CP books (namespaced ids). Empty when discovery failed. */
   venues?: import("./venues").VenuePool[];
   warning?: string;
 };

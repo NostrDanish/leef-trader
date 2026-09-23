@@ -63,7 +63,7 @@ type Edge = {
   tvlUsd: number;
   volume24Usd: number;
   pairName: string;
-  venue: "alcor" | "defibox" | "taco";
+  venue: "alcor" | "defibox" | "taco" | "nefty";
 };
 export type RouteEdge = Edge;
 

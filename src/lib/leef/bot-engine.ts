@@ -505,11 +505,11 @@ function bestSellRoute(
  * raw reserves, which are the exact CP reserves there. The venue quote and
  * min-out memo remain the hard guards at execution.
  */
-/** LEEF/WAX books from Defibox/Taco, shaped as LeefPool so arb can cross venues. */
+/** LEEF/WAX books from Defibox/Taco/Nefty, shaped as LeefPool so arb can cross venues. */
 function venueWaxLeefPools(snap: LeefSnapshot): LeefPool[] {
   const out: LeefPool[] = [];
   for (const p of snap.aux) {
-    if (p.venue !== "defibox" && p.venue !== "taco") continue;
+    if (p.venue !== "defibox" && p.venue !== "taco" && p.venue !== "nefty") continue;
     const wax = isWaxToken(p.tokenA) ? p.tokenA : isWaxToken(p.tokenB) ? p.tokenB : null;
     const leef = isLeefToken(p.tokenA) ? p.tokenA : isLeefToken(p.tokenB) ? p.tokenB : null;
     if (!wax || !leef || leef.quantity < 1_000_000) continue;

@@ -259,7 +259,7 @@ function mergeSnap(book: {
   };
 }
 
-/** Cold path: tape, remaining tracked pools, Defibox/Taco topology. Never blocks. */
+/** Cold path: tape, remaining tracked pools, Defibox/Taco/Nefty topology. Never blocks. */
 function kickCold(leef: LeefPool[], aux: AuxPool[]): void {
   if (coldInflight) return;
   coldInflight = true;

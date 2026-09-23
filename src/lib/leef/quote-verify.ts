@@ -4,6 +4,7 @@
  *   Alcor     → swapRouter (CLMM, executable memos)
  *   Defibox   → on-chain pair row + CP + min-out memo (no public router)
  *   TacoSwap  → on-chain pair row + CP + min-out memo
+ *   Nefty     → on-chain pair row (by code) + CP + `swap:<CODE>,min:` memo
  *
  * A local Defibox/Taco number is MODEL_ONLY until the pair row is re-read.
  * Stale or missing venue quotes are excluded from live execution.
@@ -15,8 +16,14 @@
  * the real freshness guarantee (and it is enforced on every executable leg).
  */
 import { quoteConstantProduct } from "./amm";
-import { defiboxMemo, refreshVenuePair, tacoMemo } from "./venue-adapters";
-import { nativePoolId, venueOfPoolId, type VenueId } from "./venues";
+import { defiboxMemo, neftyMemo, refreshVenuePair, tacoMemo } from "./venue-adapters";
+import {
+  dustSafeMinOut,
+  isDustOutput,
+  nativePoolId,
+  venueOfPoolId,
+  type VenueId,
+} from "./venues";
 import type { LeefSnapshot, QuoteLeg, SwapRoute } from "./types";
 import { fetchAlcorRoute, parseAssetAmount, type AlcorRouteQuote } from "@/lib/wallet/alcor-route";
 import { TradeError } from "@/lib/wallet/trade-error";
@@ -209,7 +216,14 @@ export async function verifyExecutableRoute(opts: {
       // Fail closed: a missing/unparseable minReceived means the quote has NO
       // enforceable floor. Never invent one from expectedOut — the gate, fee
       // and chained-leg sizing would run on a fabricated guarantee.
-      const minOut = parseAssetAmount(quote.minReceived);
+      // Dust exception (waxterminal roundingSafeMin): below ~1000 raw units of
+      // expected output the enforceable ask is exactly 1 raw unit — sign.ts
+      // rewrites the router memos to that same 1-unit ask, so this verified
+      // min-out is the number the chain will actually enforce.
+      const dust = isDustOutput(expectedOut, tokenOut.decimals);
+      const minOut = dust
+        ? dustSafeMinOut(expectedOut, opts.slippagePct / 100, tokenOut.decimals)
+        : parseAssetAmount(quote.minReceived);
       if (!(minOut > 0)) {
         throw new TradeError(
           "QUOTE_FAILURE",
@@ -275,8 +289,13 @@ export async function verifyExecutableRoute(opts: {
         throw new TradeError("ROUTE_DISAPPEARED", "Alcor route leg returned no output");
       }
       // Fail closed on a missing/zero minReceived (see the fast path above) —
-      // the guarantee is never fabricated from the expected output.
-      const legMinOut = parseAssetAmount(quote.minReceived);
+      // the guarantee is never fabricated from the expected output. Dust legs
+      // are the roundingSafeMin exception: the ask is exactly 1 raw unit and
+      // sign.ts rewrites the leg memo to that same ask.
+      const legDust = isDustOutput(amountOut, tout.decimals);
+      const legMinOut = legDust
+        ? dustSafeMinOut(amountOut, slip, tout.decimals)
+        : parseAssetAmount(quote.minReceived);
       if (!(legMinOut > 0)) {
         throw new TradeError(
           "QUOTE_FAILURE",
@@ -294,7 +313,25 @@ export async function verifyExecutableRoute(opts: {
         alcor: quote,
       });
     } else {
-      const pair = await refreshVenuePair(venue, nativePoolId(leg.poolId), opts.snap.waxUsd);
+      // Nefty's table is keyed by pair code, not numeric id — recover the
+      // code from the discovery snapshot (topology only; the row itself is
+      // re-read fresh below). No code → fail closed.
+      const pairCode =
+        venue === "nefty"
+          ? opts.snap.venues?.find((v) => v.id === leg.poolId)?.pairCode
+          : undefined;
+      if (venue === "nefty" && !pairCode) {
+        throw new TradeError(
+          "MODEL_ONLY",
+          `nefty pair ${nativePoolId(leg.poolId)} has no discovered pair code — not executable`,
+        );
+      }
+      const pair = await refreshVenuePair(
+        venue,
+        nativePoolId(leg.poolId),
+        opts.snap.waxUsd,
+        pairCode,
+      );
       if (!pair) {
         throw new TradeError(
           "MODEL_ONLY",
@@ -325,8 +362,25 @@ export async function verifyExecutableRoute(opts: {
         );
       }
       amountOut = q.amountOut;
-      const minOut = amountOut * (1 - slip);
       const tout = metaOf(leg.tokenOut, opts.snap);
+      // Dust-safe ask (waxterminal roundingSafeMin): below ~1000 raw units of
+      // expected output the memo asks for exactly 1 unit — a slippage-adjusted
+      // ask at that size is precision noise the pool's rounding cannot honor,
+      // so the trade would revert for zero economic protection. The verified
+      // min-out IS the memo ask (never fabricated), so the C1 floor and the
+      // gate evaluate the same number the chain enforces. Dust hops chain
+      // that 1-unit guarantee into the next leg, which then has no output —
+      // dust routes fail closed here rather than reverting on-chain.
+      const minOut = dustSafeMinOut(amountOut, slip, tout.decimals);
+      if (!(minOut > 0)) {
+        throw new TradeError(
+          "MIN_OUT_FAILED",
+          `${venue} leg output rounds to 0 ${tout.symbol} — trade too small to execute`,
+        );
+      }
+      if (venue === "nefty" && !pair.pairCode) {
+        throw new TradeError("MODEL_ONLY", "nefty fresh row carried no pair code");
+      }
       verified.push({
         venue,
         trust: "executable",
@@ -337,7 +391,9 @@ export async function verifyExecutableRoute(opts: {
         memo:
           venue === "defibox"
             ? defiboxMemo(minOut, tout.decimals, pair.nativeId)
-            : tacoMemo(minOut, tout.symbol, tout.contract, tout.decimals),
+            : venue === "taco"
+              ? tacoMemo(minOut, tout.symbol, tout.contract, tout.decimals)
+              : neftyMemo(minOut, tout.decimals, pair.pairCode!),
       });
     }
     if (split) expectedOut += amountOut;

@@ -9,11 +9,23 @@
  *   <minOutAmount> <SYMBOL>@<contract>
  * Pools table is tried as `pairs` then `pools`. Fee documented as 0.30%
  * (3000 Alcor units) for unstaked swaps.
+ *
+ * NeftyBlocks: contract swap.nefty, table `pairs` keyed by symbol_code
+ * (`code`, e.g. "USDANO") with extended_asset reserve0/reserve1. Verified
+ * live 2026-09-23: memo `swap:<CODE>,min:<rawUnits>` (WaxOnEdge omits `,min:`
+ * — a zero floor; the C1 hardening forbids that here, so the min is mandatory
+ * and > 0). Fee from the `configs` singleton: fee.protocol (10 bp, skimmed
+ * inline to sfees.nefty) + fee.trade (20 bp) = 30 bp = 0.30%. Constant-product
+ * verified against executed logswap traces (out = (in−fee)·r1/(r0+in−fee)).
+ * Reverse-engineered schema — discovery fails CLOSED (log + skip) on any
+ * shape surprise, and the venue sits behind a persisted kill-switch.
  */
 import { rpcPost } from "@/lib/wallet/chain";
 import {
   DEFIBOX_ID_BASE,
   DEFIBOX_SWAP,
+  NEFTY_ID_BASE,
+  NEFTY_SWAP,
   TACO_ID_BASE,
   TACO_SWAP,
   parseAssetQty,
@@ -237,6 +249,178 @@ export function parseTacoPairs(rows: TableRow[], waxUsd: number): VenuePool[] {
   return out;
 }
 
+/* ------------------------------------------------------------------ */
+/* NeftyBlocks (swap.nefty) — reverse-engineered, fail closed          */
+/* ------------------------------------------------------------------ */
+
+/**
+ * Nefty fee in Alcor units: 3000 = 0.30%. Live `configs` row 2026-09-23:
+ * fee.protocol = 10 bp (skimmed inline to sfees.nefty) + fee.trade = 20 bp.
+ * Cross-checked against executed logswap fees (e.g. 2.09944290 BANKSY on
+ * 699.81430149 in = exactly 0.3%).
+ */
+export const NEFTY_FEE_ALCOR = 3000;
+
+/** Pair code shape: EOSIO symbol_code — 1–7 uppercase alnum chars. */
+const NEFTY_CODE_RE = /^[A-Z0-9]{1,7}$/;
+/** Page cap for the code-keyed pairs sweep (756 pairs live = 4 pages @200). */
+const NEFTY_MAX_PAGES = 12;
+
+/**
+ * Stable numeric handle for a Nefty pair code: 32-bit FNV-1a. The on-chain
+ * key is the symbol_code string itself (no numeric id), so the namespaced
+ * route-graph id is NEFTY_ID_BASE + hash(code). Collision handling is in
+ * parseNeftyPairs (first code wins, the other is logged and skipped).
+ */
+export function neftyPairNativeId(code: string): number {
+  let h = 0x811c9dc5;
+  for (let i = 0; i < code.length; i++) {
+    h ^= code.charCodeAt(i);
+    h = Math.imul(h, 0x01000193);
+  }
+  return h >>> 0;
+}
+
+/** extended_asset → VenueToken; null on any shape surprise. */
+function neftyToken(raw: unknown): VenueToken | null {
+  if (!raw || typeof raw !== "object") return null;
+  const o = raw as { quantity?: unknown; contract?: unknown };
+  const contract = String(o.contract ?? "");
+  const qty = parseAssetQty(o.quantity);
+  if (!qty || !contract) return null;
+  const frac = String(o.quantity ?? "").trim().split(/\s+/)[0]?.split(".")[1] ?? "";
+  return { symbol: qty.symbol, contract, decimals: frac.length, quantity: qty.amount };
+}
+
+function neftyWarn(msg: string, row: TableRow): void {
+  // Fail CLOSED on schema surprises: log + skip the pool, never throw into
+  // the engine loop. This venue's schema is reverse-engineered.
+  console.warn(`[nefty] skipping pair row: ${msg}`, JSON.stringify(row).slice(0, 200));
+}
+
+export function parseNeftyPairs(
+  rows: TableRow[],
+  waxUsd: number,
+  feeAlcor: number = NEFTY_FEE_ALCOR,
+): VenuePool[] {
+  const out: VenuePool[] = [];
+  const codeByHash = new Map<number, string>();
+  const parsedCodes = new Set<string>();
+  for (const r of rows) {
+    const code = typeof r.code === "string" ? r.code : "";
+    if (!NEFTY_CODE_RE.test(code)) {
+      neftyWarn("bad/missing pair code", r);
+      continue;
+    }
+    if (parsedCodes.has(code)) continue; // node returned the row twice
+    parsedCodes.add(code);
+    // Inactive pairs are a normal state — skip silently.
+    if (!(r.active === true || r.active === 1)) continue;
+    const a = neftyToken(r.reserve0);
+    const b = neftyToken(r.reserve1);
+    if (!a || !b) {
+      neftyWarn("unparseable reserves", r);
+      continue;
+    }
+    if (!tokenOk(a) || !tokenOk(b) || a.symbol === b.symbol) {
+      neftyWarn("token identity failed verification", r);
+      continue;
+    }
+    if (!(a.quantity > 0) || !(b.quantity > 0)) continue; // drained pool
+    const nativeId = neftyPairNativeId(code);
+    const seen = codeByHash.get(nativeId);
+    if (seen != null && seen !== code) {
+      neftyWarn(`pair-code hash collision with ${seen}`, r);
+      continue;
+    }
+    codeByHash.set(nativeId, code);
+    const pool: VenuePool = {
+      venue: "nefty",
+      id: NEFTY_ID_BASE + nativeId,
+      nativeId,
+      pairCode: code,
+      tokenA: a,
+      tokenB: b,
+      fee: feeAlcor,
+      feePct: feeAlcor / 10_000,
+      tvlUsd: 0,
+    };
+    pool.tvlUsd = tvlFromWax(waxQty(pool), waxUsd);
+    if (pool.tvlUsd < 5 && waxQty(pool) < 50) continue;
+    out.push(pool);
+  }
+  return out;
+}
+
+/** Live fee from the `configs` singleton; NEFTY_FEE_ALCOR on any surprise. */
+async function fetchNeftyFeeAlcor(): Promise<number> {
+  try {
+    const raw = await readTablePage(NEFTY_SWAP, "configs", 20, "");
+    const rows = Array.isArray(raw.rows) ? raw.rows : [];
+    let trade = NaN;
+    let protocol = NaN;
+    for (const r of rows) {
+      const v = Number(r.value);
+      if (r.key === "fee.trade") trade = v;
+      if (r.key === "fee.protocol") protocol = v;
+    }
+    const bp = trade + protocol;
+    // Sanity bound: a total fee above 1% means the schema moved under us.
+    if (!Number.isFinite(bp) || bp < 0 || bp > 100) return NEFTY_FEE_ALCOR;
+    return Math.round(bp * 100); // bp → Alcor units (30 bp → 3000)
+  } catch {
+    return NEFTY_FEE_ALCOR;
+  }
+}
+
+let neftyFeeCache: { at: number; fee: number } | null = null;
+const NEFTY_FEE_TTL_MS = 600_000;
+
+async function neftyFeeAlcorCached(): Promise<number> {
+  if (neftyFeeCache && Date.now() - neftyFeeCache.at < NEFTY_FEE_TTL_MS) {
+    return neftyFeeCache.fee;
+  }
+  const fee = await fetchNeftyFeeAlcor();
+  neftyFeeCache = { at: Date.now(), fee };
+  return fee;
+}
+
+/**
+ * Pairs sweep keyed by symbol_code: the numeric sharded sweep does not apply
+ * (keys are sparse 56-bit code values), so page by next_key with a hard page
+ * cap. Any malformed page ends the sweep — partial books are better than
+ * trusting a schema that moved.
+ */
+async function getNeftyPairRows(limit = 200): Promise<TableRow[]> {
+  const rows: TableRow[] = [];
+  const seen = new Set<string>();
+  let lowerBound: string | number = 0;
+  for (let page = 0; page < NEFTY_MAX_PAGES; page++) {
+    const raw = await readTablePage(NEFTY_SWAP, "pairs", limit, lowerBound);
+    const chunk = Array.isArray(raw.rows) ? raw.rows : [];
+    for (const row of chunk) {
+      const key = typeof row.code === "string" ? row.code : JSON.stringify(row);
+      if (seen.has(key)) continue;
+      seen.add(key);
+      rows.push(row);
+    }
+    if (!raw.more || chunk.length === 0) break;
+    const next = raw.next_key;
+    if (next == null || String(next) === String(lowerBound)) break;
+    lowerBound = String(next);
+  }
+  return rows;
+}
+
+export async function fetchNeftyPools(waxUsd: number): Promise<VenuePool[]> {
+  try {
+    const [fee, rows] = await Promise.all([neftyFeeAlcorCached(), getNeftyPairRows()]);
+    return parseNeftyPairs(rows, waxUsd, fee);
+  } catch {
+    return [];
+  }
+}
+
 export async function fetchDefiboxPools(waxUsd: number): Promise<VenuePool[]> {
   try {
     const rows = await getTableRows(DEFIBOX_SWAP, "pairs", 200);
@@ -256,14 +440,43 @@ export async function fetchTacoPools(waxUsd: number): Promise<VenuePool[]> {
   }
 }
 
-let venueCache: { at: number; waxUsd: number; pools: VenuePool[] } | null = null;
+/* ------------------------------------------------------------------ */
+/* Nefty kill-switch (persisted setting lives in store/bot.ts)         */
+/* ------------------------------------------------------------------ */
+
+/**
+ * Default ON. The Nefty table schema is reverse-engineered, so a persisted
+ * kill-switch must be able to pull the venue out of the route graph without a
+ * redeploy. store/bot.ts keeps this in sync with the persisted setting.
+ */
+let neftyVenueEnabled = true;
+
+export function setNeftyVenueEnabled(on: boolean): void {
+  neftyVenueEnabled = on === true;
+}
+
+export function neftyVenueEnabledNow(): boolean {
+  return neftyVenueEnabled;
+}
+
+let venueCache: { at: number; waxUsd: number; nefty: boolean; pools: VenuePool[] } | null = null;
 const VENUE_TTL_MS = 120_000;
 
 export async function fetchExternalVenues(waxUsd: number): Promise<VenuePool[]> {
-  if (venueCache && Date.now() - venueCache.at < VENUE_TTL_MS) return venueCache.pools;
-  const [d, t] = await Promise.all([fetchDefiboxPools(waxUsd), fetchTacoPools(waxUsd)]);
-  const pools = [...d, ...t];
-  venueCache = { at: Date.now(), waxUsd, pools };
+  if (
+    venueCache &&
+    venueCache.nefty === neftyVenueEnabled &&
+    Date.now() - venueCache.at < VENUE_TTL_MS
+  ) {
+    return venueCache.pools;
+  }
+  const [d, t, n] = await Promise.all([
+    fetchDefiboxPools(waxUsd),
+    fetchTacoPools(waxUsd),
+    neftyVenueEnabled ? fetchNeftyPools(waxUsd) : Promise.resolve([]),
+  ]);
+  const pools = [...d, ...t, ...n];
+  venueCache = { at: Date.now(), waxUsd, nefty: neftyVenueEnabled, pools };
   return pools;
 }
 
@@ -272,11 +485,35 @@ export async function fetchExternalVenues(waxUsd: number): Promise<VenuePool[]> 
  * is NOT executable truth — live legs re-read the table row.
  */
 export async function refreshVenuePair(
-  venue: "defibox" | "taco",
+  venue: "defibox" | "taco" | "nefty",
   nativeId: number,
   waxUsd: number,
+  /** Nefty only: the on-chain pair code (its table is keyed by code, not id). */
+  pairCode?: string,
 ): Promise<VenuePool | null> {
   try {
+    if (venue === "nefty") {
+      // Fail closed: no code (or a malformed one) → no fresh quote.
+      if (!pairCode || !NEFTY_CODE_RE.test(pairCode)) return null;
+      const raw = (await rpcPost(
+        "/v1/chain/get_table_rows",
+        {
+          json: true,
+          code: NEFTY_SWAP,
+          scope: NEFTY_SWAP,
+          table: "pairs",
+          lower_bound: pairCode,
+          upper_bound: pairCode,
+          limit: 1,
+        },
+        4_000,
+        "high",
+      )) as { rows?: TableRow[] };
+      const fee = await neftyFeeAlcorCached();
+      const parsed = parseNeftyPairs(raw.rows ?? [], waxUsd, fee);
+      // Exact code match only — a neighboring row is a schema surprise.
+      return parsed.find((p) => p.pairCode === pairCode) ?? null;
+    }
     if (venue === "defibox") {
       const raw = (await rpcPost(
         "/v1/chain/get_table_rows",
@@ -338,6 +575,20 @@ export function defiboxMemo(minOut: number, decimals: number, pairId: number): s
   // IEEE-754 dust (12.3456 * 1e4 is 123455.999…), same as tacoMemo/formatAsset.
   const units = Math.max(0, Math.floor(minOut * 10 ** decimals + 1e-9));
   return `swap,${units},${pairId}`;
+}
+
+/**
+ * Nefty memo, verified live 2026-09-23: `swap:<CODE>,min:<units>` where
+ * `units` is the min-out as an INTEGER count of raw output-token units
+ * (confirmed by traces: `min:137` passed on a 19.82-token output, i.e. raw
+ * units, not whole tokens). WaxOnEdge sends `swap:<CODE>` with no min — a
+ * zero floor the C1 hardening forbids here. Truncates toward zero, floor of
+ * 1 unit (a zero min-out is no on-chain guarantee).
+ */
+export function neftyMemo(minOut: number, decimals: number, pairCode: string): string {
+  const d = Math.max(0, Math.min(18, decimals | 0));
+  const units = Math.max(1, Math.floor(Math.max(0, minOut) * 10 ** d + 1e-9));
+  return `swap:${pairCode},min:${units}`;
 }
 
 /** Taco memo observed on-chain: `<min> <SYM>@<contract>`. Truncates toward
