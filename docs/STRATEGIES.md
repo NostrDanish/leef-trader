@@ -126,6 +126,10 @@ named assets. See [below](#treasure-growth--dont-trade-pairs-grow-assets).
   exactly one missed pull, then fails closed. Freshness keys off
   `max(fetchedAt, spotAt)` (fix F0): a hot pool re-read from chain 2s ago
   never scores as stale just because the last full API pull is old.
+  Freshness is per-SNAPSHOT (a hot-pool patch freshens the whole snapshot);
+  the bound is per-pool: arb requires both legs hot, the volume gate needs
+  per-pool third-party flow, and the exact-quote gate re-reads the involved
+  rows from chain before signing.
 - `volumeFlowGateMin = 10` — volume intents (echo, volume, volume-x tape)
   require a THIRD-PARTY swap on every involved pool within this window and
   FAIL CLOSED to HOLD when flow data is unavailable. On a chain where the

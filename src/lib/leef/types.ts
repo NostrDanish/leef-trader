@@ -158,6 +158,13 @@ export type LeefSnapshot = {
  * later on-chain spot patch (`spotAt`). Hot pools re-read from swap.alcor
  * between API pulls must NOT score as stale just because the last full API
  * pull is old (freshness bug F0).
+ *
+ * NOTE: freshness is SNAPSHOT-wide — a hot-pool-only patch marks the whole
+ * snapshot fresh. That is safe because the per-pool gates bound it: spread
+ * arb requires BOTH legs to be hot/fresh pools (recently table-read), the
+ * volume gate needs per-pool third-party flow, and the exact-quote gate
+ * re-reads the involved rows from chain before signing. Stale aux books can
+ * never carry a trade on a "fresh" timestamp alone.
  */
 export function snapFreshAtMs(snap: Pick<LeefSnapshot, "fetchedAt" | "spotAt">): number {
   const fetched = Date.parse(snap.fetchedAt);

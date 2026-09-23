@@ -432,7 +432,9 @@ async function runBotOnceInner(
     tradesThisHour: b.tradesThisHour,
     sessionRealizedUsd: b.stats.realizedUsd,
     sessionStartEquityUsd: b.stats.startEquityUsd,
-    calibration: b.stats.byStrategy,
+    // Per-mode calibration: live fills rank live EV; paper fills are tracked
+    // apart and calibrate paper decisions only (they never revert).
+    calibration: mode === "live" ? b.stats.byStrategy : b.stats.byStrategyPaper,
     quote: b.quote,
     base: b.base,
     growthTargets: b.growthTargets,
@@ -566,6 +568,8 @@ async function runBotOnceInner(
       minIn: bounds.minIn,
       maxIn: bounds.maxIn,
       volPerSec: realizedVolPerSec(b.series),
+      // Cost decay pays for book staleness too, not just quote→sign latency.
+      quoteAgeSec: Math.max(0, (Date.now() - snapFreshAtMs(book)) / 1000),
       ...(learnedSlip != null ? { costs: { slippageBufferPct: learnedSlip } } : {}),
     });
     timings.sizeOptimizationMs = Date.now() - tSize;
@@ -1489,7 +1493,7 @@ async function runBotOnceInner(
         realEdgePct:
           position && position.entryCostUsd > 0 ? (pnlUsd / position.entryCostUsd) * 100 : 0,
         latencyMs: live ? Date.now() - t0 : null,
-      });
+      }, mode);
       b.pushDecision({
         kind: "sell",
         mode,
@@ -1786,7 +1790,7 @@ async function runBotOnceInner(
         realEdgePct:
           (realizedWax != null ? realizedWax / plan.waxIn : plan.waxOut / plan.waxIn - 1) * 100,
         latencyMs: live ? Date.now() - t0 : null,
-      });
+      }, mode);
       if (isEcho) {
         b.recordVolume((plan.waxIn + plan.waxOut) * snap.waxUsd, -pnlUsd);
       }

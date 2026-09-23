@@ -1022,6 +1022,7 @@ export function evaluateBot(input: BotInput): Decision {
       minIn: minWax,
       maxIn: maxWax,
       volPerSec: realizedVolPerSec(input.series),
+      quoteAgeSec,
     });
     if (!sized) {
       return hold(

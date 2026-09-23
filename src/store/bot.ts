@@ -129,10 +129,12 @@ type BotState = {
   bumpPositionHigh: (usd: number) => void;
   recordResult: (pnlUsd: number, equityUsd: number) => void;
   recordVolume: (volumeUsd: number, costUsd: number) => void;
-  /** Calibration: record one closed trade under the strategy that opened it. */
+  /** Calibration: record one closed trade under the strategy that opened it.
+   *  `mode` splits paper fills from live — paper never touches live calibration. */
   recordStrategyPerf: (
     strategy: string,
     r: { pnlUsd: number; predEdgePct: number | null; realEdgePct: number; latencyMs: number | null },
+    mode?: "live" | "paper",
   ) => void;
   resetSession: (equityUsd: number) => void;
   setLastReason: (s: string) => void;
@@ -411,6 +413,9 @@ export const useBot = create<BotState>()(
           series: Array.isArray(p.series) ? p.series : [],
           decisions: Array.isArray(p.decisions) ? p.decisions : [],
           riskMigrationNotice: usd.notice,
+          // Forward-safe: future version bumps must not silently re-enable the
+          // venue for a user who switched it off (default ON only when unset).
+          neftyVenue: (p as { neftyVenue?: unknown }).neftyVenue !== false,
         };
       },
       partialize: (s) => ({

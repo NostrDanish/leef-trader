@@ -22,6 +22,7 @@ import {
 import { evaluateEntry } from "./net-edge";
 import { planGrowthAction } from "./growth-engine";
 import { snapFreshAtMs, type LeefPool, type LeefSnapshot } from "./types";
+import { useBot } from "@/store/bot";
 import type { PoolFlowState } from "@/lib/market/swap-flow";
 
 const WAX_USD = 0.02;
@@ -469,5 +470,19 @@ describe("meanrev band-width gate", () => {
   it("roundTripCostFloorPct uses the book's real fee tier", () => {
     const snap = mkSnap([mkPool(1159, 50_000, 500_000_000, 1.0)]);
     expect(roundTripCostFloorPct(snap)).toBeGreaterThan(2);
+  });
+});
+
+describe("paper/live calibration split", () => {
+  it("a paper close leaves live byStrategy untouched", () => {
+    const r = { pnlUsd: 1, predEdgePct: 2, realEdgePct: 1, latencyMs: null };
+    useBot.getState().recordStrategyPerf("zz-paper-split", r, "paper");
+    let stats = useBot.getState().stats;
+    expect(stats.byStrategy["zz-paper-split"]).toBeUndefined();
+    expect(stats.byStrategyPaper["zz-paper-split"]?.trades).toBe(1);
+    useBot.getState().recordStrategyPerf("zz-paper-split", r, "live");
+    stats = useBot.getState().stats;
+    expect(stats.byStrategy["zz-paper-split"]?.trades).toBe(1);
+    expect(stats.byStrategyPaper["zz-paper-split"]?.trades).toBe(1);
   });
 });
