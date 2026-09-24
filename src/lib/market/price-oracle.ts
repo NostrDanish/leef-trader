@@ -201,9 +201,7 @@ export function tokenPrice(
     tradeAllowed,
     reason: tradeAllowed
       ? `${sourceFor(t)} price with ${(effectiveConfidence * 100).toFixed(0)}% confidence`
-      : ageMs > MAX_TRADING_PRICE_AGE_MS
-        ? `price is stale (last chain read ${(ageMs / 1000).toFixed(0)}s ago, limit ${MAX_TRADING_PRICE_AGE_MS / 1000}s)`
-        : `confidence ${(effectiveConfidence * 100).toFixed(0)}% is below trading minimum`,
+      : `price is stale or confidence ${(effectiveConfidence * 100).toFixed(0)}% is below trading minimum`,
   };
 }
 
