@@ -2,7 +2,7 @@
 import type { LeefSnapshot } from "@/lib/leef/types";
 import type { UniverseToken } from "@/lib/leef/universe";
 import { tokenPrice } from "@/lib/market/price-oracle";
-import { canonicalTokenId } from "@/lib/market/stables";
+import { canonicalTokenId, isTrustedStable } from "@/lib/market/stables";
 
 export type BalanceBook = Record<string, number>;
 
@@ -38,7 +38,18 @@ export function balanceAmount(
   const exact = findBalanceValue(balances, balanceKey(token.symbol, token.contract));
   if (exact != null) return exact;
   const matches = universe?.filter((t) => t.symbol === token.symbol) ?? [token];
-  return matches.length === 1 ? (asBook(balances)[token.symbol] ?? 0) : 0;
+  if (matches.length !== 1) {
+    // Ambiguous symbol on the market side (clone contracts sharing a symbol):
+    // prefer the trusted-stable contract when exactly one matches — the same
+    // rule the price oracle uses — so a funded wallet is never zeroed just
+    // because a clone exists in the universe. The bare alias itself is only
+    // written by canonicalBalanceBook when the wallet holds exactly one
+    // contract for this symbol, so it cannot mix clone + real balances.
+    const trusted = matches.filter((t) => isTrustedStable(t.symbol, t.contract));
+    if (trusted.length !== 1) return 0;
+    return asBook(balances)[token.symbol] ?? 0;
+  }
+  return asBook(balances)[token.symbol] ?? 0;
 }
 
 /** Resolve an identifier to a balance without merging same-symbol contracts. */
@@ -56,8 +67,16 @@ export function balanceForIdentifier(
   const exactAlcor = universe.find((t) => t.alcorId === identifier.toLowerCase());
   if (exactAlcor) return balanceAmount(balances, exactAlcor, universe);
   const matches = universe.filter((t) => t.symbol === up);
-  if (matches.length !== 1) return 0;
-  return balanceAmount(balances, matches[0]!, universe);
+  if (matches.length === 1) return balanceAmount(balances, matches[0]!, universe);
+  if (matches.length > 1) {
+    // Ambiguous symbol (clone contracts). Never zero out a funded wallet:
+    // the trusted-stable contract wins when exactly one matches — same rule
+    // as resolveOracleToken in the price oracle — and balanceAmount falls
+    // back to the wallet's own bare alias (single-contract holdings only).
+    const trusted = matches.filter((t) => isTrustedStable(t.symbol, t.contract));
+    if (trusted.length === 1) return balanceAmount(balances, trusted[0]!, universe);
+  }
+  return 0;
 }
 
 /**
