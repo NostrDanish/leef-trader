@@ -220,7 +220,7 @@ export function rowPrice(
   snap: LeefSnapshot,
   row: Pick<WalletBalanceRow, "id" | "symbol" | "contract" | "token">,
 ): { priceUsd: number; anchored: boolean; tradeAllowed: boolean; reason: string } | null {
-  const p = row.token ? tokenPrice(sap, row.id) : null;
+  const p = row.token ? tokenPrice(snap, row.id) : null;
   if (p && p.priceUsd > 0) {
     return {
       priceUsd: p.priceUsd,
