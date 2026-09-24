@@ -53,6 +53,7 @@ import {
 import { classifyRegime, dangerScore } from "@/lib/leef/regime";
 import { isEconomicFailureReason } from "@/lib/wallet/trade-error";
 import { holdWakeLock, releaseWakeLock } from "@/lib/market/wake-lock";
+import { tokenPrice } from "@/lib/market/price-oracle";
 import { aiTask, extractGrowthTargets } from "@/lib/leef/ai-analyst";
 import { journal } from "@/lib/leef/journal";
 
@@ -560,9 +561,7 @@ function HoldingsPosition({ snap }: { snap: LeefSnapshot }) {
   const balances = useWallet((s) => s.balances());
   const now = balanceForIdentifier(balances, snap.universe, base);
   const px = usdPriceOf(base, snap);
-  const opened = start[base] ?? start[`${base}@`] ?? null;
-  const startAmount =
-    opened ?? balanceForIdentifier(start, snap.universe, base);
+  const startAmount = start[base] ?? balanceForIdentifier(start, snap.universe, base);
   const delta = running && startAmount > 0 ? now - startAmount : null;
   const usdNow = now * (px || 0);
   return (
@@ -576,7 +575,8 @@ function HoldingsPosition({ snap }: { snap: LeefSnapshot }) {
           <span className={delta >= 0 ? " text-buy" : " text-sell"}>
             {" "}
             {delta >= 0 ? "+" : ""}
-            {fmtNum(delta, { compact: true })} this session
+            {fmtNum(delta, { compact: true })} {base}
+            {px > 0 ? ` (${fmtUsd(delta * px)})` : ""} this session
           </span>
         )}
       </div>
@@ -910,7 +910,7 @@ function TreasureCard({ snap }: { snap: LeefSnapshot }) {
   const targets = useBot((s) => s.growthTargets);
   const mode = useBot((s) => s.growthMode);
   const start = useBot((s) => s.growthStart);
-  const setTargets = useBot((s) => s.setGrowthTargets);
+  const setTargets = useBot((s) => s.setTargets);
   const setMode = useBot((s) => s.setGrowthMode);
   const running = useBot((s) => s.running);
   const balances = useWallet((s) => s.balances());
@@ -1182,12 +1182,20 @@ function RiskCard({ strategy, snap }: { strategy: BotStrategy; snap: LeefSnapsho
   const [slidersOn, setSlidersOn] = useState(false);
   useEffect(() => setSlidersOn(true), []);
   const quoteSym = (quote || "WAX").toUpperCase();
-  const quoteUsd =
-    quoteSym === "WAX"
-      ? snap.waxUsd
-      : quoteSym === "LEEF"
-        ? snap.leefUsd
-        : snap.universe.find((u) => u.symbol === quoteSym)?.usdPrice ?? 0;
+  // Same gated oracle the engine sizes with (requireTradePrice rides this):
+  // never convert at a stale or non-tradeable mark the engine would refuse,
+  // and never read the first same-symbol universe row (clone contracts).
+  const quoteMark = tokenPrice(snap, quoteSym);
+  const quoteUsd = quoteMark?.priceUsd ?? 0;
+  const quoteTradeAllowed = quoteMark?.tradeAllowed ?? false;
+  // For anchored stables the sizing mark can differ from the venue print —
+  // show both so the conversion is never a surprise.
+  const marketNote =
+    quoteMark?.marketPriceUsd != null &&
+    quoteUsd > 0 &&
+    Math.abs(quoteMark.marketPriceUsd - quoteUsd) / quoteUsd > 0.001
+      ? ` (market $${quoteMark.marketPriceUsd < 0.01 ? quoteMark.marketPriceUsd.toExponential(3) : quoteMark.marketPriceUsd.toFixed(4)})`
+      : "";
   const minTok = quoteUsd > 0 ? risk.minTradeUsd / quoteUsd : 0;
   const maxTok = quoteUsd > 0 ? risk.maxPositionUsd / quoteUsd : 0;
   // Wallet check: the bot can never size above what the wallet can actually
@@ -1256,8 +1264,11 @@ function RiskCard({ strategy, snap }: { strategy: BotStrategy; snap: LeefSnapsho
         </p>
         <p className="text-xs text-muted-foreground">
           {quoteUsd > 0
-            ? `Current ${quoteSym}: $${quoteUsd < 0.01 ? quoteUsd.toExponential(3) : quoteUsd.toFixed(6)} · min ${minTok > 0 && minTok < 0.01 ? minTok.toExponential(3) : minTok.toFixed(4)} ${quoteSym} · max ${maxTok.toFixed(4)} ${quoteSym}`
+            ? `Current ${quoteSym}: $${quoteUsd < 0.01 ? quoteUsd.toExponential(3) : quoteUsd.toFixed(6)}${marketNote} · min ${minTok > 0 && minTok < 0.01 ? minTok.toExponential(3) : minTok.toFixed(4)} ${quoteSym} · max ${maxTok > 0 && maxTok < 0.01 ? maxTok.toExponential(3) : maxTok.toFixed(4)} ${quoteSym}`
             : `${quoteSym} has no USD mark — engine will sit out`}
+          {quoteUsd > 0 && !quoteTradeAllowed && quoteMark
+            ? ` · mark not tradeable — ${quoteMark.reason}`
+            : ""}
         </p>
         {quoteUsd > 0 && (
           <p
@@ -1268,10 +1279,10 @@ function RiskCard({ strategy, snap }: { strategy: BotStrategy; snap: LeefSnapsho
                 : "border-border bg-background text-muted-foreground",
             )}
           >
-            Wallet check: {walletQuote.toFixed(4)} {quoteSym} ≈ ${walletUsd.toFixed(4)} · spendable $
-            {spendableUsd.toFixed(4)} · effective max ${effectiveMaxUsd.toFixed(4)}
+            Wallet check: {fmtNum(walletQuote)} {quoteSym} ≈ {fmtUsd(walletUsd)} · spendable{" "}
+            {fmtUsd(spendableUsd)} · effective max {fmtUsd(effectiveMaxUsd)}
             {belowMin
-              ? ` — below the $${risk.minTradeUsd < 0.01 ? risk.minTradeUsd.toExponential(2) : risk.minTradeUsd.toFixed(4)} minimum, so no trades will fire`
+              ? ` — below the ${fmtUsd(risk.minTradeUsd)} minimum, so no trades will fire`
               : ""}
           </p>
         )}
