@@ -205,6 +205,41 @@ export function tokenPrice(
   };
 }
 
+/**
+ * Verified-stable anchor for a canonical id the snapshot universe does NOT
+ * know — the wallet holds it, but no pool is observed right now (dead book,
+ * below the universe cut, API gap). The trusted-stable registry carries an
+ * explicit dollar target, so honest accounting can still value the holding;
+ * tradeAllowed is forced FALSE — without fresh venue evidence there is
+ * nothing executable, and no caller may treat the anchor as a live price.
+ */
+export function stableAnchorPrice(
+  symbol: string,
+  contract: string,
+  now = Date.now(),
+): TokenPrice | null {
+  const stable = trustedStableOf(symbol, contract);
+  if (!stable) return null;
+  const synth: UniverseToken = {
+    symbol,
+    contract,
+    decimals: 8,
+    alcorId: `${symbol.toLowerCase()}-${contract}`,
+    poolId: 0,
+    waxPerToken: 0,
+    usdPrice: stable.targetUsd,
+    tvlUsd: 0,
+    stable: true,
+    stableState: "UNKNOWN",
+  };
+  const p = stablePrice(synth, now, now);
+  return {
+    ...p,
+    tradeAllowed: false,
+    reason: `no ${symbol} pool observed — $${stable.targetUsd.toFixed(2)} anchor (accounting only, not tradeable)`,
+  };
+}
+
 /** Fail-closed trading gate with an actionable journal reason. */
 export function requireTradePrice(
   snap: Pick<LeefSnapshot, "universe" | "fetchedAt" | "spotAt" | "waxUsd" | "leefUsd">,

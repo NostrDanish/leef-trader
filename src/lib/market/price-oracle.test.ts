@@ -1,12 +1,18 @@
 import { describe, expect, it } from "vitest";
 import type { LeefSnapshot } from "@/lib/leef/types";
 import type { UniverseToken } from "@/lib/leef/universe";
-import { tokenPrice, requireTradePrice, resolveOracleToken } from "./price-oracle";
+import {
+  tokenPrice,
+  requireTradePrice,
+  resolveOracleToken,
+  stableAnchorPrice,
+} from "./price-oracle";
 import { deployableAmount, governTrade, portfolioState } from "./portfolio-governor";
 import {
   balanceForIdentifier,
   canonicalBalanceBook,
   markPortfolioUsd,
+  rowPrice,
   walletBalanceRows,
 } from "@/lib/wallet/balances";
 
@@ -311,3 +317,57 @@ describe("Portfolio Governor", () => {
   });
 });
 
+describe("held-stable anchor valuation", () => {
+  it("anchors a verified stable the snapshot universe does not know", () => {
+    // Wallet holds USDT@usdt.alcor, but no USDT pool is observed right now.
+    const p = stableAnchorPrice("USDT", "usdt.alcor");
+    expect(p).not.toBeNull();
+    expect(p!.priceUsd).toBeCloseTo(1, 6);
+    expect(p!.stable).toBe(true);
+    // Accounting only — without venue evidence nothing is executable.
+    expect(p!.tradeAllowed).toBe(false);
+    expect(p!.reason).toContain("anchor");
+  });
+
+  it("refuses to anchor an unknown or clone contract", () => {
+    expect(stableAnchorPrice("USDT", "fake.token")).toBeNull();
+    expect(stableAnchorPrice("RANDOM", "whatever")).toBeNull();
+  });
+
+  it("rowPrice anchors a held stable with no universe row, prices one with a row", () => {
+    const held = { id: "USDT@usdt.alcor", symbol: "USDT", contract: "usdt.alcor", token: null };
+    const anchored = rowPrice(snap(BASE), held);
+    expect(anchored).not.toBeNull();
+    expect(anchored!.anchored).toBe(true);
+    expect(anchored!.tradeAllowed).toBe(false);
+    expect(anchored!.priceUsd).toBeCloseTo(1, 6);
+
+    const inUniverse = {
+      id: "WAXUSDC@eth.token",
+      symbol: "WAXUSDC",
+      contract: "eth.token",
+      token: BASE.find((t) => t.symbol === "WAXUSDC")!,
+    };
+    const priced = rowPrice(snap(BASE), inUniverse);
+    expect(priced).not.toBeNull();
+    expect(priced!.anchored).toBe(false);
+    expect(priced!.tradeAllowed).toBe(true);
+  });
+
+  it("rowPrice fails closed on an unpriced unknown token", () => {
+    const held = { id: "NOBODY@nobody", symbol: "NOBODY", contract: "nobody", token: null };
+    expect(rowPrice(snap(BASE), held)).toBeNull();
+  });
+
+  it("markPortfolioUsd counts an anchored stable toward the total", () => {
+    const balances = canonicalBalanceBook([
+      { symbol: "WAX", contract: "eosio.token", amount: 100 },
+      { symbol: "USDT", contract: "usdt.alcor", amount: 25 },
+    ]);
+    const mark = markPortfolioUsd(snap(BASE), balances);
+    // WAX at the BASE mark + 25 USDT at the $1 anchor.
+    expect(mark.totalUsd).toBeCloseTo(4 + 25, 6);
+    expect(mark.assets.find((a) => a.id === "USDT@usdt.alcor")?.anchored).toBe(true);
+    expect(mark.unpriced).toEqual([]);
+  });
+});
