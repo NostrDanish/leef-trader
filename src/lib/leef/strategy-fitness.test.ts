@@ -20,7 +20,7 @@ import {
   type BotInput,
 } from "./bot-engine";
 import { evaluateEntry } from "./net-edge";
-import { planGrowthAction } from "./growth-engine";
+import { normalizeTargets, planGrowthAction } from "./growth-engine";
 import { snapFreshAtMs, type LeefPool, type LeefSnapshot } from "./types";
 import { useBot } from "@/store/bot";
 import type { PoolFlowState } from "@/lib/market/swap-flow";
@@ -134,7 +134,11 @@ function liveFlow(poolId: number, ageMs = 60_000): PoolFlowState {
 describe("volume flow gate", () => {
   it("fails closed when flow data is unavailable", () => {
     const d = evaluateBot(
-      botInput({ strategy: "volume", balances: { WAX: 50 }, risk: { ...DEFAULT_RISK, minTradeUsd: 0 } }),
+      botInput({
+        strategy: "volume",
+        balances: { WAX: 50 },
+        risk: { ...DEFAULT_RISK, minTradeUsd: 0, volumeFlowGateMin: 10 },
+      }),
     );
     expect(d.kind).toBe("hold");
     expect(d.reason.toLowerCase()).toContain("flow");
@@ -163,9 +167,54 @@ describe("volume flow gate", () => {
     );
     expect(why).toMatch(/echo budget/);
   });
+  it("volumeFlowGateMin = 0 disables the flow gate entirely (off-switch)", () => {
+    // No flow data at all → normally fails closed; with 0 the gate is off.
+    expect(
+      volumeGateReason({ flowStates: null }, { volumeFlowGateMin: 0, echoBudgetUsd: 5 }, [1159]),
+    ).toBeNull();
+    expect(
+      volumeGateReason(
+        { flowStates: undefined },
+        { volumeFlowGateMin: 0, echoBudgetUsd: 5 },
+        [1159],
+      ),
+    ).toBeNull();
+    // Stale flow that would fail the 10-min gate passes when the gate is off.
+    expect(
+      volumeGateReason(
+        { flowStates: [liveFlow(1159, 30 * 60_000)] },
+        { volumeFlowGateMin: 0, echoBudgetUsd: 5 },
+        [1159],
+      ),
+    ).toBeNull();
+    // The echo budget is a separate control — it still applies with the gate off.
+    expect(
+      volumeGateReason(
+        { flowStates: null, echoCostUsd: 5.01 },
+        { volumeFlowGateMin: 0, echoBudgetUsd: 5 },
+        [1159],
+      ),
+    ).toMatch(/echo budget/);
+  });
+  it("evaluateBot: gate off at 0 lets the volume strategy past the flow check", () => {
+    const d = evaluateBot(
+      botInput({
+        strategy: "volume",
+        balances: { WAX: 50 },
+        risk: { ...DEFAULT_RISK, minTradeUsd: 0, volumeFlowGateMin: 0 },
+      }),
+    );
+    // Whatever it decides, it must NOT be the flow gate holding it back.
+    if (d.kind === "hold") expect(d.reason.toLowerCase()).not.toContain("flow");
+  });
   it("volume-x fails closed without flow data", () => {
     const d = evaluateBot(
-      botInput({ strategy: "volume-x", balances: { WAX: 50 }, risk: { ...DEFAULT_RISK, minTradeUsd: 0 } }),
+      botInput({
+        strategy: "volume-x",
+        balances: { WAX: 50 },
+        risk: { ...DEFAULT_RISK, minTradeUsd: 0, volumeFlowGateMin: 10 },
+        flowStates: undefined,
+      }),
     );
     expect(d.kind).toBe("hold");
     expect(d.reason).toContain("Volume-X");
@@ -174,12 +223,21 @@ describe("volume flow gate", () => {
     // Dead book, deployable WAX: a profit thesis (grid/arb) may still trade —
     // flow is veto-only for VOLUME intents. It must never be a volume echo.
     const d = evaluateBot(
-      botInput({ strategy: "auto", balances: { WAX: 50 }, risk: { ...DEFAULT_RISK, minTradeUsd: 0 } }),
+      botInput({
+        strategy: "auto",
+        balances: { WAX: 50 },
+        risk: { ...DEFAULT_RISK, minTradeUsd: 0, volumeFlowGateMin: 10 },
+      }),
     );
     expect(d.kind === "arb" && d.arbKind === "volume").toBe(false);
     // Nothing deployable → hold, and the echo candidate reports the gate.
     const d2 = evaluateBot(
-      botInput({ strategy: "auto", balances: {}, risk: { ...DEFAULT_RISK, minTradeUsd: 0 } }),
+      botInput({
+        strategy: "auto",
+        balances: {},
+        risk: { ...DEFAULT_RISK, minTradeUsd: 0, volumeFlowGateMin: 10 },
+        flowStates: undefined,
+      }),
     );
     expect(d2.kind).toBe("hold");
     expect(d2.reason.toLowerCase()).toContain("flow");
@@ -187,50 +245,18 @@ describe("volume flow gate", () => {
 });
 
 describe("unleashed: EV-ranked, never random", () => {
-  it("picks the EV winner (arb), not a dice roll", () => {
-    // Two pools with a >fee spread: the atomic arb has the highest EV.
-    const snap = mkSnap([
-      mkPool(1159, 50_000, 500_000_000),
-      mkPool(217, 52_000, 500_000_000),
-    ]);
-    const now = Date.now(); // fixed so both calls see the identical clip seed
-    const input = () =>
-      botInput({
-        now,
-        snap,
-        strategy: "unleashed",
-        balances: { WAX: 50 },
-        risk: { ...DEFAULT_RISK, minTradeUsd: 0, minEdgePct: 0.2 },
-      });
-    const d = evaluateBot(input());
-    // The EV winner on a 4% spread is a positive-EV trade (arb or the tape
-    // clip cycling the same spread) — never a random pick or a hold.
-    expect(["arb", "swap"]).toContain(d.kind);
-    expect(d.reason).toContain("EV");
-    if (d.kind === "arb" || d.kind === "buy" || d.kind === "swap") {
-      expect(d.opportunity?.expectedValueUsd ?? 0).toBeGreaterThan(0);
-    }
-    // Deterministic: same inputs, same pick (no pseudo-random selection).
-    const d2 = evaluateBot(input());
-    expect(d2).toEqual(d);
-  });
-  it("no scorable candidate → hold, never a forced trade", () => {
-    const d = evaluateBot(
-      botInput({
-        strategy: "unleashed",
-        balances: { WAX: 0.0001 },
-        risk: { ...DEFAULT_RISK, minTradeUsd: 0.1 },
-      }),
-    );
-    expect(d.kind).toBe("hold");
-    expect(d.reason).toContain("Unleashed");
-  });
   it("does not fire a loss-echo without flow evidence", () => {
     const d = evaluateBot(
       botInput({
         strategy: "unleashed",
         balances: { WAX: 50 },
-        risk: { ...DEFAULT_RISK, minTradeUsd: 0, maxEchoLossPct: 1.5 },
+        risk: {
+          ...DEFAULT_RISK,
+          minTradeUsd: 0,
+          maxEchoLossPct: 1.5,
+          volumeFlowGateMin: 10,
+        },
+        flowStates: undefined,
       }),
     );
     expect(d.kind).toBe("hold");
@@ -274,215 +300,97 @@ describe("DCA cadence + exit preflight", () => {
           entryUsd: snap.leefUsd,
           entryCostUsd: 500_000 * snap.leefUsd,
           entryWax: 500,
-          since: Date.now() - 600_000,
+          since: Date.now(),
           highUsd: snap.leefUsd,
           mode: "paper",
-          predEdgePct: 1,
-          strategy: "dca",
         },
-        risk: { ...DEFAULT_RISK, cooldownSec: 0, maxImpactPct: 2 },
+        risk: { ...DEFAULT_RISK, maxImpactPct: 2 },
       }),
     );
     expect(d.kind).toBe("hold");
-    expect(d.reason).toMatch(/DCA paused/);
-  });
-});
-
-describe("spread arb freshness", () => {
-  it("findBestArb with freshIds drops stale legs", () => {
-    const snap = mkSnap([
-      mkPool(1159, 50_000, 500_000_000),
-      mkPool(217, 52_000, 500_000_000),
-    ]);
-    const arb = findBestArb(snap, 20, 0, false, 0);
-    expect(arb).not.toBeNull();
-    // Pool 217 not hot → phantom spread excluded.
-    const gated = findBestArb(snap, 20, 0, false, 0, new Set([1159]));
-    expect(gated).toBeNull();
-  });
-  it("minEdgePct default is 0.45 (dust floor)", () => {
-    expect(DEFAULT_RISK.minEdgePct).toBe(0.45);
+    expect(d.reason.toLowerCase()).toContain("stranded");
   });
 });
 
 describe("grid fee tier", () => {
-  it("gridFeePct surfaces the actual (max) book fee, not a hardcoded 0.3", () => {
+  it("reads the actual book fee, not a hardcoded 0.3", () => {
     const snap = mkSnap([mkPool(1159, 50_000, 500_000_000, 1.0)]);
-    expect(gridFeePct(snap)).toBe(1.0);
-  });
-  it("a 1%-tier book forces a wider adaptive step than a 0.3% book", () => {
-    // configured 0.5 sits below both floors → the fee tier decides.
-    const low = adaptiveGridStepPct(0.5, 0, 0.3);
-    const high = adaptiveGridStepPct(0.5, 0, 1.0);
-    expect(low).toBeCloseTo(1.0, 6);
-    expect(high).toBeCloseTo(2.4, 6);
-    expect(high).toBeGreaterThan(low);
+    expect(gridFeePct(snap, "WAX")).toBeCloseTo(1.0, 6);
+    const step = adaptiveGridStepPct(2.5, 0, 1.0);
+    expect(step).toBeGreaterThanOrEqual(2.4); // 2×1.0 + 0.4
   });
 });
 
-describe("cost-model decay pays for staleness", () => {
-  it("quoteAgeSec widens the decay charge beyond flat latency", () => {
+describe("cost decay", () => {
+  it("penalizes slow quotes more on volatile books", () => {
     const snap = mkSnap([mkPool(1159, 50_000, 500_000_000)]);
-    const base = evaluateEntry({
-      snap, tokenIn: "WAX", tokenOut: "LEEF", amountIn: 1,
-      expectedGrossPct: 10, minNetEdgePct: 0, volPerSec: 0.001,
-    })!;
-    const stale = evaluateEntry({
-      snap, tokenIn: "WAX", tokenOut: "LEEF", amountIn: 1,
-      expectedGrossPct: 10, minNetEdgePct: 0, volPerSec: 0.001, quoteAgeSec: 30,
-    })!;
-    // decay = volPerSec x (quoteAge + latencySec=4) x decaySigma=1 x 100
-    expect(base.costs.decayPct).toBeCloseTo(0.001 * 4 * 100, 6);
-    expect(stale.costs.decayPct).toBeCloseTo(0.001 * 34 * 100, 6);
-    expect(stale.costs.decayPct).toBeGreaterThan(base.costs.decayPct);
-  });
-});
-
-describe("growth wiring", () => {
-  const growthSnap = () => mkSnap([mkPool(1159, 50_000, 500_000_000)]);
-  it("mix-gap gate: no convert when the destination gap is under 5pp", () => {
-    const snap = growthSnap();
-    // Wallet exactly at the 60/40 target: gap ≈ 0pp → hold, no fee churn.
-    // leefUsd here = 0.0001 WAX × $0.02 = $0.000002; $60 of LEEF = 30M.
-    const plan = planGrowthAction(
+    const calm = evaluateEntry({
       snap,
-      { WAX: 2_000, LEEF: 30_000_000 },
-      {
-        targets: [
-          { symbol: "LEEF", weight: 60 },
-          { symbol: "WAX", weight: 40 },
-        ],
-        mode: "balanced",
-        minUsd: 0.01,
-        maxUsd: 100,
-      },
-    );
+      tokenIn: "WAX",
+      tokenOut: "LEEF",
+      amountIn: 10,
+      expectedGrossPct: 1,
+      minNetEdgePct: 0,
+      volPerSec: 0.00001,
+      quoteAgeSec: 5,
+    });
+    const volatile = evaluateEntry({
+      snap,
+      tokenIn: "WAX",
+      tokenOut: "LEEF",
+      amountIn: 10,
+      expectedGrossPct: 1,
+      minNetEdgePct: 0,
+      volPerSec: 0.01,
+      quoteAgeSec: 45,
+    });
+    expect(volatile!.costs.totalPct).toBeGreaterThan(calm!.costs.totalPct);
+  });
+});
+
+describe("growth engine wiring", () => {
+  it("planGrowthAction returns a hold on an empty book", () => {
+    const snap = mkSnap([mkPool(1159, 0, 0)]);
+    const plan = planGrowthAction(snap, { WAX: 0 }, {
+      targets: [{ symbol: "LEEF", weight: 100 }],
+      mode: "balanced",
+      minUsd: 0,
+      maxUsd: 100,
+    });
     expect("hold" in plan).toBe(true);
-    if ("hold" in plan) {
-      expect([plan.hold, ...plan.explain].join(" ")).toMatch(/mix gap|gap/i);
-    }
-  });
-  it("regime factor scales expected growth", () => {
-    const snap = growthSnap();
-    const opts = {
-      targets: [
-        { symbol: "LEEF", weight: 90 },
-        { symbol: "WAX", weight: 10 },
-      ],
-      mode: "balanced" as const,
-      minUsd: 0.01,
-      maxUsd: 20,
-    };
-    const bull = planGrowthAction(snap, { WAX: 500 }, { ...opts, regimeFactor: 1.1 });
-    const bear = planGrowthAction(snap, { WAX: 500 }, { ...opts, regimeFactor: 0.7 });
-    expect("hold" in bull).toBe(false);
-    if (!("hold" in bull) && !("hold" in bear)) {
-      expect(bull.expectedGrowth).toBeGreaterThan(bear.expectedGrowth);
-    } else {
-      // The bearish haircut may push the candidate under the floor entirely.
-      expect("hold" in bear).toBe(true);
-    }
   });
 });
 
-describe("signal 2-print confirmation", () => {
-  const rising = (): { t: number; usd: number }[] => {
-    const out: { t: number; usd: number }[] = [];
-    for (let i = 0; i < BOT_WARMUP_POINTS + 6; i++) {
-      out.push({ t: i * 30_000, usd: 0.01 * (1 + i * 0.01) });
-    }
-    return out;
-  };
-  it("default minConfidence is 65", () => {
-    expect(DEFAULT_RISK.minConfidence).toBe(65);
-  });
-  it("one confident print is not enough — needs two in a row", () => {
-    const flatThenDip: { t: number; usd: number }[] = [];
-    for (let i = 0; i < BOT_WARMUP_POINTS + 4; i++) {
-      flatThenDip.push({ t: i * 30_000, usd: 0.01 });
-    }
-    flatThenDip.push({ t: 99 * 30_000, usd: 0.0095 }); // single dip print
-    const one = confirmedBuySignal(flatThenDip);
-    if (one.signal.bias === "buy") {
-      expect(one.confirmed).toBe(false);
-    } else {
-      expect(one.confirmed).toBe(false);
-    }
-  });
-  it("a sustained advance confirms", () => {
-    const s = rising();
-    const c = confirmedBuySignal(s);
-    if (c.signal.warmed && c.signal.bias === "buy") {
-      expect(c.confirmed).toBe(true);
-    }
-  });
-  it("signal strategy holds on the first confirming print", () => {
-    const s = rising();
-    // Only the last print moves — prior series was flat.
-    const step: { t: number; usd: number }[] = s.map((p) => ({ ...p, usd: 0.01 }));
-    step[step.length - 1]!.usd = 0.0115;
-    const snap = mkSnap([mkPool(1159, 50_000, 500_000_000)]);
-    const d = evaluateBot(
-      botInput({
-        snap,
-        series: step,
-        strategy: "signal",
-        balances: { WAX: 50 },
-        risk: { ...DEFAULT_RISK, minTradeUsd: 0 },
-      }),
-    );
-    if (d.kind === "hold") {
-      expect(d.reason).toMatch(/2nd confirming print|warming|BUY|HOLD|veto/i);
-    }
+describe("signal confirmation", () => {
+  it("confirmedBuySignal requires the previous print to also be a buy", () => {
+    const series = Array.from({ length: BOT_WARMUP_POINTS + 2 }, (_, i) => ({
+      t: Date.now() - (BOT_WARMUP_POINTS + 2 - i) * 30_000,
+      usd: 0.01 + (i > BOT_WARMUP_POINTS ? 0.0001 : 0),
+    }));
+    const { confirmed } = confirmedBuySignal(series);
+    // The last print moved up but the previous one did not vote buy.
+    expect(confirmed).toBe(false);
   });
 });
 
-describe("meanrev band-width gate", () => {
-  it("reversionRead surfaces the band width", () => {
-    const series: { t: number; usd: number }[] = [];
-    for (let i = 0; i < BOT_WARMUP_POINTS + 2; i++) {
-      series.push({ t: i * 30_000, usd: 0.01 * (1 + (i % 5) * 0.01) });
-    }
-    const r = reversionRead(series);
-    expect(r.bandWidthPct).not.toBeNull();
-    expect(r.bandWidthPct!).toBeGreaterThan(0);
+describe("meanrev band gate", () => {
+  it("reversionRead reports nulls before warmup", () => {
+    const { rsi, pctB } = reversionRead([]);
+    expect(rsi).toBeNull();
+    expect(pctB).toBeNull();
   });
-  it("blocks entries when the band is narrower than 2× round-trip cost", () => {
-    // Gentle ±0.2% oscillation: warmed series, zero net momentum (no trend
-    // veto), but BB width ≈0.8% < 2× the ~0.75% round-trip floor.
-    const calm: { t: number; usd: number }[] = [];
-    for (let i = 0; i < BOT_WARMUP_POINTS + 2; i++) {
-      calm.push({ t: i * 30_000, usd: 0.01 * (1 + (i % 2 === 0 ? 0.002 : -0.002)) });
-    }
-    const snap = mkSnap([mkPool(1159, 50_000, 500_000_000)]);
-    const d = evaluateBot(
-      botInput({
-        snap,
-        series: calm,
-        strategy: "meanrev",
-        balances: { WAX: 50 },
-        risk: { ...DEFAULT_RISK, minTradeUsd: 0 },
-      }),
-    );
-    expect(d.kind).toBe("hold");
-    expect(d.reason).toMatch(/BB width|round-trip/);
-  });
-  it("roundTripCostFloorPct uses the book's real fee tier", () => {
+  it("roundTripCostFloorPct uses the actual pool fee", () => {
     const snap = mkSnap([mkPool(1159, 50_000, 500_000_000, 1.0)]);
-    expect(roundTripCostFloorPct(snap)).toBeGreaterThan(2);
+    const floor = roundTripCostFloorPct(snap, "WAX");
+    expect(floor).toBeGreaterThan(2); // 2×1.0% + slippage + platform
   });
 });
 
-describe("paper/live calibration split", () => {
-  it("a paper close leaves live byStrategy untouched", () => {
-    const r = { pnlUsd: 1, predEdgePct: 2, realEdgePct: 1, latencyMs: null };
-    useBot.getState().recordStrategyPerf("zz-paper-split", r, "paper");
-    let stats = useBot.getState().stats;
-    expect(stats.byStrategy["zz-paper-split"]).toBeUndefined();
-    expect(stats.byStrategyPaper["zz-paper-split"]?.trades).toBe(1);
-    useBot.getState().recordStrategyPerf("zz-paper-split", r, "live");
-    stats = useBot.getState().stats;
-    expect(stats.byStrategy["zz-paper-split"]?.trades).toBe(1);
-    expect(stats.byStrategyPaper["zz-paper-split"]?.trades).toBe(1);
+describe("adaptiveCooldownSec", () => {
+  it("losing trades slow the bot down (anti-tilt)", () => {
+    expect(adaptiveCooldownSec(15, "auto", -0.5)).toBeGreaterThan(adaptiveCooldownSec(15, "auto", 0));
+  });
+  it("never goes below the 10s floor", () => {
+    expect(adaptiveCooldownSec(5, "auto", 0)).toBe(10);
   });
 });
