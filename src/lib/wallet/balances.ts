@@ -1,7 +1,7 @@
 /** Canonical wallet-balance helpers. Economic identity = SYMBOL@CONTRACT. */
 import type { LeefSnapshot } from "@/lib/leef/types";
 import type { UniverseToken } from "@/lib/leef/universe";
-import { tokenPrice } from "@/lib/market/price-oracle";
+import { stableAnchorPrice, tokenPrice } from "@/lib/market/price-oracle";
 import { canonicalTokenId, isTrustedStable } from "@/lib/market/stables";
 
 export type BalanceBook = Record<string, number>;
@@ -207,25 +207,61 @@ export type PortfolioMark = {
   totalUsd: number;
   pricedUsd: number;
   unpriced: string[];
-  assets: { id: string; amount: number; priceUsd: number; usd: number }[];
+  assets: { id: string; amount: number; priceUsd: number; usd: number; anchored: boolean }[];
 };
 
-/** One oracle and one canonical balance book = one true portfolio mark. */
+/**
+ * USD mark for one wallet row. The gated universe oracle wins; a held
+ * VERIFIED stable whose pool just isn't observed in this snapshot falls back
+ * to its registry dollar target (anchored — accounting only, never tradeable);
+ * anything else is null (fail closed, no guessed prices).
+ */
+export function rowPrice(
+  snap: LeefSnapshot,
+  row: Pick<WalletBalanceRow, "id" | "symbol" | "contract" | "token">,
+): { priceUsd: number; anchored: boolean; tradeAllowed: boolean; reason: string } | null {
+  const p = row.token ? tokenPrice(sap, row.id) : null;
+  if (p && p.priceUsd > 0) {
+    return {
+      priceUsd: p.priceUsd,
+      anchored: false,
+      tradeAllowed: p.tradeAllowed,
+      reason: p.reason,
+    };
+  }
+  if (!row.token && row.contract) {
+    const anchor = stableAnchorPrice(row.symbol, row.contract);
+    if (anchor) {
+      return {
+        priceUsd: anchor.priceUsd,
+        anchored: true,
+        tradeAllowed: false,
+        reason: anchor.reason,
+      };
+    }
+  }
+  return null;
+}
+
+/** One oracle and one canonical balance book = one true portfolio mark.
+ *  Anchored stables (verified contract, pool unobserved) count at their
+ *  dollar target — a wallet's USDT is real value even on a quiet book. */
 export function markPortfolioUsd(snap: LeefSnapshot, balances: BalanceBook): PortfolioMark {
   const assets: PortfolioMark["assets"] = [];
   const unpriced: string[] = [];
   for (const row of walletBalanceRows(balances, snap.universe)) {
     if (!(row.amount > 0)) continue;
-    const price = tokenPrice(snap, row.id);
-    if (!price || !(price.priceUsd > 0)) {
+    const mark = rowPrice(snap, row);
+    if (!mark) {
       unpriced.push(row.id);
       continue;
     }
     assets.push({
       id: row.id,
       amount: row.amount,
-      priceUsd: price.priceUsd,
-      usd: row.amount * price.priceUsd,
+      priceUsd: mark.priceUsd,
+      usd: row.amount * mark.priceUsd,
+      anchored: mark.anchored,
     });
   }
   const pricedUsd = assets.reduce((sum, asset) => sum + asset.usd, 0);
