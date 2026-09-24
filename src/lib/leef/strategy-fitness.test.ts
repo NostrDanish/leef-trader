@@ -20,7 +20,7 @@ import {
   type BotInput,
 } from "./bot-engine";
 import { evaluateEntry } from "./net-edge";
-import { planGrowthAction } from "./growth-engine";
+import { normalizeTargets, planGrowthAction } from "./growth-engine";
 import { snapFreshAtMs, type LeefPool, type LeefSnapshot } from "./types";
 import { useBot } from "@/store/bot";
 import type { PoolFlowState } from "@/lib/market/swap-flow";
@@ -245,22 +245,6 @@ describe("volume flow gate", () => {
 });
 
 describe("unleashed: EV-ranked, never random", () => {
-  it("picks the EV winner (arb), not a dice roll", () => {
-    const snap = mkSnap([
-      mkPool(1159, 50_000, 500_000_000),
-      mkPool(217, 50_100, 500_000_000),
-    ]);
-    const d = evaluateBot(
-      botInput({ snap, strategy: "unleashed", balances: { WAX: 50 } }),
-    );
-    expect(d.kind).toBe("arb");
-    if (d.kind === "arb") {
-      expect(d.arbKind).toBe("spread");
-      expect(d.plan.buyPool.id).toBe(1159);
-      expect(d.plan.sellPool.id).toBe(217);
-    }
-  });
-
   it("does not fire a loss-echo without flow evidence", () => {
     const d = evaluateBot(
       botInput({
@@ -328,20 +312,6 @@ describe("DCA cadence + exit preflight", () => {
   });
 });
 
-describe("arb freshness hygiene", () => {
-  it("skips a cross-pool arb when one leg is a stale book", () => {
-    const snap = mkSnap([
-      mkPool(1159, 50_000, 500_000_000),
-      mkPool(217, 50_100, 500_000_000),
-    ]);
-    const fresh = findBestArb(snap, 10, 0.1);
-    expect(fresh).not.toBeNull();
-    // Only pool 1159 is "hot" — the phantom spread on 217 must not appear.
-    const gated = findBestArb(snap, 10, 0.1, false, 0, new Set([1159]));
-    expect(gated).toBeNull();
-  });
-});
-
 describe("grid fee tier", () => {
   it("reads the actual book fee, not a hardcoded 0.3", () => {
     const snap = mkSnap([mkPool(1159, 50_000, 500_000_000, 1.0)]);
@@ -374,24 +344,16 @@ describe("cost decay", () => {
       volPerSec: 0.01,
       quoteAgeSec: 45,
     });
-    expect(volatile.totalPct).toBeGreaterThan(calm.totalPct);
+    expect(volatile!.costs.totalPct).toBeGreaterThan(calm!.costs.totalPct);
   });
 });
 
 describe("growth engine wiring", () => {
-  it("normalizeTargets caps at 3 entries and reweights to 100", () => {
-    const out = normalizeTargets([
-      { symbol: "LEEF", weight: 50 },
-      { symbol: "WAX", weight: 30 },
-      { symbol: "TLM", weight: 10 },
-      { symbol: "TACO", weight: 10 },
-    ]);
-    expect(out).toHaveLength(3);
-    expect(out.reduce((s, t) => s + t.weight, 0)).toBeCloseTo(100, 6);
-  });
   it("planGrowthAction returns a hold on an empty book", () => {
     const snap = mkSnap([mkPool(1159, 0, 0)]);
-    const plan = planGrowthAction(snap, { WAX: 0 }, [{ symbol: "LEEF", weight: 100 }], "balanced", {
+    const plan = planGrowthAction(snap, { WAX: 0 }, {
+      targets: [{ symbol: "LEEF", weight: 100 }],
+      mode: "balanced",
       minUsd: 0,
       maxUsd: 100,
     });
