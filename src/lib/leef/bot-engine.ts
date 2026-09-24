@@ -185,7 +185,7 @@ export type BotGoals = {
   takeProfitPct: number;
   /** Per-position stop-loss, percent. */
   stopLossPct: number;
-  /** Trailing stop: arms once profit passes this, sells on this much giveback. */
+  /** Trailing stop: arms once profit exceeded trailingPct, sells on this much giveback. */
   trailingPct: number;
   /** Stop the bot for the session once realized P&L reaches this USD amount. */
   sessionGoalUsd: number;
@@ -216,7 +216,7 @@ export type BotRisk = {
    * Volume gate: no echo/volume trade unless the pool saw a THIRD-PARTY swap
    * within this many minutes (flow evidence the book is alive). Fail closed
    * when flow data is unavailable. Volume intents only — profit intents are
-   * never flow-gated.
+   * never flow-gated. 0 disables the gate (the echo budget still applies).
    */
   volumeFlowGateMin: number;
   /**
@@ -270,9 +270,17 @@ export const DEFAULT_RISK: BotRisk = {
   maxEchoLossPct: 1.5,
   // Flow gate: the chain's median swap is $0.005 and pools see 45-min trade
   // droughts — printing tape on a book nobody else touches buys nothing.
-  volumeFlowGateMin: 10,
+  // Default OFF: even 10 min of quiet gated the WHOLE session on dead books
+  // ("no third-party swap observed this session"), so nothing ever traded.
+  // The echo budget below still bounds what volume strategies may spend.
+  volumeFlowGateMin: 0,
   echoBudgetUsd: 5,
-  minNetEdgePct: 0.1,
+  // The exact-quote gate also enforces guaranteedOut ≥ minNetEdgePct; a 0.1%
+  // floor needs a 0.3% CLMM clip to land its min-out within 0.2% — that
+  // combination almost never exists on WAX micro books, so every candidate
+  // was vetoed ("guaranteed −1.27% < floor 0.1%"). 0 = the on-chain min-out
+  // itself is the floor (always satisfied by construction).
+  minNetEdgePct: 0,
   maxQuoteAgeSec: 45,
   maxHops: 4,
 };
@@ -396,7 +404,8 @@ export type BotInput = {
   /**
    * Per-pool third-party swap-flow states (swap-flow.ts FlowTracker). Drives
    * the volume gate: null/absent = flow data unavailable → volume intents
-   * FAIL CLOSED to HOLD. Profit intents never read this.
+   * FAIL CLOSED to HOLD. Profit intents never read this. `volumeFlowGateMin = 0` disables the
+   * flow-evidence check (off-switch); the echo budget is unaffected.
    */
   flowStates?: PoolFlowState[] | null;
   /** Session echo cost so far (stats.echoCostUsd) — feeds the echo budget. */
@@ -508,8 +517,8 @@ export function confirmedBuySignal(series: PricePoint[]): {
  * Adaptive cooldown: arb/echo round trips are self-contained and can re-arm
  * faster; DCA is deliberately slow; a losing trade slows the bot down
   * (simple anti-tilt, never a martingale). The 10s floor matches the Live
-  * book pull — no configuration may trade faster than that.
-  */
+ * book pull — no configuration may trade faster than that.
+ */
 export function adaptiveCooldownSec(
   baseSec: number,
   strategy: BotStrategy,
@@ -711,7 +720,8 @@ function hold(reason: string): Decision {
  * evidence: every involved pool must have seen a third-party swap within
  * `risk.volumeFlowGateMin` minutes, and the session echo budget must not be
  * spent. FAILS CLOSED when flow data is unavailable. Profit intents (arb,
- * signal, …) NEVER pass through here.
+ * signal, …) NEVER pass through here. `volumeFlowGateMin = 0` disables the
+ * flow-evidence check (off-switch); the echo budget is unaffected.
  *
  * Returns a HOLD reason when gated, null when the volume intent may proceed.
  * `poolIds` empty = pre-flight (budget + data availability only).
@@ -727,11 +737,14 @@ export function volumeGateReason(
       `$${risk.echoBudgetUsd.toFixed(2)} cap) — volume intents off until session reset`
     );
   }
+  // 0 = off: the user takes responsibility for printing tape on dead books.
+  // (The echo budget above is a separate control and still applies.)
+  if (risk.volumeFlowGateMin <= 0) return null;
   const states = input.flowStates;
   if (!states) {
     return "no swap-flow data — volume intents fail closed (need evidence of third-party activity)";
   }
-  const maxAgeMs = Math.max(0.5, risk.volumeFlowGateMin) * 60_000;
+  const maxAgeMs = risk.volumeFlowGateMin * 60_000;
   for (const id of [...new Set(poolIds)]) {
     const s = states.find((x) => x.poolId === id);
     if (!s || !(s.lastSwapAt > 0)) {
