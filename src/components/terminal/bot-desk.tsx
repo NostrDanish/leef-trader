@@ -910,7 +910,7 @@ function TreasureCard({ snap }: { snap: LeefSnapshot }) {
   const targets = useBot((s) => s.growthTargets);
   const mode = useBot((s) => s.growthMode);
   const start = useBot((s) => s.growthStart);
-  const setTargets = useBot((s) => s.setTargets);
+  const setTargets = useBot((s) => s.setGrowthTargets);
   const setMode = useBot((s) => s.setGrowthMode);
   const running = useBot((s) => s.running);
   const balances = useWallet((s) => s.balances());

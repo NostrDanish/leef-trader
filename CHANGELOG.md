@@ -2,6 +2,59 @@
 
 All notable changes to LEEF Trader. Dates are commit-era, not release tags.
 
+## Unreleased — Branch sweep: restore code dropped by the squash merges
+
+Audit of all six remote branches (`consolidated/working-trader`,
+`feat/strategy-wax-optimization`, `fix/governor-stale-freeze`,
+`fix/number-display-logic`, `hardening/live-market-7d`, `upgrade/vercel-best`)
+against `main`. Every branch is an ancestor of main, but the #9–#11 squash
+merges silently DROPPED working code. Restored (exact branch content, no
+rewrites):
+
+- **fix(bot-desk): Treasure panel crash** — `useBot((s) => s.setTargets)`
+  referenced a store action that no longer exists (the store has
+  `setGrowthTargets`); vite does not typecheck, so the crash only surfaced at
+  runtime. (From `consolidated/working-trader`, commit c98b449.)
+- **fix(bot-loop): HOLD-reason surfacing dedupe restored** — main shipped the
+  `use-bot-loop.test.ts` that imports `shouldSurfaceHold` /
+  `resetHoldDedupe` / `HOLD_REASON_DEDUPE_MS`, but the implementation was
+  dropped in the squash → the test suite could not pass. Identical blocking
+  HOLD reasons (dead-book volume gate, stale-price governor) now surface to
+  the decision log at most once per 5 minutes; the gate decision still runs
+  every cycle. (From `fix/governor-stale-freeze`.)
+- **fix(swap-flow): last-swap evidence survives the rate window** — the volume
+  gate window (10 min) is wider than the rolling rate window (5 min): the
+  `lastSwapAt` timestamp was pruned with the rate window, so the gate failed
+  closed on books that traded 6 minutes ago. New un-pruned `lastSwapAt` map +
+  `noteTape`; `allStates` lists pools with tape-only evidence.
+  (From `fix/governor-stale-freeze`, commit 2ae6ccc.)
+- **feat(swap-flow): tape seeding (E-1)** — the snapshot's recent real trades
+  seed instant truthful `lastSwapAt` evidence at startup (deduped by txHash;
+  never counts as flow-rate evidence; own account excluded), instead of
+  waiting for the logswap backfill. Wired in `market-engine.ts` on live
+  snapshot commits.
+- **fix(market-engine): dead-book stale-price freeze** — an unchanged chain
+  read is still fresh chain truth: a throttled `spotAt` touch on the
+  unchanged-read path keeps the portfolio governor from declaring the price
+  stale 75 s after the last movement on a quiet book and freezing all
+  trading. (From `fix/governor-stale-freeze`, commit 2ae6ccc.)
+- **fix(swap-flow): 30-min initial backfill window + page-cap hardening** —
+  first poll now looks back 30 min (≥ any sane gate window) with
+  `FLOW_MAX_PAGES = 8`; partial coverage of a busy window is accepted and
+  polling resumes incrementally. `SeqDedupe` is generic (`SeqDedupe<string>`
+  for tape keys).
+- **test**: price-oracle core-freshness regression trio (dead-book fix,
+  both-stale fail-closed, long-tail anti-laundering) + swap-flow tape/paging/
+  lastSwapAt suites — ported verbatim from the branches so the restored
+  behavior is pinned.
+- **ci**: run CI on `fix/**` and `chore/**` branches too (from
+  `fix/governor-stale-freeze`).
+
+Deliberately NOT taken: branch-side `bot-engine` default flips
+(`volumeFlowGateMin: 10`, `minNetEdgePct: 0.1`) — main's 0/0 defaults are the
+later, deliberate consolidated decision ("defaults that actually let WAX
+micro books trade"), and main's strategy-fitness tests pin that behavior.
+
 ## Unreleased — Consolidation pass (audit response): one economic truth
 
 Audit-verified consolidation, no rewrites (rejected items documented in

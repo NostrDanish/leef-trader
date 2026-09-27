@@ -199,6 +199,46 @@ let lastHoldReason = "";
 let holdStreak = 0;
 
 /**
+ * Repeated identical HOLD reasons spam the decision log every cycle while a
+ * blocking condition persists (a dead book under the volume gate, a stale
+ * price under the portfolio governor, …). The gate DECISION still happens
+ * every cycle — only the decision-log surfacing is deduped: one entry per
+ * identical reason per 5 minutes (same discipline as the swap-flow mismatch
+ * journal). Reasons that CHANGE are always surfaced — the log stays truthful
+ * about state transitions.
+ */
+export const HOLD_REASON_DEDUPE_MS = 5 * 60_000;
+const holdReasonSurfacedAt = new Map<string, number>();
+
+/**
+ * True when a HOLD reason may be surfaced to the decision log NOW. An
+ * identical, already-surfaced reason re-surfaces at most once per
+ * HOLD_REASON_DEDUPE_MS; any new reason surfaces immediately.
+ */
+export function shouldSurfaceHold(reason: string, now: number = Date.now()): boolean {
+  const last = holdReasonSurfacedAt.get(reason);
+  if (last === undefined) {
+    holdReasonSurfacedAt.set(reason, now);
+    return true;
+  }
+  if (now - last < HOLD_REASON_DEDUPE_MS) return false;
+  holdReasonSurfacedAt.set(reason, now);
+  // Bound the map: dead reasons expire with the map, not the session.
+  if (holdReasonSurfacedAt.size > 64) {
+    const oldest = holdReasonSurfacedAt.keys().next().value;
+    if (oldest !== undefined) holdReasonSurfacedAt.delete(oldest);
+  }
+  return true;
+}
+
+/** Test hook: clear the HOLD-reason dedupe map. */
+export function resetHoldDedupe(): void {
+  holdReasonSurfacedAt.clear();
+  lastHoldReason = "";
+  holdStreak = 0;
+}
+
+/**
  * Per-cycle market context for journal enrichment — computed lazily on the
  * first gate/execution of a cycle (never on HOLD-only paths), cached for the
  * cycle. Same regime/danger math the engine gates on.
@@ -474,7 +514,13 @@ async function runBotOnceInner(
 
   if (decision.kind === "hold") {
     holdStreak += 1;
-    if (decision.reason !== lastHoldReason || holdStreak % 10 === 0) {
+    if (
+      (decision.reason !== lastHoldReason || holdStreak % 10 === 0) &&
+      // Identical blocking reasons re-fire verbatim every cycle on a dead
+      // book — surface them at most once per 5 min per reason (gate still
+      // blocks every cycle; only the log surfacing is deduped).
+      shouldSurfaceHold(decision.reason)
+    ) {
       b.pushDecision({ kind: "hold", mode, reason: decision.reason, priceUsd: snap.leefUsd });
     }
     lastHoldReason = decision.reason;

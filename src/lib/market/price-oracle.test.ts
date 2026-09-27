@@ -126,6 +126,37 @@ describe("TokenPriceOracle", () => {
     expect(tokenPrice(snap([stale]), "TLM@alien.worlds")!.tradeAllowed).toBe(false);
   });
 
+  it("core marks ride chain-read freshness (dead-book fix): fresh snapshot revives an old universe timestamp", () => {
+    // Regression: on a dead book the universe merge may be hours old while the
+    // engine keeps reading the chain every ~4.5s — the core price VALUE already
+    // rides snap.leefUsd, so its honest age is the snapshot freshness.
+    const leef = token("LEEF", "leefmaincorp", 0.01, {
+      priceTimestamp: Date.now() - 3_600_000, // universe merge an hour old
+      priceConfidence: 0.95,
+    });
+    const p = tokenPrice(snap([leef]), "LEEF@leefmaincorp");
+    expect(p!.tradeAllowed).toBe(true);
+  });
+
+  it("core marks still fail closed when BOTH the universe entry and the snapshot are stale", () => {
+    const leef = token("LEEF", "leefmaincorp", 0.01, {
+      priceTimestamp: Date.now() - 3_600_000,
+      priceConfidence: 0.95,
+    });
+    const s = snap([leef]);
+    s.fetchedAt = new Date(Date.now() - 600_000).toISOString();
+    s.spotAt = new Date(Date.now() - 300_000).toISOString();
+    expect(tokenPrice(s, "LEEF@leefmaincorp")!.tradeAllowed).toBe(false);
+  });
+
+  it("long-tail tokens never ride snapshot freshness (anti-laundering intact)", () => {
+    const tlm = token("TLM", "alien.worlds", 0.002, {
+      priceTimestamp: Date.now() - 120_000,
+      priceConfidence: 0.95,
+    });
+    expect(tokenPrice(snap([tlm]), "TLM@alien.worlds")!.tradeAllowed).toBe(false);
+  });
+
   it("never resolves an ambiguous symbol to whichever contract sorted first", () => {
     const universe = [token("USDT", "a.token", 1), token("USDT", "b.token", 0.2)];
     expect(resolveOracleToken(universe, "USDT")).toBeNull();

@@ -329,6 +329,17 @@ class MarketEngine {
         });
         marketBus.emit("snapshot", { snap });
 
+        // Tape seeding (E-1): the snapshot carries recent REAL swaps for the
+        // top pools — feed them as last-swap evidence (never rate evidence)
+        // so the volume gate has instant truthful data at startup instead of
+        // waiting for the 30-min logswap backfill. Deduped by txHash, so the
+        // repeated commits carrying the same tape are cheap no-ops.
+        if (snap.source === "live" && snap.trades.length > 0) {
+          swapFlow.seedTape(snap.trades, {
+            selfAccount: useWallet.getState().account || null,
+          });
+        }
+
         // Stale-market gate: never trade from a book older than the cadence
         // window allows (e.g. right after a long suspension).
         // F0: freshness = max(fetchedAt, spotAt) — a pool hot-patched from
@@ -443,7 +454,18 @@ class MarketEngine {
           void botOnSnapshot(patchedSnap).then(() => rebalancerOnSnapshot(patchedSnap));
         }
       } else {
+        // A successful read that finds UNCHANGED state is still fresh chain
+        // truth — the book really is at this price right now. On a dead book
+        // (no swaps for 45+ min, measured) changed is 0 forever; without a
+        // spotAt touch the governor would declare the price stale 75 s after
+        // the last movement and freeze all trading. Refresh the evidence
+        // (throttled) without re-running strategies: nothing changed.
+        const prevSpotAt = Date.parse(snap.spotAt ?? snap.fetchedAt) || 0;
+        const staleEvidence = Date.now() - prevSpotAt > 15_000;
         this.commit({
+          ...(staleEvidence
+            ? { snapshot: { ...snap, spotAt: new Date().toISOString() } }
+            : {}),
           onchainSpot: { at: Date.now(), checked: rows.size, changed: 0, ok: true },
           cycle: { ...this.state.cycle, onchainMs: Date.now() - t0 },
         });
