@@ -207,17 +207,17 @@ describe("volume flow gate", () => {
     // Whatever it decides, it must NOT be the flow gate holding it back.
     if (d.kind === "hold") expect(d.reason.toLowerCase()).not.toContain("flow");
   });
-  it("volume-x fails closed without flow data", () => {
+  it("volume maker fails closed without flow data", () => {
     const d = evaluateBot(
       botInput({
-        strategy: "volume-x",
+        strategy: "volume",
         balances: { WAX: 50 },
         risk: { ...DEFAULT_RISK, minTradeUsd: 0, volumeFlowGateMin: 10 },
         flowStates: undefined,
       }),
     );
     expect(d.kind).toBe("hold");
-    expect(d.reason).toContain("Volume-X");
+    expect(d.reason).toContain("Volume gated");
   });
   it("auto: flow gates echoes but NEVER profit intents", () => {
     // Dead book, deployable WAX: a profit thesis (grid/arb) may still trade —

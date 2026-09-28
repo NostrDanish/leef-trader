@@ -335,10 +335,10 @@ export function regimeWeight(regime: MarketRegime, source: string): number {
       if (source === "dca") return 0.5;
       if (source === "grid") return 0.8;
       if (source === "growth") return 0.7;
-      if (source === "volume" || source === "volume-x") return 0.7;
+      if (source === "volume" || source === "volume-tape") return 0.7;
       return 1;
     case "low_vol":
-      if (source === "volume" || source === "volume-x") return 1.1;
+      if (source === "volume" || source === "volume-tape") return 1.1;
       if (source === "dca") return 1.1;
       if (source === "spread") return 0.9;
       return 1;

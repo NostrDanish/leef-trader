@@ -22,6 +22,7 @@ import {
   routeComplexity,
 } from "./opportunity";
 import { canonicalBalanceEntries, markPortfolioUsd } from "@/lib/wallet/balances";
+import { isTrustedStable } from "@/lib/market/stables";
 
 export type GrowthMode = "max" | "balanced" | "compound";
 
@@ -595,9 +596,11 @@ export function planGrowthAction(
       for (const route of routes) consider(token.symbol, to, spend, route);
     }
 
-    // Same-asset cycles: working capital (WAX/stables) or a treasure harvest.
+    // Same-asset cycles: working capital (WAX/trusted stables) or a treasure
+    // harvest. Stable identity is contract-aware — a clone "USDT" symbol on a
+    // foreign contract is not working capital.
     const from = token.symbol;
-    if (targetSet.has(from) || from === "WAX" || /USD|USDT|USDC/.test(from)) {
+    if (targetSet.has(from) || from === "WAX" || isTrustedStable(token.symbol, token.contract)) {
       const cycle = rankExecutionRoutesOnGraph(graph, spend, from, from, hops).find(
         (r) => r.legs.length >= 2,
       );

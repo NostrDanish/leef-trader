@@ -81,13 +81,17 @@ export type CostBreakdown = {
 };
 
 /**
- * USD mark from the authoritative price oracle. A bare symbol resolves only
- * when unambiguous; economic callers should pass SYMBOL@CONTRACT or Alcor id.
+ * USD mark from the authoritative price oracle. Identity is contract-aware:
+ * "SYMBOL@CONTRACT" / Alcor ids resolve exactly; a bare symbol resolves only
+ * when unambiguous (trusted-stable contracts win clone collisions), so a
+ * cloned symbol can never hijack a mark. The core WAX/LEEF snapshot marks
+ * still win for the bare core symbols; everything routes through tokenPrice
+ * (which itself falls back to the universe when snap.waxUsd/leefUsd are 0).
  */
 export function usdPriceOf(identifier: string, snap: LeefSnapshot): number {
   const s = identifier.toUpperCase();
-  if (s === "WAX") return snap.waxUsd;
-  if (s === "LEEF") return snap.leefUsd;
+  if (s === "WAX" && snap.waxUsd > 0) return snap.waxUsd;
+  if (s === "LEEF" && snap.leefUsd > 0) return snap.leefUsd;
   return tokenPrice(snap, identifier)?.priceUsd ?? 0;
 }
 
