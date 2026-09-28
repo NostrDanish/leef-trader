@@ -440,8 +440,8 @@ describe("§12 volume maker economics", () => {
   it("an echo inside the loss budget is found and is a BOUNDED loss", () => {
     const plan = findBestArb(snap, 50, -1.5, true, 1);
     expect(plan).not.toBeNull();
-    expect(plan!.waxOut).toBeLessThan(plan!.waxIn); // costs money…
-    const lossPct = (plan!.waxOut / plan!.waxIn - 1) * 100;
+    expect(plan!.quoteOut).toBeLessThan(plan!.quoteIn); // costs money…
+    const lossPct = (plan!.quoteOut / plan!.quoteIn - 1) * 100;
     expect(lossPct).toBeGreaterThanOrEqual(-1.5 - 1e-9); // …never beyond budget
   });
 
