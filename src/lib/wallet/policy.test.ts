@@ -242,7 +242,7 @@ describe("arbFloorViolation", () => {
 
   it("passes when the enforced min-outs clear the floor", () => {
     const violation = arbFloorViolation({
-      waxIn: 10,
+      quoteIn: 10,
       minProfitPct: 1.2,
       buyLegs: [buyLeg("10.00000000")],
       sellLegs: [sellLeg("240000.0000", "10.12000000")],
@@ -253,7 +253,7 @@ describe("arbFloorViolation", () => {
 
   it("passes for split sell legs whose min-outs sum over the floor", () => {
     const violation = arbFloorViolation({
-      waxIn: 10,
+      quoteIn: 10,
       minProfitPct: 1.2,
       buyLegs: [buyLeg("6.00000000"), buyLeg("4.00000000")],
       sellLegs: [sellLeg("140000.0000", "6.07000000"), sellLeg("100000.0000", "4.06000000")],
@@ -266,7 +266,7 @@ describe("arbFloorViolation", () => {
     // Quoted output could be 10.13 WAX, but the chain only guarantees 10.05 —
     // that is exactly the gap this invariant exists to catch.
     const violation = arbFloorViolation({
-      waxIn: 10,
+      quoteIn: 10,
       minProfitPct: 1.2,
       buyLegs: [buyLeg("10.00000000")],
       sellLegs: [sellLeg("240000.0000", "10.05000000")],
@@ -277,7 +277,7 @@ describe("arbFloorViolation", () => {
 
   it("enforces negative floors (volume echo loss budget)", () => {
     const ok = arbFloorViolation({
-      waxIn: 10,
+      quoteIn: 10,
       minProfitPct: -1.5,
       buyLegs: [buyLeg("10.00000000")],
       sellLegs: [sellLeg("240000.0000", "9.90000000")],
@@ -285,7 +285,7 @@ describe("arbFloorViolation", () => {
     });
     expect(ok).toBeNull();
     const bad = arbFloorViolation({
-      waxIn: 10,
+      quoteIn: 10,
       minProfitPct: -1.5,
       buyLegs: [buyLeg("10.00000000")],
       sellLegs: [sellLeg("240000.0000", "9.80000000")],
@@ -296,7 +296,7 @@ describe("arbFloorViolation", () => {
 
   it("blocks sell legs whose min-out isn't WAX@eosio.token", () => {
     const violation = arbFloorViolation({
-      waxIn: 10,
+      quoteIn: 10,
       minProfitPct: 1.2,
       buyLegs: [buyLeg("10.00000000")],
       sellLegs: [{ input: "240000.0000 LEEF", memo: swapMemo("10.5000 USDT@usdt.alcor") }],
@@ -307,7 +307,7 @@ describe("arbFloorViolation", () => {
 
   it("blocks buy legs that pull more than the plan sized", () => {
     const violation = arbFloorViolation({
-      waxIn: 10,
+      quoteIn: 10,
       minProfitPct: 1.2,
       buyLegs: [buyLeg("11.00000000")],
       sellLegs: [sellLeg("240000.0000", "11.50000000")],
@@ -318,13 +318,13 @@ describe("arbFloorViolation", () => {
 
   it("blocks missing router legs", () => {
     expect(
-      arbFloorViolation({ waxIn: 10, minProfitPct: 1.2, buyLegs: [], sellLegs: [], account: ACCOUNT }),
+      arbFloorViolation({ quoteIn: 10, minProfitPct: 1.2, buyLegs: [], sellLegs: [], account: ACCOUNT }),
     ).toMatch(/router legs/);
   });
 
   it("blocks malformed leg memos", () => {
     const violation = arbFloorViolation({
-      waxIn: 10,
+      quoteIn: 10,
       minProfitPct: 1.2,
       buyLegs: [buyLeg("10.00000000")],
       sellLegs: [{ input: "240000.0000 LEEF", memo: "trust me bro" }],
