@@ -159,8 +159,12 @@ export type TapeClip = {
 };
 
 /**
- * Volume-for-LEEF: any held token → LEEF (or LEEF → quote) at a mixed size
+ * Volume tape: any held token → base (or base → quote) at a mixed size
  * inside [minUsd, maxUsd]. Prefers profit; accepts zero-loss after LP fees.
+ * Honors the configured base/quote (defaults LEEF / WAX-family stables).
+ * Fail-closed sizing: a holding worth less than minUsd can NOT tape (the
+ * clip never dips below the configured minimum), and maxUsd < minUsd means
+ * no clip at all — the ceiling is never silently promoted.
  */
 export function planLeefTape(
   snap: LeefSnapshot,
@@ -171,11 +175,22 @@ export function planLeefTape(
     maxHops?: number;
     seed?: number;
     maxLossPct?: number;
+    /** Configured base token (default LEEF). */
+    base?: string;
+    /** Configured quote token (default WAX-family stable set). */
+    quote?: string;
   },
 ): TapeClip | null {
   const graph = buildRouteGraph(snap.pools, snap.aux);
   const maxLoss = Math.max(0, opts.maxLossPct ?? 1.5);
   const seed = opts.seed ?? Date.now();
+  const base = (opts.base ?? "LEEF").toUpperCase();
+  const quote = (opts.quote ?? "WAX").toUpperCase();
+  const minUsd = Math.max(0, opts.minUsd);
+  const maxUsd = Math.max(0, opts.maxUsd);
+  // Fail closed: a ceiling under the floor is a missing/missized bound, not
+  // permission to clip at minUsd anyway.
+  if (maxUsd + 1e-12 < minUsd) return null;
   const entries = canonicalBalanceEntries(balances, snap.universe)
     .map((e) => ({ ...e, usd: e.amount * (usdPriceOf(e.token.symbol, snap) || 0) }))
     .filter((e) => e.usd > 0)
@@ -187,10 +202,11 @@ export function planLeefTape(
   for (const { token, amount, usd } of entries) {
     const px = usdPriceOf(token.symbol, snap);
     if (!(px > 0)) continue;
-    const capUsd = Math.min(usd, Math.max(opts.minUsd, opts.maxUsd));
-    const loUsd = Math.min(opts.minUsd, capUsd);
+    const capUsd = Math.min(usd, maxUsd);
+    // Min-trade enforced: a sub-min holding tapes nothing (never clamped up).
+    if (capUsd + 1e-12 < minUsd) continue;
+    const loUsd = minUsd;
     const hiUsd = capUsd;
-    if (hiUsd <= 0) continue;
     const r = ((seed + i * 97_331) >>> 0) / 4_294_967_296;
     const ladder = [0, 0.05, 0.12, 0.28, 0.5, 0.75, 1];
     const f = ladder[Math.floor(r * ladder.length) % ladder.length]!;
@@ -203,12 +219,24 @@ export function planLeefTape(
       const route = bestExecutionRouteOnGraph(graph, amt, from, to);
       if (!route) return;
       const pxOut = usdPriceOf(to, snap);
-      if (!(pxOut > 0)) return;
-      const usdIn = amt * (usdPriceOf(from, snap) || 0);
+      const pxIn = usdPriceOf(from, snap) || 0;
+      if (!(pxOut > 0) || !(pxIn > 0)) return;
+      const usdIn = amt * pxIn;
       const usdOut = route.amountOut * pxOut;
       const netUsd = usdOut - usdIn;
       const netPct = usdIn > 0 ? (netUsd / usdIn) * 100 : 0;
       if (netPct < -maxLoss) return;
+      // Mark-vs-executable guard (same as planNextAction): if the oracle
+      // overprices the destination vs what the route graph would actually
+      // pay to sell it back, the "profit" exists only in the marks. Bound
+      // loss stays enforced; phantom gain does not.
+      const back = bestExecutionRouteOnGraph(graph, route.amountOut, to, from);
+      if (back && back.amountOut > 0 && route.amountOut > 0) {
+        const impliedExitUsd = (back.amountOut * pxIn) / route.amountOut;
+        const tolerance =
+          1 + (route.feePct + back.feePct) / 100 + (route.priceImpact + back.priceImpact) + 0.03;
+        if (pxOut > impliedExitUsd * tolerance) return;
+      }
       clips.push({
         tokenIn: from,
         tokenOut: to,
@@ -221,10 +249,11 @@ export function planLeefTape(
       });
     };
 
-    if (token.symbol !== "LEEF") tryPair(token.symbol, "LEEF", spend);
-    if (token.symbol === "LEEF") {
-      for (const q of ["WAX", "WAXUSDC", "USDT", "PARAUSD"]) {
-        tryPair("LEEF", q, spend);
+    if (token.symbol.toUpperCase() !== base) tryPair(token.symbol, base, spend);
+    if (token.symbol.toUpperCase() === base) {
+      for (const q of [...new Set([quote, "WAX", "WAXUSDC", "USDT", "PARAUSD"])]) {
+        if (q === base) continue;
+        tryPair(base, q, spend);
       }
     }
   }

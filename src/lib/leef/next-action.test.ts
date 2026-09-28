@@ -139,4 +139,27 @@ describe("planLeefTape", () => {
       expect(clip.usdIn).toBeLessThanOrEqual(0.5 + 1e-6);
     }
   });
+  it("enforces minUsd: a sub-min holding tapes nothing (never clamped up)", () => {
+    const s = snap([mkPool(50_000, 500_000_000)]);
+    // 1 WAX ≈ $0.02 < the $0.50 min — previously this traded BELOW the floor.
+    expect(
+      planLeefTape(s, { WAX: 1 }, { minUsd: 0.5, maxUsd: 5, maxLossPct: 50, seed: 1 }),
+    ).toBeNull();
+  });
+  it("never clips below minUsd on a large holding, across the seed ladder", () => {
+    const s = snap([mkPool(50_000, 500_000_000)]);
+    for (let seed = 0; seed < 25; seed++) {
+      const clip = planLeefTape(s, { WAX: 500 }, { minUsd: 0.5, maxUsd: 2, maxLossPct: 50, seed });
+      if (clip) {
+        expect(clip.usdIn).toBeGreaterThanOrEqual(0.5 - 1e-9);
+        expect(clip.usdIn).toBeLessThanOrEqual(2 + 1e-9);
+      }
+    }
+  });
+  it("fails closed when maxUsd is under minUsd (missing/undersized bound)", () => {
+    const s = snap([mkPool(50_000, 500_000_000)]);
+    expect(
+      planLeefTape(s, { WAX: 500 }, { minUsd: 0.5, maxUsd: 0, maxLossPct: 50, seed: 1 }),
+    ).toBeNull();
+  });
 });

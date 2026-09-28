@@ -121,7 +121,7 @@ describe("clip band + hops", () => {
     expect(hopsForStrategy("volume", 4)).toBeLessThanOrEqual(4);
     expect(hopsForStrategy("signal", 3)).toBeLessThanOrEqual(3);
     expect(hopsForStrategy("unleashed", 10)).toBeLessThanOrEqual(10);
-    expect(hopsForStrategy("volume-x", 2)).toBeLessThanOrEqual(2);
+    expect(hopsForStrategy("volume", 2)).toBeLessThanOrEqual(2);
   });
 });
 
@@ -256,8 +256,8 @@ describe("bot edge gate (evaluateBot)", () => {
     const d = evaluateBot(botInput({ snap, gridAnchor: anchorAbove(snap) }));
     expect(d.kind).toBe("buy");
     if (d.kind === "buy") {
-      expect(d.amountWax).toBeGreaterThan(0);
-      expect(d.amountWax).toBeLessThanOrEqual(50);
+      expect(d.amountIn).toBeGreaterThan(0);
+      expect(d.amountIn).toBeLessThanOrEqual(50);
       expect(d.edge).toBeDefined();
       expect(d.reason).toMatch(/EV \$|net /);
     }
@@ -309,7 +309,7 @@ describe("bot edge gate (evaluateBot)", () => {
     expect(d.kind).toBe("arb");
     if (d.kind === "arb") {
       expect(d.arbKind).toBe("volume");
-      expect(d.plan.waxIn).toBeGreaterThan(0);
+      expect(d.plan.quoteIn).toBeGreaterThan(0);
     }
   });
 
