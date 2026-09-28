@@ -317,7 +317,7 @@ export function attachUsdPrices(
   // Not live? Last KNOWN live price — never a hardcoded number. A
   // never-seen-live cold start is UNKNOWN (0), and the trading engine fails
   // closed on it (bot-engine gates on waxConfidence === 0).
-  if (!(waxUsd > 0)) waxUsd = lastKnownWaxUsd().usd || 0.006;
+  if (!(waxUsd > 0)) waxUsd = lastKnownWaxUsd().usd;
   if (livePriced) noteKnownWaxUsd(waxUsd);
 
   const waxConfidence = livePriced ? anchor!.confidence : 0;
