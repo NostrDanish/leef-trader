@@ -86,7 +86,7 @@ type BotState = {
   /** Snapshot of target amounts at session start (for growth P&L). */
   growthStart: Record<string, number>;
   /** Full wallet snapshot at session start — swap-style strategies (volume,
-   *  volume-x, unleashed) never open a tracked Position, so the position card
+   *  unleashed) never open a tracked Position, so the position card
    *  shows holdings delta vs this instead of a fake "Flat". */
   sessionStartBalances: Record<string, number>;
   goals: BotGoals;
@@ -382,7 +382,8 @@ export const useBot = create<BotState>()(
         void _c;
         void _m;
         return {
-          strategy: p.strategy ?? "auto",
+          // volume-extreme was removed; its tape mode lives in volume maker.
+          strategy: p.strategy === ("volume-x" as unknown as BotStrategy) ? "volume" : (p.strategy ?? "auto"),
           base: typeof p.base === "string" && p.base ? p.base.toUpperCase() : "LEEF",
           quote: typeof p.quote === "string" && p.quote ? p.quote.toUpperCase() : "WAX",
           focus: Array.isArray(p.focus) ? p.focus.map((s) => String(s).toUpperCase()) : ["LEEF", "WAX"],
