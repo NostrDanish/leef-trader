@@ -78,8 +78,8 @@ describe("findArb virtual-reserve anchoring", () => {
     expect(plan.buyPool.id).toBe(217);
     expect(plan.sellPool.id).toBe(218);
     // Virtual-CP round trip nets ≈ +7.0%; raw-CP on 217 would claim ≈ +68%.
-    expect(plan.waxOut).toBeGreaterThan(10.5);
-    expect(plan.waxOut).toBeLessThan(11);
+    expect(plan.quoteOut).toBeGreaterThan(10.5);
+    expect(plan.quoteOut).toBeLessThan(11);
     expect(plan.profitPct).toBeCloseTo(0.0703, 3);
   });
 
