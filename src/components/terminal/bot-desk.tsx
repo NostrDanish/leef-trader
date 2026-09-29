@@ -123,6 +123,9 @@ export function BotDesk({ snap }: { snap: LeefSnapshot }) {
   });
 
   function onStart() {
+    // A halted strategy must be resumed explicitly (banner below) — the
+    // plain Start button never clears a retry-storm halt.
+    if (b.strategyHalt) return;
     if (liveReady && !confirmLive) {
       setConfirmLive(true);
       return;
@@ -173,6 +176,35 @@ export function BotDesk({ snap }: { snap: LeefSnapshot }) {
         </div>
       </div>
 
+      {b.strategyHalt && (
+        <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-sell/40 bg-sell/10 px-3 py-2 text-xs text-sell">
+          <div className="flex items-start gap-2">
+            <ShieldAlert className="mt-0.5 size-3.5 shrink-0" />
+            <div>
+              <p className="font-medium">
+                Strategy halted — manual resume required
+              </p>
+              <p className="text-sell/80">
+                {b.strategyHalt.strategy} · {b.strategyHalt.reason} ·{" "}
+                {new Date(b.strategyHalt.at).toLocaleTimeString()} — repeated
+                identical on-chain rejections risk a 24h account greylist, so
+                the bot stopped itself.
+              </p>
+            </div>
+          </div>
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => {
+              b.resumeStrategy();
+              onStart();
+            }}
+          >
+            <RotateCcw className="size-3.5" />
+            Resume strategy
+          </Button>
+        </div>
+      )}
       {b.running && liveReady && (
         <div className="flex items-start gap-2 rounded-lg border border-sell/30 bg-sell/10 px-3 py-2 text-xs text-sell">
           <ShieldAlert className="mt-0.5 size-3.5 shrink-0" />
@@ -339,7 +371,7 @@ export function BotDesk({ snap }: { snap: LeefSnapshot }) {
               {preview.kind === "buy" && (
                 <>
                   <Crosshair className="mr-1 inline size-3.5 text-leef" />
-                  Would buy with {fmtNum(preview.amountWax)} {b.quote} on {preview.route.label} ·{" "}
+                  Would buy with {fmtNum(preview.amountIn)} {b.quote} on {preview.route.label} ·{" "}
                   {fmtNum(preview.route.amountOut, { compact: true })} {b.base} · impact{" "}
                   {(preview.route.priceImpact * 100).toFixed(2)}%
                 </>
@@ -355,7 +387,7 @@ export function BotDesk({ snap }: { snap: LeefSnapshot }) {
                 <>
                   <Crosshair className="mr-1 inline size-3.5 text-wax" />
                   Would arb #{preview.plan.buyPool.id} → #{preview.plan.sellPool.id} ·{" "}
-                  {fmtNum(preview.plan.waxIn)} WAX in, est {fmtNum(preview.plan.waxOut, { digits: 3 })} out
+                  {fmtNum(preview.plan.quoteIn)} {preview.plan.quoteToken.symbol} in, est {fmtNum(preview.plan.quoteOut, { digits: 3 })} out
                 </>
               )}
               {preview.kind === "swap" && (
@@ -417,11 +449,11 @@ export function BotDesk({ snap }: { snap: LeefSnapshot }) {
             </Card>
             <Card className="p-4">
               <div className="text-xs uppercase tracking-wider text-subtle">
-                {b.strategy === "volume" || b.strategy === "volume-x" || (b.strategy === "unleashed" && b.stats.volumeUsd > 0)
+                {b.strategy === "volume" || (b.strategy === "unleashed" && b.stats.volumeUsd > 0)
                   ? "Volume made"
                   : "Equity"}
               </div>
-              {b.strategy === "volume" || b.strategy === "volume-x" || (b.strategy === "unleashed" && b.stats.volumeUsd > 0) ? (
+              {b.strategy === "volume" || (b.strategy === "unleashed" && b.stats.volumeUsd > 0) ? (
                 <>
                   <div className="mt-1 font-mono text-lg tabular-nums text-wax">
                     {fmtUsd(b.stats.volumeUsd, 2)}
@@ -550,7 +582,7 @@ export function BotDesk({ snap }: { snap: LeefSnapshot }) {
 /* ------------------------------------------------------------------ */
 
 /**
- * Swap-style strategies (volume / volume-x / unleashed) never open a tracked
+ * Swap-style strategies (volume / unleashed) never open a tracked
  * pair position — the card must not say "Flat" while the wallet is filling.
  * Show the base token's real wallet balance and its change this session.
  */
@@ -1388,7 +1420,7 @@ function RiskCard({ strategy, snap }: { strategy: BotStrategy; snap: LeefSnapsho
             onChange={(gridStepPct) => setRisk({ gridStepPct })}
           />
         )}
-        {(strategy === "volume" || strategy === "volume-x" || strategy === "auto" || strategy === "unleashed") && (
+        {(strategy === "volume" || strategy === "auto" || strategy === "unleashed") && (
           <Knob
             ready={slidersOn}
             label="Max echo loss per round trip"
@@ -1400,7 +1432,7 @@ function RiskCard({ strategy, snap }: { strategy: BotStrategy; snap: LeefSnapsho
             onChange={(maxEchoLossPct) => setRisk({ maxEchoLossPct })}
           />
         )}
-        {(strategy === "volume" || strategy === "volume-x" || strategy === "auto" || strategy === "unleashed") && (
+        {(strategy === "volume" || strategy === "auto" || strategy === "unleashed") && (
           <Knob
             ready={slidersOn}
             label="Volume gate — third-party swap freshness (0 = off)"
@@ -1412,7 +1444,7 @@ function RiskCard({ strategy, snap }: { strategy: BotStrategy; snap: LeefSnapsho
             onChange={(volumeFlowGateMin) => setRisk({ volumeFlowGateMin })}
           />
         )}
-        {(strategy === "volume" || strategy === "volume-x" || strategy === "auto" || strategy === "unleashed") && (
+        {(strategy === "volume" || strategy === "auto" || strategy === "unleashed") && (
           <Knob
             ready={slidersOn}
             label="Session echo budget (0 = unlimited)"
