@@ -17,6 +17,10 @@ import {
   type GrowthTarget,
 } from "@/lib/leef/growth-engine";
 import { journal } from "@/lib/leef/journal";
+import {
+  trackRejection,
+  type RejectionStreak,
+} from "@/lib/leef/retry-storm";
 import { setNeftyVenueEnabled } from "@/lib/leef/venue-adapters";
 
 export type BotDecisionKind = "buy" | "sell" | "arb" | "swap" | "hold" | "skip" | "stop" | "error";
@@ -86,7 +90,7 @@ type BotState = {
   /** Snapshot of target amounts at session start (for growth P&L). */
   growthStart: Record<string, number>;
   /** Full wallet snapshot at session start — swap-style strategies (volume,
-   *  volume-x, unleashed) never open a tracked Position, so the position card
+   *  unleashed) never open a tracked Position, so the position card
    *  shows holdings delta vs this instead of a fake "Flat". */
   sessionStartBalances: Record<string, number>;
   goals: BotGoals;
@@ -108,6 +112,14 @@ type BotState = {
    * out of discovery/routing without a redeploy.
    */
   neftyVenue: boolean;
+  /**
+   * Retry-storm guard: set when one strategy produced RETRY_STORM_LIMIT
+   * identical consecutive on-chain rejections. Persisted so a reload cannot
+   * silently resume the storm — the user must explicitly resume.
+   */
+  strategyHalt: { strategy: string; reason: string; at: number } | null;
+  /** Consecutive-rejection streak (session-only, never persisted). */
+  rejectionStreak: RejectionStreak | null;
 
   start: (equityUsd: number) => void;
   stop: (reason?: string) => void;
@@ -140,6 +152,16 @@ type BotState = {
   setLastReason: (s: string) => void;
   clearRiskMigrationNotice: () => void;
   setNeftyVenue: (on: boolean) => void;
+  /**
+   * Record one on-chain rejection (retry-storm guard). Returns true when the
+   * streak just tripped the limit — the store then halts the strategy AND
+   * stops the bot (fail-closed: nothing else pushes until a manual resume).
+   */
+  noteRejection: (key: string, info: { strategy: string; reason: string }) => boolean;
+  /** Success or a user action breaks the consecutive-rejection run. */
+  clearRejectionStreak: () => void;
+  /** Manual resume: clears the halt flag and the streak. */
+  resumeStrategy: () => void;
 };
 
 const freshStats = (equityUsd: number): BotStats => ({
@@ -181,6 +203,8 @@ export const useBot = create<BotState>()(
       lastReason: "Bot is stopped",
       riskMigrationNotice: null,
       neftyVenue: true,
+      strategyHalt: null,
+      rejectionStreak: null,
 
       start: (equityUsd) =>
         set((s) => ({
@@ -349,6 +373,29 @@ export const useBot = create<BotState>()(
         setNeftyVenueEnabled(on);
         set({ neftyVenue: on, lastReason: on ? "Nefty venue enabled" : "Nefty venue disabled" });
       },
+      noteRejection: (key, info) => {
+        const { streak, halted } = trackRejection(get().rejectionStreak, key);
+        if (halted && !get().strategyHalt) {
+          // Fail-closed: stop the whole bot — this account is one retry loop
+          // away from a 24h node-side greylist. Manual resume required.
+          set({
+            rejectionStreak: streak,
+            strategyHalt: { strategy: info.strategy, reason: info.reason, at: Date.now() },
+            running: false,
+            lastReason: `Strategy halted — ${info.reason} (manual resume required)`,
+          });
+        } else {
+          set({ rejectionStreak: streak });
+        }
+        return halted;
+      },
+      clearRejectionStreak: () => set({ rejectionStreak: null }),
+      resumeStrategy: () =>
+        set({
+          strategyHalt: null,
+          rejectionStreak: null,
+          lastReason: "Strategy halt cleared — manual resume",
+        }),
     }),
     {
       name: "leef-bot-v1",
@@ -357,7 +404,8 @@ export const useBot = create<BotState>()(
       // from defaults instead of crashing selectors with undefined.
       // v11: stats.byStrategyPaper — paper/live calibration split. The merge
       // below ({ ...freshStats(0), ...p.stats }) fills it for old saves.
-      version: 11,
+      // v12: strategyHalt — persisted retry-storm halt flag (null for old saves).
+      version: 12,
       migrate: (persisted) => {
         const p = (
           persisted && typeof persisted === "object" ? persisted : {}
@@ -382,7 +430,8 @@ export const useBot = create<BotState>()(
         void _c;
         void _m;
         return {
-          strategy: p.strategy ?? "auto",
+          // volume-extreme was removed; its tape mode lives in volume maker.
+          strategy: p.strategy === ("volume-x" as unknown as BotStrategy) ? "volume" : (p.strategy ?? "auto"),
           base: typeof p.base === "string" && p.base ? p.base.toUpperCase() : "LEEF",
           quote: typeof p.quote === "string" && p.quote ? p.quote.toUpperCase() : "WAX",
           focus: Array.isArray(p.focus) ? p.focus.map((s) => String(s).toUpperCase()) : ["LEEF", "WAX"],
@@ -416,6 +465,19 @@ export const useBot = create<BotState>()(
           // Forward-safe: future version bumps must not silently re-enable the
           // venue for a user who switched it off (default ON only when unset).
           neftyVenue: (p as { neftyVenue?: unknown }).neftyVenue !== false,
+          strategyHalt: (() => {
+            const h = (p as { strategyHalt?: unknown }).strategyHalt;
+            if (
+              h &&
+              typeof h === "object" &&
+              typeof (h as { strategy?: unknown }).strategy === "string" &&
+              typeof (h as { reason?: unknown }).reason === "string" &&
+              typeof (h as { at?: unknown }).at === "number"
+            ) {
+              return h as { strategy: string; reason: string; at: number };
+            }
+            return null;
+          })(),
         };
       },
       partialize: (s) => ({
@@ -438,6 +500,8 @@ export const useBot = create<BotState>()(
         decisions: s.decisions.slice(0, 30),
         riskMigrationNotice: s.riskMigrationNotice,
         neftyVenue: s.neftyVenue,
+        // Persisted: a reload must never silently resume a retry storm.
+        strategyHalt: s.strategyHalt,
       }),
       // Keep the venue-adapter kill-switch in sync with the persisted
       // setting after rehydrate (and on fresh defaults).
