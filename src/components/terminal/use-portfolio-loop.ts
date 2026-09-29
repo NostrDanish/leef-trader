@@ -24,6 +24,13 @@ import {
   capitalAvailable,
   coordinateCapitalMovement,
 } from "@/lib/wallet/execution-coordinator";
+import { classifyTradeError } from "@/lib/wallet/trade-error";
+import {
+  rejectionKey,
+  trackRejection,
+  RETRY_STORM_LIMIT,
+  type RejectionStreak,
+} from "@/lib/leef/retry-storm";
 import { syncWalletBalances } from "./use-wallet-sync";
 import { useBot } from "@/store/bot";
 import { usePortfolio } from "@/store/portfolio";
@@ -40,6 +47,43 @@ let sweeping = false;
 let sweepCooldownUntil = 0;
 
 const CPU_FAILURE_RE = /cpu|failure limit|tx_cpu_usage/i;
+
+/**
+ * Retry-storm guard (session-scoped): consecutive IDENTICAL on-chain sweep
+ * reverts. A stale plan that overdraws reverts deterministically forever —
+ * re-packing it every cycle is what trips the account greylist. After
+ * RETRY_STORM_LIMIT identical rejections the rebalancer halts and needs a
+ * manual resume (persisted halt flag in the portfolio store).
+ */
+let sweepStreak: RejectionStreak | null = null;
+
+/** True when the failure tripped the retry-storm limit (and halted sweeps). */
+function noteSweepRejection(message: string, chunk: PlannedLeg[]): boolean {
+  const pair = chunk.map((l) => `${l.from.symbol}>${l.to.symbol}`).join(",") || "sweep";
+  const key = rejectionKey({ message, strategy: "rebalancer", pair });
+  const { streak, halted } = trackRejection(sweepStreak, key);
+  sweepStreak = streak;
+  if (halted) {
+    usePortfolio
+      .getState()
+      .haltSweep(
+        `${RETRY_STORM_LIMIT} identical on-chain rejections — ${message.slice(0, 200)}`,
+      );
+  }
+  return halted;
+}
+
+/** Is this an on-chain deterministic rejection (vs transport/CPU noise)? */
+function isOnChainRejection(msg: string): boolean {
+  // classifyTradeError reads Error.message; a bare string classifies as UNKNOWN.
+  const { code } = classifyTradeError(new Error(msg));
+  return (
+    code === "TRANSACTION_REJECTED" ||
+    code === "TRANSACTION_FAILED" ||
+    code === "MIN_OUT_FAILED" ||
+    code === "INSUFFICIENT_BALANCE"
+  );
+}
 
 function noteSweepCooldown(msg: string): number {
   const m = /until\s+(\d{4}-\d{2}-\d{2}T[\d:.]+)/.exec(msg);
@@ -70,6 +114,13 @@ export async function runRebalancer(snap: LeefSnapshot, opts?: { force?: boolean
     const mode: "paper" | "live" = w.canSign() ? "live" : "paper";
 
     if (!p.running && !opts?.force) return;
+    // Retry-storm guard: halted sweeps never run again without a manual
+    // resume (portfolio-desk banner) — even a forced run respects the halt
+    // unless the user explicitly resumed first.
+    if (p.sweepHalt) {
+      p.setLastPlanNote(`Sweep halted — ${p.sweepHalt.reason} (manual resume required)`);
+      return;
+    }
     if (snap.source !== "live") {
       p.setLastPlanNote("Book is stale — waiting for live Alcor data");
       return;
@@ -384,6 +435,11 @@ export async function runRebalancer(snap: LeefSnapshot, opts?: { force?: boolean
         if (reconciliation.status === "failed") {
           halted = reconciliation.error;
           if (CPU_FAILURE_RE.test(reconciliation.error)) noteSweepCooldown(reconciliation.error);
+          if (isOnChainRejection(reconciliation.error)) {
+            noteSweepRejection(reconciliation.error, chunk);
+          } else {
+            sweepStreak = null;
+          }
           p.pushLog({
             mode,
             status: "failed",
@@ -395,6 +451,8 @@ export async function runRebalancer(snap: LeefSnapshot, opts?: { force?: boolean
           break;
         }
         if (reconciliation.status === "confirmed") {
+          // A confirmed chunk breaks the consecutive-rejection run.
+          sweepStreak = null;
           confirmedLegs += chunk.length;
           confirmedUsd += chunkUsd;
           dustUsd += chunk.filter((l) => l.kind === "dust").reduce((s, l) => s + l.estUsd, 0);
@@ -423,6 +481,11 @@ export async function runRebalancer(snap: LeefSnapshot, opts?: { force?: boolean
         const msg = err instanceof Error ? err.message : "Broadcast failed";
         halted = msg;
         if (CPU_FAILURE_RE.test(msg)) noteSweepCooldown(msg);
+        if (isOnChainRejection(msg)) {
+          noteSweepRejection(msg, chunk);
+        } else {
+          sweepStreak = null;
+        }
         journal({
           kind: "execution", action: "rebalance", mode,
           reason: `${tag}failed · ${msg}`,
@@ -450,6 +513,8 @@ export async function runRebalancer(snap: LeefSnapshot, opts?: { force?: boolean
         variant: "destructive",
       });
     } else {
+      // A clean confirmed sweep breaks the consecutive-rejection run.
+      sweepStreak = null;
       p.setLastPlanNote(`Swept ${confirmedLegs} legs · confirmed on-chain`);
       toast({
         title: `Sweep confirmed ${lastTxid ? `${lastTxid.slice(0, 8)}…` : ""}`,
