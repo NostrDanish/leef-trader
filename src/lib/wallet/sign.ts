@@ -1,6 +1,5 @@
 import type { ArbPlan } from "@/lib/leef/bot-engine";
 import type { LeefSnapshot, SwapRoute } from "@/lib/leef/types";
-import { LEEF_CONTRACT, WAX_CONTRACT, WAX_SYMBOL } from "@/lib/leef/types";
 import { dustSafeMinOut, isDustOutput, swapContractOf, venueOfPoolId } from "@/lib/leef/venues";
 import { verifyExecutableRoute } from "@/lib/leef/quote-verify";
 import { TradeError } from "./trade-error";
@@ -23,7 +22,7 @@ import {
   type SubLiquidData,
   type TransferActionData,
 } from "./antelope";
-import { BroadcastTimeoutError, getChainInfo, pushSigned } from "./chain";
+import { BroadcastTimeoutError, fetchBalances, getChainInfo, pushSigned } from "./chain";
 import { reconcileTransfersLater } from "./reconcile";
 import { markConfirmed, markFailed, markUnknown } from "./trade-cycle";
 import {
@@ -466,6 +465,114 @@ export type BatchLeg = {
   to?: string;
 };
 
+/** Precision carried by an Antelope asset string ("1.00000000 WAX" → 8). */
+function precisionOfAsset(quantity: string): number {
+  const frac = quantity.trim().split(" ")[0]?.split(".")[1];
+  return frac ? frac.length : 0;
+}
+
+/**
+ * Dust-safe batch memo rewrite: the sweep/batch path historically signed the
+ * router's slippage-adjusted min-out verbatim. When that ask is dust
+ * (< DUST_MIN_OUT_RAW_UNITS raw units) the pool's tick rounding cannot honor
+ * it and the whole atomic batch REVERTS — the same failure the single-swap
+ * path already rewrites to a 1-unit ask (sign.ts dustRewriteMemos). The memo
+ * min-out's own string carries the output token's precision and identity, so
+ * no catalog lookup is needed. Memos that are not swapexactin-shaped, or
+ * whose min-out is not dust, pass through untouched.
+ */
+function dustSafeBatchMemo(memo: string): string {
+  const parts = memo.split("#");
+  if (parts.length !== 5) return memo;
+  const min = parts[3]!.trim().match(/^(\d+(?:\.\d+)?)\s+([A-Z0-9]+)@([a-z1-5.]{1,13})$/);
+  if (!min) return memo;
+  const decimals = (min[1]!.split(".")[1] ?? "").length;
+  if (!isDustOutput(Number(min[1]), decimals)) return memo;
+  const rewritten = dustSafeAlcorMemo(memo, {
+    symbol: min[2]!,
+    contract: min[3]!,
+    decimals,
+  });
+  if (!rewritten) {
+    throw new TradeError("QUOTE_FAILURE", "dust-safe rewrite met an unparseable router memo");
+  }
+  return rewritten;
+}
+
+/**
+ * Fail-closed revalidation of a batch plan against LIVE balances, immediately
+ * before signing. Sweep plans are sized on balances at planning time; a plan
+ * that outlives a balance change reverts with `overdrawn balance`
+ * deterministically and forever (failed pushes never consume balance) — the
+ * retry-storm this guard exists to prevent. Also drops legs whose amount is
+ * below the token's 1-unit quantum (the chain rejects them as invalid
+ * amounts) and applies the dust-safe min-out rewrite the batch path lacked.
+ *
+ * Fail-closed rules:
+ *  - an unparseable quantity aborts the whole batch (never sign what we
+ *    cannot reason about);
+ *  - summed spend per token above the live balance aborts the whole batch
+ *    with INSUFFICIENT_BALANCE so the caller re-plans instead of pushing a
+ *    stale plan;
+ *  - if every leg is sub-quantum dust, there is nothing to execute.
+ */
+async function revalidateBatchLegs(opts: {
+  account: string;
+  legs: BatchLeg[];
+}): Promise<BatchLeg[]> {
+  const kept: BatchLeg[] = [];
+  const spend = new Map<string, { symbol: string; contract: string; amount: number; decimals: number }>();
+  for (const leg of opts.legs) {
+    const a = parseAsset(leg.quantity);
+    if (!a || !(a.amount > 0)) {
+      throw new TradeError(
+        "MIN_OUT_FAILED",
+        `Batch leg has an unparseable quantity "${leg.quantity}" — not signing`,
+      );
+    }
+    const decimals = precisionOfAsset(leg.quantity);
+    // Sub-quantum leg: below 1 raw unit the transfer is an invalid amount
+    // on-chain. Skip it — an atomic batch must not revert over dust.
+    if (Math.floor(a.amount * 10 ** decimals + 1e-9) < 1) continue;
+    const key = `${a.symbol}@${leg.contract}`;
+    const agg = spend.get(key) ?? { symbol: a.symbol, contract: leg.contract, amount: 0, decimals };
+    agg.amount += a.amount;
+    spend.set(key, agg);
+    kept.push({
+      ...leg,
+      memo: leg.to === PLATFORM_FEE_ACCOUNT ? leg.memo : dustSafeBatchMemo(leg.memo),
+    });
+  }
+  if (kept.length === 0) {
+    throw new TradeError(
+      "MIN_OUT_FAILED",
+      "Every batch leg rounded below the token's 1-unit quantum — nothing to execute",
+    );
+  }
+  // Live re-check: the plan was sized on possibly-stale balances. One fresh
+  // read per involved token; any overdraw aborts before signing.
+  const fresh = await fetchBalances(
+    opts.account,
+    [...spend.values()].map((s) => ({
+      symbol: s.symbol,
+      contract: s.contract,
+      decimals: s.decimals,
+      alcorId: `${s.symbol.toLowerCase()}-${s.contract}`,
+    })),
+  );
+  for (const [key, s] of spend) {
+    const symbol = key.split("@")[0]!;
+    const balance = fresh[symbol] ?? 0;
+    if (Math.floor(s.amount * 10 ** s.decimals + 1e-9) > Math.floor(balance * 10 ** s.decimals + 1e-9)) {
+      throw new TradeError(
+        "INSUFFICIENT_BALANCE",
+        `Stale batch plan: needs ${s.amount.toFixed(s.decimals)} ${key} but the wallet holds ${balance.toFixed(s.decimals)} — re-planning instead of pushing`,
+      );
+    }
+  }
+  return kept;
+}
+
 /**
  * Broadcast several independent swap transfers as ONE atomic transaction.
  * Used by the rebalancer: every leg spends tokens the wallet already holds,
@@ -481,11 +588,12 @@ export async function signAndPushBatch(opts: {
   snap: LeefSnapshot;
 }): Promise<{ txid: string }> {
   if (opts.legs.length === 0) throw new Error("Nothing to execute");
+  const legs = await revalidateBatchLegs({ account: opts.account, legs: opts.legs });
   // Vouch the fee amounts the caller computed via platformFeeOn: the firewall
   // pins recipient + memo + token identity + precision against this context.
   const maxByKey: Record<string, number> = {};
   let hasFee = false;
-  for (const l of opts.legs) {
+  for (const l of legs) {
     if (l.to !== PLATFORM_FEE_ACCOUNT) continue;
     const a = parseAsset(l.quantity);
     if (!a) continue;
@@ -495,7 +603,7 @@ export async function signAndPushBatch(opts: {
   return await signAndPushTransfers({
     account: opts.account,
     permission: opts.permission,
-    transfers: opts.legs.map((l) => ({
+    transfers: legs.map((l) => ({
       contract: l.contract,
       data: {
         from: opts.account,
@@ -511,12 +619,13 @@ export async function signAndPushBatch(opts: {
 /**
  * Atomic two-leg arbitrage in a single WAX transaction:
  *
- *   1. transfer WAX → swap.alcor   (buy LEEF via the router's legs)
- *   2. transfer LEEF → swap.alcor  (sell it via the router's legs)
+ *   1. transfer QUOTE → swap.alcor   (buy the base via the router's legs)
+ *   2. transfer BASE  → swap.alcor   (sell it via the router's legs)
  *
- * Actions run sequentially inside one transaction, so leg 2 spends the LEEF
+ * Actions run sequentially inside one transaction, so leg 2 spends the base
  * leg 1 just bought. If any leg's min-out fails, the WHOLE transaction
- * reverts and the wallet never moves.
+ * reverts and the wallet never moves. Works for any configured quote token
+ * (plan.quoteToken) — WAX is just the default.
  *
  * Two hard invariants are enforced BEFORE anything is signed:
  *
@@ -524,7 +633,7 @@ export async function signAndPushBatch(opts: {
  *    into a live transaction — no legs, no trade.
  *  - Transaction-level profit floor: the sell legs' on-chain min-outs (what
  *    swap.alcor actually guarantees) must sum to at least
- *    waxIn × (1 + minProfitPct). A quoted profit with a slippage band that
+ *    quoteIn × (1 + minProfitPct). A quoted profit with a slippage band that
  *    can dip below the floor is rejected here, at the signing boundary.
  */
 export async function signAndPushArb(opts: {
@@ -550,29 +659,33 @@ export async function signAndPushArb(opts: {
   // Platform fee on the GUARANTEED sell-side output (min-out sum) — the
   // number the chain enforces, not the quote. The profit floor is then
   // enforced NET of fee: the guaranteed output must cover stake + fee +
-  // floor, or nothing is signed.
-  const guaranteedWax = memoMinOutSum(
+  // floor, or nothing is signed. Fee and floor are denominated in the plan's
+  // quote token (ANY configured quote, not just WAX).
+  const quoteTok = plan.quoteToken;
+  const guaranteedQuote = memoMinOutSum(
     plan.sellLegs.map((l) => ({ input: l.input, memo: l.memo })),
     opts.account,
   );
-  const fee = platformFeeOn(guaranteedWax, {
-    symbol: WAX_SYMBOL,
-    contract: WAX_CONTRACT,
-    decimals: 8,
+  const fee = platformFeeOn(guaranteedQuote, {
+    symbol: quoteTok.symbol,
+    contract: quoteTok.contract,
+    decimals: quoteTok.decimals,
   });
 
   const violation = arbFloorViolation({
-    waxIn: plan.waxIn + (fee?.amount ?? 0),
+    quoteIn: plan.quoteIn + (fee?.amount ?? 0),
     minProfitPct: opts.minProfitPct,
     buyLegs: plan.buyLegs,
     sellLegs: plan.sellLegs,
     account: opts.account,
+    quote: { symbol: quoteTok.symbol, contract: quoteTok.contract },
+    base: { symbol: plan.baseToken.symbol, contract: plan.baseToken.contract },
   });
   if (violation) throw new Error(violation);
 
   const transfers = [
     ...plan.buyLegs.map((l) => ({
-      contract: WAX_CONTRACT,
+      contract: quoteTok.contract,
       data: {
         from: opts.account,
         to: ALCOR_SWAP_CONTRACT,
@@ -581,7 +694,7 @@ export async function signAndPushArb(opts: {
       },
     })),
     ...plan.sellLegs.map((l) => ({
-      contract: LEEF_CONTRACT,
+      contract: plan.baseToken.contract,
       data: {
         from: opts.account,
         to: ALCOR_SWAP_CONTRACT,
@@ -592,7 +705,7 @@ export async function signAndPushArb(opts: {
     ...(fee
       ? [
           {
-            contract: WAX_CONTRACT,
+            contract: quoteTok.contract,
             data: {
               from: opts.account,
               to: fee.recipient,
@@ -609,12 +722,12 @@ export async function signAndPushArb(opts: {
     transfers,
     policy: {
       snap: opts.snap,
-      platformFee: fee ? { maxByKey: { [`WAX@${WAX_CONTRACT}`]: fee.amount } } : undefined,
+      platformFee: fee ? { maxByKey: { [`${quoteTok.symbol.toUpperCase()}@${quoteTok.contract}`]: fee.amount } } : undefined,
     },
   });
   return {
     txid,
-    platformFee: fee ? { amount: fee.amount, symbol: WAX_SYMBOL, contract: WAX_CONTRACT } : undefined,
+    platformFee: fee ? { amount: fee.amount, symbol: quoteTok.symbol, contract: quoteTok.contract } : undefined,
   };
 }
 
