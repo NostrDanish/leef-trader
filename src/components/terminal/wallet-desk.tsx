@@ -7,8 +7,8 @@ import { Input } from "@/components/ui/input";
 import { bestExecutionRoute } from "@/lib/leef/route-optimizer";
 import { fmtNum, fmtUsd } from "@/lib/leef/format";
 import type { LeefSnapshot } from "@/lib/leef/types";
-import { tokenPrice } from "@/lib/market/price-oracle";
-import { balanceForIdentifier, walletBalanceRows } from "@/lib/wallet/balances";
+import { TRUSTED_STABLES } from "@/lib/market/stables";
+import { balanceForIdentifier, rowPrice, walletBalanceRows } from "@/lib/wallet/balances";
 import { signAndPushStakeCpu } from "@/lib/wallet/sign";
 import { toast } from "@/hooks/useToast";
 import { useBot } from "@/store/bot";
@@ -36,11 +36,32 @@ export function WalletDesk({ snap }: { snap: LeefSnapshot }) {
     "LEEF@leefmaincorp",
   ])
     .map((row) => {
-      const price = row.token ? tokenPrice(snap, row.id) : null;
-      return { ...row, usd: price ? row.amount * price.priceUsd : 0 };
+      // rowPrice also covers held verified stables whose pool just isn't in
+      // this snapshot — they value at the registry anchor, never at 0.
+      const mark = rowPrice(snap, row);
+      return {
+        ...row,
+        usd: mark ? row.amount * mark.priceUsd : 0,
+        anchored: mark?.anchored ?? false,
+        tradeable: !!row.token && !row.token.alcorScam,
+      };
     })
     .filter((row) => row.amount > 0 || row.symbol === "WAX" || row.symbol === "LEEF")
     .sort((a, b) => b.usd - a.usd || b.amount - a.amount);
+
+  // Verified dollar stables held by this wallet — surfaced explicitly because
+  // they are the wallet's operating capital (quote side for most books).
+  const stables = TRUSTED_STABLES.map((t) => {
+    const id = `${t.symbol}@${t.contract}`;
+    const amount = balanceForIdentifier(balances, snap.universe, id);
+    const token =
+      snap.universe.find(
+        (u) => u.symbol === t.symbol && u.contract.toLowerCase() === t.contract,
+      ) ?? null;
+    const mark = rowPrice(snap, { id, symbol: t.symbol, contract: t.contract, token });
+    return { ...t, id, amount, usd: amount * (mark?.priceUsd ?? 0), anchored: mark?.anchored ?? false };
+  }).filter((s) => s.amount > 0);
+  const stableUsd = stables.reduce((sum, s) => sum + s.usd, 0);
 
   const wax = balanceForIdentifier(balances, snap.universe, "WAX@eosio.token");
   const leef = balanceForIdentifier(balances, snap.universe, "LEEF@leefmaincorp");
@@ -61,6 +82,16 @@ export function WalletDesk({ snap }: { snap: LeefSnapshot }) {
       amountIn: String(amountIn),
     });
     setTab("bot");
+  }
+
+  /** Any held token with an observed pool is one tap from the swap desk. */
+  function tradeRow(symbol: string) {
+    setSwap({
+      tokenIn: symbol,
+      tokenOut: symbol === "WAX" ? "LEEF" : "WAX",
+      amountIn: "",
+    });
+    setTab("quotes");
   }
 
   return (
@@ -145,6 +176,46 @@ export function WalletDesk({ snap }: { snap: LeefSnapshot }) {
         </Card>
       </div>
 
+      {stables.length > 0 && (
+        <Card className="p-4 sm:p-5">
+          <div className="flex items-baseline justify-between gap-2">
+            <h3 className="text-sm font-medium">Stablecoins</h3>
+            <span className="font-mono text-sm tabular-nums">{fmtUsd(stableUsd)}</span>
+          </div>
+          <div className="mt-2 space-y-1 font-mono text-xs text-muted-foreground">
+            {stables.map((s) => (
+              <div
+                key={s.id}
+                className="flex flex-wrap items-center justify-between gap-2"
+              >
+                <span>
+                  {s.symbol}{" "}
+                  <span className="text-subtle">@{s.contract}</span>
+                </span>
+                <span className="tabular-nums">
+                  {fmtNum(s.amount, { compact: true, digits: 2 })}
+                  <span className="text-subtle"> · </span>
+                  {fmtUsd(s.usd)}
+                  {s.anchored && (
+                    <span
+                      className="ml-1.5 text-[10px] text-subtle"
+                      title="Verified $1 stable — no pool observed in this snapshot"
+                    >
+                      $1 anchor · pool quiet
+                    </span>
+                  )}
+                </span>
+              </div>
+            ))}
+          </div>
+          <p className="mt-2 text-[11px] text-subtle">
+            Verified WAX stable contracts — these are the quote side of most
+            books. Values ride the live pool when one is observed, else the
+            registry dollar anchor (accounting only, never a trade price).
+          </p>
+        </Card>
+      )}
+
       <div className="grid gap-3 lg:grid-cols-2">
         <Card className="p-4 sm:p-5">
           <h3 className="text-sm font-medium">Best buy with WAX</h3>
@@ -187,12 +258,13 @@ export function WalletDesk({ snap }: { snap: LeefSnapshot }) {
       <Card className="p-4 sm:p-5">
         <h3 className="mb-3 text-sm font-medium">Holdings</h3>
         <div className="-mx-4 min-w-0 overflow-x-auto px-4 sm:mx-0 sm:px-0">
-          <table className="w-full min-w-[420px] text-left text-xs">
+          <table className="w-full min-w-[480px] text-left text-xs">
             <thead className="text-subtle">
               <tr className="border-b border-border">
                 <th className="py-2 pr-3 font-medium">Token</th>
                 <th className="py-2 pr-3 font-medium">Balance</th>
-                <th className="py-2 font-medium">USD</th>
+                <th className="py-2 pr-3 font-medium">USD</th>
+                <th className="py-2 font-medium" />
               </tr>
             </thead>
             <tbody>
@@ -214,8 +286,35 @@ export function WalletDesk({ snap }: { snap: LeefSnapshot }) {
                   <td className="py-2.5 pr-3 font-mono tabular-nums">
                     {fmtNum(r.amount, { compact: true, digits: 4 })}
                   </td>
-                  <td className="py-2.5 font-mono tabular-nums text-muted-foreground">
-                    {r.usd > 0 ? fmtUsd(r.usd) : "—"}
+                  <td className="py-2.5 pr-3 font-mono tabular-nums text-muted-foreground">
+                    {r.usd > 0 ? (
+                      <>
+                        {fmtUsd(r.usd)}
+                        {r.anchored && (
+                          <span
+                            className="ml-1.5 text-[10px] text-subtle"
+                            title="Verified $1 stable — no pool observed in this snapshot"
+                          >
+                            anchor
+                          </span>
+                        )}
+                      </>
+                    ) : (
+                      "—"
+                    )}
+                  </td>
+                  <td className="py-2.5 text-right">
+                    {r.tradeable && r.amount > 0 && (
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        className="h-7 px-2 text-xs"
+                        onClick={() => tradeRow(r.symbol)}
+                        title="Open this token on the swap desk — any liquid pair trades"
+                      >
+                        Trade
+                      </Button>
+                    )}
                   </td>
                 </tr>
               ))}

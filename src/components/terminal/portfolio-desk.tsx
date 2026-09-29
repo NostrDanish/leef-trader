@@ -66,6 +66,9 @@ export function PortfolioDesk({ snap }: { snap: LeefSnapshot }) {
     : null;
 
   function onStart() {
+    // A halted sweep must be resumed explicitly (banner below) — the plain
+    // Start button never clears a retry-storm halt.
+    if (p.sweepHalt) return;
     if (liveReady && !confirmLive) {
       setConfirmLive(true);
       return;
@@ -107,6 +110,32 @@ export function PortfolioDesk({ snap }: { snap: LeefSnapshot }) {
         </div>
       </div>
 
+      {p.sweepHalt && (
+        <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-sell/40 bg-sell/10 px-3 py-2 text-xs text-sell">
+          <div className="flex items-start gap-2">
+            <ShieldAlert className="mt-0.5 size-3.5 shrink-0" />
+            <div>
+              <p className="font-medium">Sweep halted — manual resume required</p>
+              <p className="text-sell/80">
+                {p.sweepHalt.reason} ·{" "}
+                {new Date(p.sweepHalt.at).toLocaleTimeString()} — repeated
+                identical on-chain reverts risk a 24h account greylist, so the
+                rebalancer stopped itself.
+              </p>
+            </div>
+          </div>
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => {
+              p.resumeSweep();
+              onStart();
+            }}
+          >
+            Resume sweeps
+          </Button>
+        </div>
+      )}
       {p.running && liveReady && (
         <div className="flex items-start gap-2 rounded-lg border border-sell/30 bg-sell/10 px-3 py-2 text-xs text-sell">
           <ShieldAlert className="mt-0.5 size-3.5 shrink-0" />
