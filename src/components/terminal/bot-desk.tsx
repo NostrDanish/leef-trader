@@ -2,39 +2,26 @@ import {
   BrainCircuit,
   CirclePlay,
   CircleStop,
-  Crosshair,
   Loader2,
-  RotateCcw,
   ScanSearch,
-  ShieldAlert,
   Sparkles,
   Waves,
 } from "lucide-react";
 import { useEffect, useState } from "react";
-import { Area, AreaChart, YAxis } from "recharts";
-import { ChartFrame } from "./chart-frame";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Slider } from "@/components/ui/slider";
-import {
-  BOT_WARMUP_POINTS,
-  evaluateBot,
-  STRATEGIES,
-  type BotStrategy,
-} from "@/lib/leef/bot-engine";
-import { positionMarkUsd } from "@/lib/leef/risk-usd";
-import { usdPriceOf } from "@/lib/leef/cost-model";
 import { fmtNum, fmtUsd } from "@/lib/leef/format";
-import type { LeefSnapshot } from "@/lib/leef/types";
-import { hasSecret } from "@/lib/wallet/secret";
-import { hasWalletSession } from "@/lib/wallet/session";
-import { cn } from "@/lib/utils";
-import { useBot, type BotDecisionLog } from "@/store/bot";
-import { clampSyncSec, DEFAULT_SYNC_SEC, useTerminal } from "@/store/terminal";
-import { useWallet } from "@/store/wallet";
-import { balanceForIdentifier, markPortfolioUsd } from "@/lib/wallet/balances";
+import { journal } from "@/lib/leef/journal";
+import {
+  GROWTH_MODES,
+  snapshotTargets,
+  targetUnitPnl,
+  listTreasureTokens,
+} from "@/lib/leef/growth-engine";
+import { positionMarkUsd } from "@/lib/leef/risk-usd";
 import {
   FOCUS_PRESETS,
   listBaseTokens,
@@ -43,588 +30,236 @@ import {
   suggestPair,
   type AdvisorSuggestion,
 } from "@/lib/leef/advisor";
-import { runBotOnce } from "./use-bot-loop";
-import {
-  GROWTH_MODES,
-  listTreasureTokens,
-  snapshotTargets,
-  targetUnitPnl,
-} from "@/lib/leef/growth-engine";
-import { classifyRegime, dangerScore } from "@/lib/leef/regime";
-import { isEconomicFailureReason } from "@/lib/wallet/trade-error";
-import { holdWakeLock, releaseWakeLock } from "@/lib/market/wake-lock";
+import { dangerScore } from "@/lib/leef/regime";
+import type { BotStrategy } from "@/lib/leef/bot-engine";
+import { aiTask, extractGrowthTargets } from "@/lib/leef/ai-client";
+import { aggregateFlowRisk, swapFlow } from "@/lib/market/swap-flow";
+import { markPortfolioUsd } from "@/lib/wallet/balances";
+import { balanceForIdentifier } from "@/lib/wallet/balances";
 import { tokenPrice } from "@/lib/market/price-oracle";
-import { aiTask, extractGrowthTargets } from "@/lib/leef/ai-analyst";
-import { journal } from "@/lib/leef/journal";
-
-const KIND_VARIANT: Record<
-  BotDecisionLog["kind"],
-  "leef" | "accent" | "wax" | "plain" | "warn" | "sell"
-> = {
-  buy: "leef",
-  sell: "accent",
-  arb: "wax",
-  swap: "accent",
-  hold: "plain",
-  skip: "plain",
-  stop: "warn",
-  error: "sell",
-};
+import { snapFreshAtMs, type LeefSnapshot } from "@/lib/leef/types";
+import { cn } from "@/lib/utils";
+import { useBot } from "@/store/bot";
+import { clampSyncSec, DEFAULT_SYNC_SEC, useTerminal } from "@/store/terminal";
+import { useWallet } from "@/store/wallet";
 
 export function BotDesk({ snap }: { snap: LeefSnapshot }) {
-  const b = useBot();
-  // Keep the screen awake while the bot trades (recovered behavior — the old
-  // trader's BackgroundService). A suspended laptop pauses a live bot.
-  useEffect(() => {
-    if (b.running) holdWakeLock();
-    else releaseWakeLock();
-    return () => releaseWakeLock();
-  }, [b.running]);
-  const mode = useWallet((s) => s.mode);
-  const account = useWallet((s) => s.account);
-  const authType = useWallet((s) => s.authType);
-  const setImportOpen = useWallet((s) => s.setImportOpen);
-  const paperBalances = useWallet((s) => s.paperBalances);
-  const liveBalances = useWallet((s) => s.liveBalances);
-  const balances = mode === "live" ? liveBalances : paperBalances;
-  const [confirmLive, setConfirmLive] = useState(false);
-  const [confirmForce, setConfirmForce] = useState<"buy" | "sell" | null>(null);
-  const [busyForce, setBusyForce] = useState(false);
-
-  const liveReady = mode === "live" && (hasSecret() || hasWalletSession());
-  const liveBook = snap.source === "live";
-  const coolLeft = Math.max(0, Math.ceil((b.cooldownUntil - Date.now()) / 1000));
-  const warmup = Math.min(b.series.length, BOT_WARMUP_POINTS);
-
-  const equityUsd = markPortfolioUsd(snap, balances).totalUsd;
-  const winRate = b.stats.trades > 0 ? b.stats.wins / b.stats.trades : 0;
-
-  const syncSec = useTerminal((s) => clampSyncSec(s.syncSec ?? DEFAULT_SYNC_SEC));
-  /** Dry-run: what the bot would do on this book right now. */
-  const preview = evaluateBot({
-    now: Date.now(),
-    snap,
-    series: b.series,
-    running: true,
-    strategy: b.strategy,
-    goals: b.goals,
-    risk: { ...b.risk, maxQuoteAgeSec: Math.max(b.risk.maxQuoteAgeSec, syncSec + 15) },
-    position: b.position,
-    gridAnchor: b.gridAnchor,
-    balances,
-    cooldownUntil: b.cooldownUntil,
-    tradesThisHour: b.tradesThisHour,
-    sessionRealizedUsd: b.stats.realizedUsd,
-    sessionStartEquityUsd: b.stats.startEquityUsd,
-    quote: b.quote,
-    base: b.base,
-    growthTargets: b.growthTargets,
-    growthMode: b.growthMode,
-  });
-
-  function onStart() {
-    if (liveReady && !confirmLive) {
-      setConfirmLive(true);
-      return;
-    }
-    setConfirmLive(false);
-    const start: Record<string, number> = {};
-    for (const t of snapshotTargets(snap, balances, b.growthTargets)) start[t.symbol] = t.amount;
-    b.snapshotGrowthStart(start);
-    b.snapshotSessionStart(balances);
-    b.start(equityUsd);
-    void runBotOnce(snap);
-  }
-
-  function onForce(kind: "buy" | "sell") {
-    if (liveReady && confirmForce !== kind) {
-      setConfirmForce(kind);
-      return;
-    }
-    setConfirmForce(null);
-    setBusyForce(true);
-    void runBotOnce(snap, { force: kind }).finally(() => setBusyForce(false));
-  }
-
-  const strat = STRATEGIES.find((s) => s.id === b.strategy)!;
-
+  const strategy = useBot((s) => s.strategy);
   return (
-    <div className="flex flex-col gap-5">
-      <div className="flex flex-col gap-3 lg:flex-row lg:items-end lg:justify-between">
-        <div>
-          <h2 className="text-base font-medium tracking-tight">AI trading bot</h2>
-          <p className="text-xs text-muted-foreground">
-            Connect a wallet, pick a pair, set goals, hit start. The live Alcor
-            book drives every clip — no simulated LEEF bag. Unsigned mode
-            quotes only; live fills need a session key or wallet prompt.
-          </p>
-        </div>
-        <div className="flex flex-wrap items-center gap-2">
-          <Badge variant={b.running ? (liveReady ? "leef" : "accent") : "plain"}>
-            {b.running ? (liveReady ? "Live · running" : "Unsigned · running") : "Stopped"}
-          </Badge>
-          <Badge variant="plain">
-            {b.stats.trades} trades · {b.tradesThisHour}/{b.risk.maxTradesHour} this hour
-          </Badge>
-          <Badge variant={b.stats.realizedUsd >= 0 ? "leef" : "sell"}>
-            {b.stats.realizedUsd >= 0 ? "+" : ""}
-            {fmtUsd(b.stats.realizedUsd, 2)} session
-          </Badge>
-        </div>
+    <div className="grid gap-5 lg:grid-cols-5">
+      <div className="flex min-w-0 flex-col gap-5 lg:col-span-3">
+        <BotHeader snap={snap} />
+        {strategy === "growth" ? (
+          <GrowthPnlCards snap={snap} />
+        ) : (
+          <PnlCards snap={snap} />
+        )}
+        <DecisionFeed />
       </div>
-
-      {b.running && liveReady && (
-        <div className="flex items-start gap-2 rounded-lg border border-sell/30 bg-sell/10 px-3 py-2 text-xs text-sell">
-          <ShieldAlert className="mt-0.5 size-3.5 shrink-0" />
-          Live bot is spending real tokens from {account} via swap.alcor on the
-          WAX blockchain.{" "}
-          {authType === "key"
-            ? "The in-tab key signs automatically."
-            : "Your wallet will ask you to sign each trade (Cloud Wallet can whitelist it)."}
-          {" "}Stops and goals are on; you can stop anytime.
-        </div>
-      )}
-      {!liveBook && (
-        <div className="flex items-start gap-2 rounded-lg border border-warn/30 bg-warn/10 px-3 py-2 text-xs text-warn">
-          <ShieldAlert className="mt-0.5 size-3.5 shrink-0" />
-          The Alcor book is stale — the bot holds until live data returns.
-        </div>
-      )}
-
-      <div className="grid gap-5 lg:grid-cols-5">
-        {/* ------------------------------ left rail ------------------------------ */}
-        <div className="flex min-w-0 flex-col gap-5 lg:col-span-2">
-          <Card className="p-4 sm:p-5">
-            <div className="mb-4 flex items-center justify-between gap-3">
-              <div>
-                <h3 className="text-sm font-medium">Engine</h3>
-                <p className="text-xs text-muted-foreground">{b.lastReason}</p>
-              </div>
-              <span className="relative flex size-2.5">
-                <span
-                  className={cn(
-                    "absolute inline-flex h-full w-full rounded-full opacity-70",
-                    b.running && "animate-ping bg-leef",
-                  )}
-                />
-                <span
-                  className={cn(
-                    "relative inline-flex size-2.5 rounded-full",
-                    b.running ? "bg-leef" : "bg-surface-3",
-                  )}
-                />
-              </span>
-            </div>
-
-            {b.running ? (
-              <Button variant="danger" className="h-12 w-full text-base" onClick={() => b.stop()}>
-                <CircleStop className="size-4" />
-                Stop the bot
-              </Button>
-            ) : (
-              <Button
-                variant="leef"
-                className="h-12 w-full text-base"
-                onClick={onStart}
-                disabled={!liveBook}
-              >
-                <CirclePlay className="size-4" />
-                {confirmLive
-                  ? "Real funds will trade — click again to start LIVE"
-                  : `Start ${liveReady ? "live" : "unsigned"} bot`}
-              </Button>
-            )}
-            {confirmLive && !b.running && (
-              <p className="mt-2 text-xs text-sell">
-                Live mode broadcasts real swaps from {account}. Goals and stops
-                stay enforced. This cannot be undone per-trade.
-              </p>
-            )}
-            {!liveReady && (
-              <Button
-                variant="outline"
-                className="mt-2 w-full"
-                onClick={() => setImportOpen(true)}
-              >
-                Connect wallet for live trading
-              </Button>
-            )}
-            <div className="mt-3 flex flex-wrap items-center justify-between gap-2 text-xs text-subtle">
-              <span>
-                {warmup}/{BOT_WARMUP_POINTS} prints for the engines
-              </span>
-              {coolLeft > 0 && <span>Next trade in {coolLeft}s</span>}
-            </div>
-            <div className="mt-2 h-1.5 overflow-hidden rounded-full bg-surface-2">
-              <div
-                className="h-full bg-accent transition-all"
-                style={{ width: `${(warmup / BOT_WARMUP_POINTS) * 100}%` }}
-              />
-            </div>
-
-            <div className="mt-4 grid grid-cols-2 gap-2">
-              <Button
-                variant="outline"
-                size="sm"
-                disabled={busyForce || !liveBook}
-                onClick={() => onForce("buy")}
-              >
-                {confirmForce === "buy" ? "Confirm live buy" : "Buy a clip now"}
-              </Button>
-              <Button
-                variant="outline"
-                size="sm"
-                disabled={busyForce || !b.position}
-                onClick={() => onForce("sell")}
-              >
-                {confirmForce === "sell" ? "Confirm live sell" : "Sell position now"}
-              </Button>
-            </div>
-          </Card>
-
-          <Card className="p-4 sm:p-5">
-            <h3 className="mb-1 flex items-center gap-2 text-sm font-medium">
-              <BrainCircuit className="size-4 text-accent" />
-              Strategy
-            </h3>
-            <p className="mb-3 text-xs text-muted-foreground">
-              {strat.detail}
-            </p>
-            <div className="flex flex-col gap-2">
-              {STRATEGIES.map((s) => {
-                const on = s.id === b.strategy;
-                return (
-                  <button
-                    key={s.id}
-                    type="button"
-                    disabled={b.running}
-                    onClick={() => b.setStrategy(s.id)}
-                    className={cn(
-                      "flex items-center justify-between gap-3 rounded-lg border px-3 py-2.5 text-left transition-colors",
-                      on
-                        ? "border-accent/40 bg-accent/10"
-                        : "border-border bg-background text-muted-foreground hover:text-foreground",
-                      b.running && "opacity-60",
-                    )}
-                  >
-                    <span>
-                      <span className={cn("block text-sm", on && "text-foreground")}>
-                        {s.name}
-                      </span>
-                      <span className="block text-xs text-subtle">{s.tagline}</span>
-                    </span>
-                    <span className="hidden min-[420px]:inline-flex">
-                      <Badge variant={on ? "accent" : "plain"}>{s.bestFor}</Badge>
-                    </span>
-                  </button>
-                );
-              })}
-            </div>
-          </Card>
-
-          {b.strategy !== "unleashed" && <GoalsCard />}
-          {b.strategy !== "unleashed" && b.strategy !== "growth" && <AdvisorCard snap={snap} />}
-          {b.strategy === "growth" && <TreasureCard snap={snap} />}
-          <RiskCard strategy={b.strategy} snap={snap} />
-        </div>
-
-        {/* ------------------------------ right rail ------------------------------ */}
-        <div className="flex min-w-0 flex-col gap-5 lg:col-span-3">
-          <Card className="border-accent/30 bg-accent/5 p-4 sm:p-5">
-            <div className="flex items-center justify-between gap-2 text-xs font-medium uppercase tracking-wider text-accent">
-              <span>Next evaluation · {strat.name}</span>
-              <RegimeBadge snap={snap} />
-            </div>
-            <p className="mt-1 text-sm">
-              {preview.kind === "buy" && (
-                <>
-                  <Crosshair className="mr-1 inline size-3.5 text-leef" />
-                  Would buy with {fmtNum(preview.amountWax)} {b.quote} on {preview.route.label} ·{" "}
-                  {fmtNum(preview.route.amountOut, { compact: true })} {b.base} · impact{" "}
-                  {(preview.route.priceImpact * 100).toFixed(2)}%
-                </>
-              )}
-              {preview.kind === "sell" && (
-                <>
-                  <Crosshair className="mr-1 inline size-3.5 text-sell" />
-                  Would sell {fmtNum(preview.amountLeef, { compact: true })} {b.base} on{" "}
-                  {preview.route.label} ·                   {fmtNum(preview.route.amountOut, { digits: 2 })} {b.quote}
-                </>
-              )}
-              {preview.kind === "arb" && (
-                <>
-                  <Crosshair className="mr-1 inline size-3.5 text-wax" />
-                  Would arb #{preview.plan.buyPool.id} → #{preview.plan.sellPool.id} ·{" "}
-                  {fmtNum(preview.plan.waxIn)} WAX in, est {fmtNum(preview.plan.waxOut, { digits: 3 })} out
-                </>
-              )}
-              {preview.kind === "swap" && (
-                <>
-                  <Crosshair className="mr-1 inline size-3.5 text-accent" />
-                  Would swap {fmtNum(preview.amountIn, { compact: true })} {preview.tokenIn} →{" "}
-                  {preview.tokenOut} on {preview.route.label}
-                </>
-              )}
-              {(preview.kind === "hold" || preview.kind === "stop") && b.strategy !== "growth" && (
-                <span className="text-muted-foreground">{preview.reason}</span>
-              )}
-              {(preview.kind === "hold" || preview.kind === "stop") && b.strategy === "growth" && (
-                <span className="text-muted-foreground">HOLD — market is not offering enough target growth.</span>
-              )}
-            </p>
-            {b.strategy === "growth" ? (
-              <ul className="mt-2 space-y-0.5 text-xs text-subtle">
-                {preview.reason.split(" · ").map((line, i) => (
-                  <li key={i}>{line}</li>
-                ))}
-              </ul>
-            ) : (
-              <p className="mt-1 text-xs text-subtle">{preview.reason}</p>
-            )}
-          </Card>
-
-          {b.strategy === "growth" && <GrowthPnlCards snap={snap} />}
-
-          {b.strategy !== "growth" && (
-          <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
-            <Card className="border-l-2 border-l-leef p-4">
-              <div className="text-xs uppercase tracking-wider text-subtle">Position</div>
-              {b.position ? (
-                <>
-                  <div className="mt-1 font-mono text-lg tabular-nums text-leef">
-                    {fmtNum(b.position.amountLeef, { compact: true })} LEEF
-                  </div>
-                  <PositionPnl snap={snap} />
-                </>
-              ) : (
-                <HoldingsPosition snap={snap} />
-              )}
-            </Card>
-            <Card className="p-4">
-              <div className="text-xs uppercase tracking-wider text-subtle">Session P&L</div>
-              <div
-                className={cn(
-                  "mt-1 font-mono text-lg tabular-nums",
-                  b.stats.realizedUsd >= 0 ? "text-buy" : "text-sell",
-                )}
-              >
-                {b.stats.realizedUsd >= 0 ? "+" : ""}
-                {fmtUsd(b.stats.realizedUsd, 2)}
-              </div>
-              <div className="text-xs text-muted-foreground">
-                win rate {(winRate * 100).toFixed(0)}% · {b.stats.trades} trades
-              </div>
-            </Card>
-            <Card className="p-4">
-              <div className="text-xs uppercase tracking-wider text-subtle">
-                {b.strategy === "volume" || b.strategy === "volume-x" || (b.strategy === "unleashed" && b.stats.volumeUsd > 0)
-                  ? "Volume made"
-                  : "Equity"}
-              </div>
-              {b.strategy === "volume" || b.strategy === "volume-x" || (b.strategy === "unleashed" && b.stats.volumeUsd > 0) ? (
-                <>
-                  <div className="mt-1 font-mono text-lg tabular-nums text-wax">
-                    {fmtUsd(b.stats.volumeUsd, 2)}
-                  </div>
-                  <div className="text-xs text-muted-foreground">
-                    {b.strategy === "volume" ? "echo" : "tape"} cost {fmtUsd(b.stats.echoCostUsd, 2)}
-                    {b.stats.volumeUsd > 0
-                      ? ` · ${((b.stats.echoCostUsd / b.stats.volumeUsd) * 100).toFixed(2)}¢/$`
-                      : ""}
-                    {" · "}
-                    {b.stats.trades} clips · {fmtUsd(equityUsd, 2)}
-                  </div>
-                </>
-              ) : (
-                <>
-                  <div className="mt-1 font-mono text-lg tabular-nums">{fmtUsd(equityUsd, 2)}</div>
-                  <div className="text-xs text-muted-foreground">
-                    start {fmtUsd(b.stats.startEquityUsd, 2)}
-                  </div>
-                </>
-              )}
-            </Card>
-          </div>
-          )}
-
-          {b.strategy !== "growth" && b.stats.equity.length > 1 && (
-            <Card className="p-4 sm:p-5">
-              <h3 className="mb-3 text-sm font-medium">Session equity</h3>
-              <ChartFrame className="h-28">
-                  <AreaChart data={b.stats.equity} margin={{ top: 4, right: 8, left: 0, bottom: 0 }}>
-                    <defs>
-                      <linearGradient id="eqFill" x1="0" y1="0" x2="0" y2="1">
-                        <stop offset="0%" stopColor="var(--color-leef)" stopOpacity={0.25} />
-                        <stop offset="100%" stopColor="var(--color-leef)" stopOpacity={0} />
-                      </linearGradient>
-                    </defs>
-                    <YAxis
-                      domain={["auto", "auto"]}
-                      hide
-                    />
-                    <Area
-                      type="monotone"
-                      dataKey="usd"
-                      stroke="var(--color-leef)"
-                      fill="url(#eqFill)"
-                      strokeWidth={2}
-                      dot={false}
-                      isAnimationActive={false}
-                    />
-                  </AreaChart>
-              </ChartFrame>
-            </Card>
-          )}
-
-          <Card className="p-4 sm:p-5">
-            <div className="mb-3 flex items-center justify-between gap-2">
-              <div>
-                <h3 className="text-sm font-medium">Decision log</h3>
-                <p className="text-xs text-muted-foreground">
-                  What the engines saw and did on each 30s pull.
-                </p>
-              </div>
-              <Button
-                variant="ghost"
-                size="sm"
-                onClick={() => b.resetSession(equityUsd)}
-              >
-                <RotateCcw className="size-3.5" />
-                Reset session
-              </Button>
-            </div>
-            {b.decisions.length === 0 ? (
-              <p className="py-8 text-center text-sm text-muted-foreground">
-                Nothing yet — start the bot and the reasoning shows up here.
-              </p>
-            ) : (
-              <div className="flex max-h-96 flex-col gap-2 overflow-y-auto pr-1">
-                {b.decisions.map((d) => (
-                  <div
-                    key={d.id}
-                    className="rounded-lg border border-border bg-background px-3 py-2 text-xs"
-                  >
-                    <div className="flex flex-wrap items-center justify-between gap-2">
-                      <span className="font-mono text-muted-foreground">
-                        {new Date(d.t).toISOString().slice(11, 19)} UTC
-                      </span>
-                      <span className="flex items-center gap-2">
-                        {d.pnlUsd != null && (
-                          <span
-                            className={cn(
-                              "font-mono tabular-nums",
-                              d.pnlUsd >= 0 ? "text-buy" : "text-sell",
-                            )}
-                          >
-                            {d.pnlUsd >= 0 ? "+" : ""}
-                            {fmtUsd(d.pnlUsd, 2)}
-                          </span>
-                        )}
-                        <Badge variant={KIND_VARIANT[d.kind]}>
-                          {d.mode} · {d.kind}
-                        </Badge>
-                      </span>
-                    </div>
-                    <div className="mt-1 text-muted-foreground">{d.reason}</div>
-                    {d.txid && (
-                      <a
-                        className="mt-0.5 block font-mono text-accent hover:underline"
-                        href={`https://waxblock.io/transaction/${d.txid}`}
-                        target="_blank"
-                        rel="noreferrer"
-                      >
-                        tx {d.txid.slice(0, 14)}…
-                      </a>
-                    )}
-                  </div>
-                ))}
-              </div>
-            )}
-          </Card>
-        </div>
+      <div className="flex min-w-0 flex-col gap-5 lg:col-span-2">
+        <AdvisorCard snap={snap} />
+        {strategy === "growth" && <TreasureCard snap={snap} />}
+        <RiskCard strategy={strategy} snap={snap} />
+        <GoalsCard />
       </div>
     </div>
   );
 }
 
-/* ------------------------------------------------------------------ */
+function BotHeader({ snap }: { snap: LeefSnapshot }) {
+  const b = useBot();
+  const w = useWallet();
+  const mode = w.canSign() ? "live" : "paper";
+  const equityUsd = markPortfolioUsd(snap, w.balances()).totalUsd;
+  const halt = useBot((s) => s.strategyHalt);
 
-/**
- * Swap-style strategies (volume / volume-x / unleashed) never open a tracked
- * pair position — the card must not say "Flat" while the wallet is filling.
- * Show the base token's real wallet balance and its change this session.
- */
-function HoldingsPosition({ snap }: { snap: LeefSnapshot }) {
-  const base = useBot((s) => s.base) || "LEEF";
-  const start = useBot((s) => s.sessionStartBalances);
-  const running = useBot((s) => s.running);
-  const balances = useWallet((s) => s.balances());
-  const now = balanceForIdentifier(balances, snap.universe, base);
-  const px = usdPriceOf(base, snap);
-  const startAmount = start[base] ?? balanceForIdentifier(start, snap.universe, base);
-  const delta = running && startAmount > 0 ? now - startAmount : null;
-  const usdNow = now * (px || 0);
   return (
-    <>
-      <div className="mt-1 font-mono text-lg tabular-nums text-leef">
-        {fmtNum(now, { compact: true })} {base}
+    <Card className="p-4 sm:p-5">
+      {halt && (
+        <div className="mb-3 flex flex-wrap items-center justify-between gap-3 rounded-lg border border-sell/40 bg-sell/10 px-3 py-2 text-xs text-sell">
+          <div>
+            <p className="font-medium">Strategy halted — manual resume required</p>
+            <p className="text-sell/80">
+              {halt.reason} · {new Date(halt.at).toLocaleTimeString()} — repeated
+              identical on-chain reverts risk a 24h account greylist, so the bot
+              stopped itself.
+            </p>
+          </div>
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => {
+              b.resumeStrategy();
+              b.start(equityUsd);
+            }}
+          >
+            Resume {halt.strategy}
+          </Button>
+        </div>
+      )}
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <div>
+          <div className="flex items-center gap-2">
+            <span className="relative flex size-2.5">
+              <span
+                className={cn(
+                  "absolute inline-flex h-full w-full rounded-full opacity-70",
+                  b.running && "animate-ping bg-leef",
+                )}
+              />
+              <span
+                className={cn(
+                  "relative inline-flex size-2.5 rounded-full",
+                  b.running ? "bg-leef" : "bg-subtle",
+                )}
+              />
+            </span>
+            <h2 className="text-base font-medium tracking-tight">
+              Trade engine <span className="text-muted-foreground">· {b.strategy}</span>
+            </h2>
+            <DangerBadge snap={snap} />
+          </div>
+          <p className="mt-0.5 text-xs text-muted-foreground">
+            {b.lastReason}
+          </p>
+        </div>
+        <div className="flex items-center gap-2">
+          <Badge variant={mode === "live" ? "leef" : "warn"}>
+            {mode === "live" ? "Live" : "Paper"}
+          </Badge>
+          {b.running ? (
+            <Button variant="danger" size="sm" onClick={() => b.stop()}>
+              <CircleStop className="size-4" />
+              Stop
+            </Button>
+          ) : (
+            <Button variant="leef" size="sm" onClick={() => b.start(equityUsd)}>
+              <CirclePlay className="size-4" />
+              Start {mode}
+            </Button>
+          )}
+        </div>
       </div>
-      <div className="font-mono text-xs tabular-nums text-muted-foreground">
-        {fmtUsd(usdNow)}
-        {delta != null && (
-          <span className={delta >= 0 ? " text-buy" : " text-sell"}>
-            {" "}
-            {delta >= 0 ? "+" : ""}
-            {fmtNum(delta, { compact: true })} {base}
-            {px > 0 ? ` (${fmtUsd(delta * px)})` : ""} this session
-          </span>
-        )}
-      </div>
-      <div className="text-xs text-subtle">Holdings · swap strategies don't open pair positions</div>
-    </>
+    </Card>
   );
 }
 
-function RegimeBadge({ snap }: { snap: LeefSnapshot }) {
-  const series = useBot((s) => s.series);
-  const decisions = useBot((s) => s.decisions);
-  const risk = useBot((s) => s.risk);
-  const r = classifyRegime({
-    series,
-    poolPricesUsd: snap.pools.map((p) => p.usdPerLeef ?? 0).filter((v) => v > 0),
-  });
+function PnlCards({ snap }: { snap: LeefSnapshot }) {
+  const b = useBot();
+  const w = useWallet();
+  const equityUsd = markPortfolioUsd(snap, w.balances()).totalUsd;
+  const sessionPnl = equityUsd - b.stats.startEquityUsd;
+  const trades = b.stats.trades;
+  const winRate = trades > 0 ? b.stats.wins / trades : 0;
+  return (
+    <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+      <Card className="p-4">
+        <div className="text-xs uppercase tracking-wider text-subtle">Session P&L</div>
+        <div
+          className={cn(
+            "mt-1 font-mono text-lg tabular-nums",
+            sessionPnl >= 0 ? "text-buy" : "text-sell",
+          )}
+        >
+          {sessionPnl >= 0 ? "+" : ""}
+          {fmtUsd(sessionPnl, 2)}
+        </div>
+        <div className="text-xs text-muted-foreground">
+          realized {b.stats.realizedUsd >= 0 ? "+" : ""}
+          {fmtUsd(b.stats.realizedUsd, 2)}
+        </div>
+      </Card>
+      <Card className="p-4">
+        <div className="text-xs uppercase tracking-wider text-subtle">Win rate</div>
+        <div className="mt-1 font-mono text-lg tabular-nums">
+          {(winRate * 100).toFixed(0)}%
+        </div>
+        <div className="text-xs text-muted-foreground">
+          {b.stats.wins}/{trades} trades
+        </div>
+      </Card>
+      <Card className="p-4">
+        <div className="text-xs uppercase tracking-wider text-subtle">Position</div>
+        <div className="mt-1 font-mono text-lg tabular-nums">
+          {b.position ? fmtNum(b.position.amountLeef, { compact: true }) : "Flat"}
+        </div>
+        <PositionPnl snap={snap} />
+        {!b.position && (
+          <SessionStartBalances snap={snap} />
+        )}
+      </Card>
+      <Card className="p-4">
+        <div className="text-xs uppercase tracking-wider text-subtle">Volume</div>
+        <div className="mt-1 font-mono text-lg tabular-nums">
+          {fmtUsd(b.stats.volumeUsd, 2)}
+        </div>
+        <div className="text-xs text-muted-foreground">
+          echo cost {fmtUsd(b.stats.echoCostUsd, 2)}
+        </div>
+      </Card>
+    </div>
+  );
+}
+
+/**
+ * Holdings delta vs session start — swap-style strategies (volume, unleashed)
+ * never open a tracked Position, so the card shows what the wallet actually
+ * gained instead of a misleading "Flat".
+ */
+function SessionStartBalances({ snap }: { snap: LeefSnapshot }) {
+  const start = useBot((s) => s.sessionStartBalances);
+  const balances = useWallet((s) => s.balances());
+  const syms = Object.keys(start);
+  if (syms.length === 0) return null;
+  const rows = syms
+    .map((sym) => {
+      const now = balanceForIdentifier(balances, snap.universe, sym);
+      const delta = now - (start[sym] ?? 0);
+      return { sym, delta };
+    })
+    .filter((r) => Math.abs(r.delta) > 1e-8)
+    .sort((a, b) => Math.abs(b.delta) - Math.abs(a.delta))
+    .slice(0, 3);
+  if (rows.length === 0) return null;
+  return (
+    <div className="mt-3 border-t border-border pt-2 font-mono text-xs text-subtle">
+      {rows.map((r) => (
+        <div key={r.sym} className={r.delta >= 0 ? "text-buy" : "text-sell"}>
+          {r.delta >= 0 ? "+" : ""}
+          {fmtNum(r.delta, { compact: true })} {r.sym}
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function DangerBadge({ snap }: { snap: LeefSnapshot }) {
+  const b = useBot();
+  const syncSec = clampSyncSec(useTerminal.getState().syncSec ?? DEFAULT_SYNC_SEC);
+  const quoteAgeMs = Math.max(0, Date.now() - snapFreshAtMs(snap));
+  const flowStates = useTerminal.getState().flowGuardEnabled
+    ? swapFlow.tracker.allStates(Date.now())
+    : null;
   const danger = dangerScore({
-    quoteAgeMs: Math.max(0, Date.now() - Date.parse(snap.fetchedAt)),
-    maxQuoteAgeMs: Math.max(15, risk.maxQuoteAgeSec) * 1000,
-    volPct: r.volPct,
-    dislocationPct: r.dislocationPct,
+    quoteAgeMs,
+    maxQuoteAgeMs: Math.max(b.risk.maxQuoteAgeSec, syncSec + 15) * 1000,
     liquidityUsd: Math.max(0, ...snap.pools.map((p) => p.tvlUsd)),
-    recentFailures: decisions.filter(
-      (d) => d.kind === "error" && isEconomicFailureReason(d.reason) && Date.now() - Date.parse(d.t) < 600_000,
+    recentFailures: b.decisions.filter(
+      (d) => d.kind === "error" && Date.now() - Date.parse(d.t) < 600_000,
     ).length,
+    flow: flowStates
+      ? aggregateFlowRisk(flowStates, Math.max(b.risk.maxQuoteAgeSec, syncSec + 15) * 1000)
+      : null,
   });
   const tone =
-    r.regime === "trend_down" || r.regime === "high_vol"
-      ? "border-sell/40 text-sell"
-      : r.regime === "dislocation"
+    danger.band === "ok"
+      ? "border-leef/40 text-leef"
+      : danger.band === "caution"
         ? "border-warn/40 text-warn"
-        : "border-leef/40 text-leef";
-  const dangerTone =
-    danger.band === "hold" || danger.band === "selective"
-      ? "border-sell/40 text-sell"
-      : danger.band === "reduced" || danger.band === "cautious"
-        ? "border-warn/40 text-warn"
-        : "border-border text-subtle";
+        : "border-sell/40 text-sell";
+  const dangerTone = tone;
   return (
-    <span className="flex items-center gap-1.5">
-      {r.regime !== "unknown" && (
-        <span
-          className={cn("rounded-full border px-2 py-0.5 font-mono normal-case tracking-normal", tone)}
-          title={r.explain.join("\n")}
-        >
-          {r.regime}
-        </span>
-      )}
+    <span className="inline-flex items-center gap-1.5">
       <span
         className={cn("rounded-full border px-2 py-0.5 font-mono normal-case tracking-normal", dangerTone)}
         title={danger.explain.join("\n")}
@@ -1388,7 +1023,7 @@ function RiskCard({ strategy, snap }: { strategy: BotStrategy; snap: LeefSnapsho
             onChange={(gridStepPct) => setRisk({ gridStepPct })}
           />
         )}
-        {(strategy === "volume" || strategy === "volume-x" || strategy === "auto" || strategy === "unleashed") && (
+        {(strategy === "volume" || strategy === "auto" || strategy === "unleashed") && (
           <Knob
             ready={slidersOn}
             label="Max echo loss per round trip"
@@ -1400,7 +1035,7 @@ function RiskCard({ strategy, snap }: { strategy: BotStrategy; snap: LeefSnapsho
             onChange={(maxEchoLossPct) => setRisk({ maxEchoLossPct })}
           />
         )}
-        {(strategy === "volume" || strategy === "volume-x" || strategy === "auto" || strategy === "unleashed") && (
+        {(strategy === "volume" || strategy === "auto" || strategy === "unleashed") && (
           <Knob
             ready={slidersOn}
             label="Volume gate — third-party swap freshness (0 = off)"
@@ -1412,7 +1047,7 @@ function RiskCard({ strategy, snap }: { strategy: BotStrategy; snap: LeefSnapsho
             onChange={(volumeFlowGateMin) => setRisk({ volumeFlowGateMin })}
           />
         )}
-        {(strategy === "volume" || strategy === "volume-x" || strategy === "auto" || strategy === "unleashed") && (
+        {(strategy === "volume" || strategy === "auto" || strategy === "unleashed") && (
           <Knob
             ready={slidersOn}
             label="Session echo budget (0 = unlimited)"
