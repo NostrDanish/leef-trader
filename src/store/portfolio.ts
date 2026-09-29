@@ -28,6 +28,12 @@ type PortfolioState = {
   movedUsd: number;
   log: PortfolioLogEntry[];
   lastPlanNote: string;
+  /**
+   * Retry-storm guard: set when a sweep produced RETRY_STORM_LIMIT identical
+   * consecutive on-chain reverts. Persisted so a reload cannot silently
+   * resume the storm — manual resume required.
+   */
+  sweepHalt: { reason: string; at: number } | null;
 
   start: () => void;
   stop: () => void;
@@ -40,6 +46,10 @@ type PortfolioState = {
   pushLog: (e: Omit<PortfolioLogEntry, "id" | "t">) => void;
   addTotals: (sweptUsd: number, movedUsd: number) => void;
   setLastPlanNote: (s: string) => void;
+  /** Halt automatic sweeps after a retry storm (fail-closed: stops the loop). */
+  haltSweep: (reason: string) => void;
+  /** Manual resume: clears the sweep halt flag. */
+  resumeSweep: () => void;
 };
 
 export const usePortfolio = create<PortfolioState>()(
@@ -54,6 +64,7 @@ export const usePortfolio = create<PortfolioState>()(
       movedUsd: 0,
       log: [],
       lastPlanNote: "Rebalancer is stopped",
+      sweepHalt: null,
 
       start: () => set({ running: true, lastPlanNote: "Rebalancer running" }),
       stop: () => set({ running: false, lastPlanNote: "Rebalancer stopped" }),
@@ -98,10 +109,19 @@ export const usePortfolio = create<PortfolioState>()(
           movedUsd: s.movedUsd + movedUsd,
         })),
       setLastPlanNote: (lastPlanNote) => set({ lastPlanNote }),
+      haltSweep: (reason) =>
+        set({
+          sweepHalt: { reason, at: Date.now() },
+          running: false,
+          lastPlanNote: `Sweep halted — ${reason} (manual resume required)`,
+        }),
+      resumeSweep: () =>
+        set({ sweepHalt: null, lastPlanNote: "Sweep halt cleared — manual resume" }),
     }),
     {
       name: "leef-portfolio-v1",
-      version: 1,
+      // v2: sweepHalt — persisted retry-storm halt flag (null for old saves).
+      version: 2,
       // Merging migrate: fields added to settings later get filled from
       // defaults instead of crashing on undefined.
       migrate: (persisted) => {
@@ -125,6 +145,18 @@ export const usePortfolio = create<PortfolioState>()(
           sweptUsd: typeof p.sweptUsd === "number" ? p.sweptUsd : 0,
           movedUsd: typeof p.movedUsd === "number" ? p.movedUsd : 0,
           log: Array.isArray(p.log) ? p.log : [],
+          sweepHalt: (() => {
+            const h = (p as { sweepHalt?: unknown }).sweepHalt;
+            if (
+              h &&
+              typeof h === "object" &&
+              typeof (h as { reason?: unknown }).reason === "string" &&
+              typeof (h as { at?: unknown }).at === "number"
+            ) {
+              return h as { reason: string; at: number };
+            }
+            return null;
+          })(),
         };
       },
       partialize: (s) => ({
@@ -134,6 +166,8 @@ export const usePortfolio = create<PortfolioState>()(
         sweptUsd: s.sweptUsd,
         movedUsd: s.movedUsd,
         log: s.log.slice(0, 20),
+        // Persisted: a reload must never silently resume a retry storm.
+        sweepHalt: s.sweepHalt,
       }),
     },
   ),

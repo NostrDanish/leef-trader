@@ -11,6 +11,7 @@ import { markDeadOpportunity, opportunityFingerprint } from "@/lib/leef/opportun
 import { fmtNum } from "@/lib/leef/format";
 import { fetchAlcorRouteCached, verifyExecutableRoute } from "@/lib/leef/quote-verify";
 import { isEconomicFailureReason } from "@/lib/wallet/trade-error";
+import { rejectionKey, RETRY_STORM_LIMIT } from "@/lib/leef/retry-storm";
 import { verifyGrowthExact } from "@/lib/leef/growth-engine";
 import { exactEntryVerdict, exactSwapVerdict } from "@/lib/leef/exact-gate";
 import { exceedsMaxPositionUsd, usdToTokenBounds } from "@/lib/leef/risk-usd";
@@ -47,7 +48,6 @@ import { aggregateFlowRisk, swapFlow } from "@/lib/market/swap-flow";
 import { governTrade, portfolioState } from "@/lib/market/portfolio-governor";
 import { snapFreshAtMs, type LeefSnapshot, type SwapRoute } from "@/lib/leef/types";
 import { parseAssetAmount, type AlcorRouteQuote } from "@/lib/wallet/alcor-route";
-import { WAX_CONTRACT } from "@/lib/leef/types";
 import { waxResourceBlock } from "@/lib/wallet/chain";
 import { arbFloorViolation, memoMinOutSum } from "@/lib/wallet/policy";
 import { assetDelta, reconcileTransfersLater, waitForTransaction } from "@/lib/wallet/reconcile";
@@ -92,52 +92,56 @@ async function quoteArbPlan(
   slippagePct: number,
   minProfitPct: number,
 ): Promise<ArbPlan> {
+  // Alcor token ids are "<symbol>-<contract>" — identity is contract-aware,
+  // never the bare symbol (clone tokens must not borrow the real one's route).
+  const quoteId = `${plan.quoteToken.symbol.toLowerCase()}-${plan.quoteToken.contract}`;
+  const baseId = `${plan.baseToken.symbol.toLowerCase()}-${plan.baseToken.contract}`;
   const buy = await fetchAlcorRouteCached({
-    tokenInId: "wax-eosio.token",
-    tokenOutId: "leef-leefmaincorp",
-    amount: plan.waxIn,
+    tokenInId: quoteId,
+    tokenOutId: baseId,
+    amount: plan.quoteIn,
     slippagePct,
     receiver: account,
   });
-  const leefOut = parseAssetAmount(buy.output);
-  if (!(leefOut > 0)) throw new Error("Alcor returned no LEEF for the echo");
+  const baseOut = parseAssetAmount(buy.output);
+  if (!(baseOut > 0)) throw new Error(`Alcor returned no ${plan.baseToken.symbol} for the echo`);
   // Sell the buy's GUARANTEED min-received, not the quoted output — otherwise
   // a fill at the slippage floor leaves the wallet short and the atomic
   // transaction reverts.
-  const leefGuaranteed = parseAssetAmount(buy.minReceived) || leefOut;
+  const baseGuaranteed = parseAssetAmount(buy.minReceived) || baseOut;
 
   const fetchSell = (slip: number) =>
     fetchAlcorRouteCached({
-      tokenInId: "leef-leefmaincorp",
-      tokenOutId: "wax-eosio.token",
-      amount: leefGuaranteed,
+      tokenInId: baseId,
+      tokenOutId: quoteId,
+      amount: baseGuaranteed,
       slippagePct: slip,
       receiver: account,
     });
 
   let sell: AlcorRouteQuote = await fetchSell(slippagePct);
-  let waxOut = parseAssetAmount(sell.output);
-  if (!(waxOut > 0)) throw new Error("Alcor returned no WAX for the echo");
+  let quoteOut = parseAssetAmount(sell.output);
+  if (!(quoteOut > 0)) throw new Error(`Alcor returned no ${plan.quoteToken.symbol} for the echo`);
 
-  const floorWax = plan.waxIn * (1 + minProfitPct / 100);
+  const floorQuote = plan.quoteIn * (1 + minProfitPct / 100);
   const legsOf = (q: AlcorRouteQuote) =>
     q.swaps.map((s) => ({ input: s.input, memo: s.memo }));
   if (
-    waxOut >= floorWax &&
-    memoMinOutSum(legsOf(sell), account) < floorWax
+    quoteOut >= floorQuote &&
+    memoMinOutSum(legsOf(sell), account) < floorQuote
   ) {
-    const slipMax = (1 - floorWax / waxOut) * 100;
+    const slipMax = (1 - floorQuote / quoteOut) * 100;
     if (slipMax >= 0.05) {
       sell = await fetchSell(Math.min(slippagePct, slipMax * 0.9));
-      waxOut = parseAssetAmount(sell.output) || waxOut;
+      quoteOut = parseAssetAmount(sell.output) || quoteOut;
     }
   }
 
   return {
     ...plan,
-    leefMid: leefOut,
-    waxOut,
-    profitPct: waxOut / plan.waxIn - 1,
+    baseMid: baseOut,
+    quoteOut,
+    profitPct: quoteOut / plan.quoteIn - 1,
     buyLegs: buy.swaps.map((s) => ({
       input: s.input,
       output: s.output,
@@ -150,8 +154,8 @@ async function quoteArbPlan(
       memo: s.memo,
       route: s.route,
     })),
-    quotedLeef: leefOut,
-    quotedWax: waxOut,
+    quotedBase: baseOut,
+    quotedQuote: quoteOut,
   };
 }
 
@@ -406,6 +410,13 @@ export async function runBotOnce(
   opts?: { force?: "buy" | "sell"; dry?: boolean },
 ) {
   if (opts?.dry) return await runBotOnceInner(snap, opts);
+  // Retry-storm guard: a halted strategy never trades again this session
+  // without an explicit manual resume (bot-desk banner).
+  const halt = useBot.getState().strategyHalt;
+  if (halt) {
+    useBot.getState().setLastReason(`Strategy halted — ${halt.reason} (manual resume required)`);
+    return null;
+  }
   const live = useWallet.getState().canSign();
   if (live && liveCapitalBlocked()) {
     const unknown = unknownBlockReason();
@@ -630,7 +641,7 @@ async function runBotOnceInner(
     }
     decision = {
       ...decision,
-      amountWax: fresh.best.amountIn,
+      amountIn: fresh.best.amountIn,
       route: fresh.best.route,
       reason: `${decision.reason} · pre-trade ${fresh.best.amountIn.toFixed(2)} ${quoteTok}`,
       edge: {
@@ -649,7 +660,7 @@ async function runBotOnceInner(
       const candidates = gateCandidates(
         book,
         decision.route,
-        decision.amountWax,
+        decision.amountIn,
         quoteTok,
         baseTok,
         risk.maxHops,
@@ -673,7 +684,7 @@ async function runBotOnceInner(
         try {
           const verified = await verifyExecutableRoute({
             route: candidate,
-            amountIn: decision.amountWax,
+            amountIn: decision.amountIn,
             slippagePct: b.risk.slippage,
             account: live ? w.account : "paper.leef",
             snap: book,
@@ -686,7 +697,7 @@ async function runBotOnceInner(
             journal({
               kind: "gate", gate: "entry", pass: false, attempt: i + 1,
               reason: lastGateReason, verifyMs, strategy: b.strategy, mode,
-              ...routeJournalMeta(candidate, decision.amountWax, bounds.quoteUsd),
+              ...routeJournalMeta(candidate, decision.amountIn, bounds.quoteUsd),
               ...ctxOf(),
               leefUsd: book.leefUsd, waxUsd: book.waxUsd,
             });
@@ -695,7 +706,7 @@ async function runBotOnceInner(
           const verdict = exactEntryVerdict({
             snap: book,
             route: candidate,
-            amountIn: decision.amountWax,
+            amountIn: decision.amountIn,
             expectedOut: verified.expectedOut,
             exitRoute: fresh.best.exitRoute,
             expectedGrossPct: thesis,
@@ -710,7 +721,7 @@ async function runBotOnceInner(
             guaranteedOut: verified.guaranteedOut, netPct: verdict.netEdgePct,
             exactness: verified.exactness, verifyMs, strategy: b.strategy, mode,
             modelOut: candidate.amountOut, venueImpactPct: verified.venueImpactPct,
-            ...routeJournalMeta(candidate, decision.amountWax, bounds.quoteUsd),
+            ...routeJournalMeta(candidate, decision.amountIn, bounds.quoteUsd),
             ...ctxOf(),
             leefUsd: book.leefUsd, waxUsd: book.waxUsd,
           });
@@ -734,7 +745,7 @@ async function runBotOnceInner(
             kind: "gate", gate: "entry", pass: false, attempt: i + 1,
             reason: `error: ${msg}`, strategy: b.strategy, mode,
             failureClass: classifyTradeError(err).code,
-            ...(lastCandidate ? routeJournalMeta(lastCandidate, decision.amountWax, bounds.quoteUsd) : {}),
+            ...(lastCandidate ? routeJournalMeta(lastCandidate, decision.amountIn, bounds.quoteUsd) : {}),
           });
           const reason = `Exact-quote gate: ${msg}`;
           b.pushDecision({ kind: "hold", mode, reason, priceUsd: book.leefUsd });
@@ -755,8 +766,8 @@ async function runBotOnceInner(
           strategy: b.strategy,
           tokenIn: quoteTok,
           tokenOut: baseTok,
-          amountIn: decision.amountWax,
-          sizeUsd: decision.amountWax * (bounds.quoteUsd || 1),
+          amountIn: decision.amountIn,
+          sizeUsd: decision.amountIn * (bounds.quoteUsd),
           poolIds: lastCandidate?.poolIds ?? [],
           venues: lastCandidate
             ? [...new Set(lastCandidate.legs.map((l) => l.venue ?? "alcor"))]
@@ -775,7 +786,7 @@ async function runBotOnceInner(
           mode,
           tokenIn: quoteTok,
           tokenOut: baseTok,
-          amountIn: decision.amountWax,
+          amountIn: decision.amountIn,
           routes: candidates,
           gate: {
             kind: "entry",
@@ -799,7 +810,7 @@ async function runBotOnceInner(
         route: { ...gated.route, amountOut: gated.expectedOut },
         edge: {
           netEdgePct: gated.netEdgePct,
-          netProfitUsd: (gated.netEdgePct / 100) * (decision.amountWax * (bounds.quoteUsd || 1)),
+          netProfitUsd: (gated.netEdgePct / 100) * (decision.amountIn * (bounds.quoteUsd)),
           score: decision.edge?.score ?? 0,
         },
         reason: `${decision.reason} · ${gated.reason}`,
@@ -816,6 +827,9 @@ async function runBotOnceInner(
       isEcho ? -b.risk.maxEchoLossPct : floorPct,
       isEcho,
       bounds.minIn,
+      undefined,
+      quoteTok,
+      baseTok,
     );
     if (!fresh) {
       const reason = "Pre-trade arb scan found no clip in the size band";
@@ -1090,7 +1104,7 @@ async function runBotOnceInner(
     }
 
     // Universal exact-quote gate for every other swap (tape / next-hop /
-    // volume-x): the venue must confirm the decision's own net floor.
+    // volume tape): the venue must confirm the decision's own net floor.
     if (!decision.growthPlan && decision.minNetPct != null) {
       const minNetPct = decision.minNetPct;
       const candidates = gateCandidates(
@@ -1242,7 +1256,7 @@ async function runBotOnceInner(
     const governed = governTrade(book, balances, {
       tokenIn: quoteTok,
       tokenOut: baseTok,
-      amountIn: decision.amountWax,
+      amountIn: decision.amountIn,
       expectedOut: decision.route.amountOut,
       expectedNetProfitUsd: decision.edge?.netProfitUsd ?? 0,
       kind: "profit",
@@ -1257,8 +1271,8 @@ async function runBotOnceInner(
         strategy: b.strategy,
         tokenIn: quoteTok,
         tokenOut: baseTok,
-        amountIn: decision.amountWax,
-        sizeUsd: decision.amountWax * (bounds.quoteUsd || 1),
+        amountIn: decision.amountIn,
+        sizeUsd: decision.amountIn * (bounds.quoteUsd),
         poolIds: decision.route.poolIds,
         venues: [...new Set(decision.route.legs.map((l) => l.venue ?? "alcor"))],
         routeSig: routeSignature(decision.route),
@@ -1272,7 +1286,7 @@ async function runBotOnceInner(
       b.setLastReason(reason);
       return { kind: "hold", reason };
     }
-    if (governed.allowedAmountIn + 1e-12 < decision.amountWax) {
+    if (governed.allowedAmountIn + 1e-12 < decision.amountIn) {
       const resized = bestExecutionRoute(
         book.pools,
         book.aux,
@@ -1288,7 +1302,7 @@ async function runBotOnceInner(
       }
       decision = {
         ...decision,
-        amountWax: governed.allowedAmountIn,
+        amountIn: governed.allowedAmountIn,
         route: resized,
         reason: `${decision.reason} · ${governed.reason}`,
       };
@@ -1340,7 +1354,7 @@ async function runBotOnceInner(
             account: w.account,
             permission: w.permission,
             route: decision.route,
-            amountIn: decision.amountWax,
+            amountIn: decision.amountIn,
             slippagePct: b.risk.slippage,
             snap: book,
             preQuoted: gateQuote,
@@ -1380,7 +1394,7 @@ async function runBotOnceInner(
         // Paper fills pay the platform fee too — paper P&L must match live economics.
         const feeSpec = platformFeeOn(amountLeef, metaOf(baseTok, book));
         if (feeSpec) amountLeef -= feeSpec.amount;
-        w.applyPaperFill(b.quote || "WAX", decision.amountWax, b.base || "LEEF", amountLeef);
+        w.applyPaperFill(b.quote || "WAX", decision.amountIn, b.base || "LEEF", amountLeef);
       }
       // Average into an existing position (DCA) or open a fresh one.
       // Costs are USD: quote-side spend × the quote token's oracle price,
@@ -1392,10 +1406,10 @@ async function runBotOnceInner(
         ? {
             amountLeef: prev.amountLeef + amountLeef,
             entryUsd:
-              (prev.entryCostUsd + decision.amountWax * quoteUsdPx) /
+              (prev.entryCostUsd + decision.amountIn * quoteUsdPx) /
               Math.max(prev.amountLeef + amountLeef, 1e-9),
-            entryCostUsd: prev.entryCostUsd + decision.amountWax * quoteUsdPx,
-            entryWax: prev.entryWax + decision.amountWax,
+            entryCostUsd: prev.entryCostUsd + decision.amountIn * quoteUsdPx,
+            entryWax: prev.entryWax + decision.amountIn,
             since: prev.since,
             highUsd: Math.max(prev.highUsd, baseUsdPx),
             mode,
@@ -1403,16 +1417,16 @@ async function runBotOnceInner(
             predEdgePct:
               decision.edge != null
                 ? ((prev.predEdgePct ?? decision.edge.netEdgePct) * prev.entryWax +
-                    decision.edge.netEdgePct * decision.amountWax) /
-                  Math.max(prev.entryWax + decision.amountWax, 1e-9)
+                    decision.edge.netEdgePct * decision.amountIn) /
+                  Math.max(prev.entryWax + decision.amountIn, 1e-9)
                 : prev.predEdgePct,
             strategy: prev.strategy ?? b.strategy,
           }
         : {
             amountLeef,
             entryUsd: baseUsdPx,
-            entryCostUsd: decision.amountWax * quoteUsdPx,
-            entryWax: decision.amountWax,
+            entryCostUsd: decision.amountIn * quoteUsdPx,
+            entryWax: decision.amountIn,
             since: Date.now(),
             highUsd: baseUsdPx,
             mode,
@@ -1422,6 +1436,7 @@ async function runBotOnceInner(
       b.setPosition(position);
       b.setGridAnchor(baseUsdPx);
       b.markTrade(adaptiveCooldownSec(b.risk.cooldownSec, b.strategy, b.stats.lastPnlUsd));
+      b.clearRejectionStreak();
       b.pushDecision({
         kind: "buy",
         mode,
@@ -1432,7 +1447,7 @@ async function runBotOnceInner(
       journal({
         kind: "execution", action: "buy", strategy: b.strategy, mode,
         tokenIn: quoteTok, tokenOut: baseTok,
-        amountIn: decision.amountWax, expectedOut: decision.route.amountOut,
+        amountIn: decision.amountIn, expectedOut: decision.route.amountOut,
         actualOut: amountLeef, txid, status: execStatus,
         predEdgePct: decision.edge?.netEdgePct,
         latencyMs: live ? Date.now() - tExec : undefined,
@@ -1440,7 +1455,7 @@ async function runBotOnceInner(
         platformFeeToken: feeInfo?.symbol,
         platformFeeCollected:
           live && execStatus === "confirmed" && feeInfo ? true : undefined,
-        ...routeJournalMeta(decision.route, decision.amountWax, bounds.quoteUsd),
+        ...routeJournalMeta(decision.route, decision.amountIn, bounds.quoteUsd),
         ...ctxOf(),
         leefUsd: snap.leefUsd, waxUsd: book.waxUsd,
       });
@@ -1449,7 +1464,7 @@ async function runBotOnceInner(
           book,
           decision.route.poolIds[0],
           "buy",
-          decision.amountWax * (bounds.quoteUsd || 1),
+          decision.amountIn * (bounds.quoteUsd),
           quoteTok,
           baseTok,
         );
@@ -1461,7 +1476,7 @@ async function runBotOnceInner(
         mode,
         tokenIn: quoteTok,
         tokenOut: baseTok,
-        amountIn: decision.amountWax,
+        amountIn: decision.amountIn,
         routes: [decision.route],
         reason: decision.reason,
         ctx: ctxOf(),
@@ -1475,7 +1490,10 @@ async function runBotOnceInner(
 
     if (decision.kind === "sell") {
       const position = b.position;
-      let waxOut = decision.route.amountOut;
+      // Sell proceeds land in the CONFIGURED quote token (WAX by default) —
+      // the confirmed delta and the USD conversion must follow it, not WAX.
+      const sellQuoteMeta = metaOf(quoteTok, book);
+      let quoteOut = decision.route.amountOut;
       let txid: string | undefined;
       let note = "";
       let feeInfo: { amount: number; symbol: string } | undefined;
@@ -1498,7 +1516,7 @@ async function runBotOnceInner(
           txid = exec.txid;
           feeInfo = exec.platformFee;
           markBroadcast(txid);
-          if (exec.expectedOut > 0) waxOut = exec.expectedOut;
+          if (exec.expectedOut > 0) quoteOut = exec.expectedOut;
           const tConf = Date.now();
           const rec = await waitForTransaction(txid, { budgetMs: 1_200, attempts: 3, delayMs: 200 });
           timings.confirmationMs = Date.now() - tConf;
@@ -1507,8 +1525,8 @@ async function runBotOnceInner(
             throw new Error(rec.error);
           }
           if (rec.status === "confirmed") {
-            const actual = assetDelta(rec.transfers, w.account, "WAX", WAX_CONTRACT);
-            if (actual > 0) waxOut = actual;
+            const actual = assetDelta(rec.transfers, w.account, sellQuoteMeta.symbol, sellQuoteMeta.contract);
+            if (actual > 0) quoteOut = actual;
             note = rec.transfers.length ? " · confirmed on-chain" : " · included (transfers pending)";
             execStatus = rec.transfers.length ? "confirmed" : "included";
             markConfirmed();
@@ -1523,15 +1541,17 @@ async function runBotOnceInner(
           throw err;
         }
       } else {
-        const feeSpec = platformFeeOn(waxOut, metaOf(quoteTok, book));
-        if (feeSpec) waxOut -= feeSpec.amount;
-        w.applyPaperFill(b.base || "LEEF", decision.amountLeef, b.quote || "WAX", waxOut);
+        const feeSpec = platformFeeOn(quoteOut, metaOf(quoteTok, book));
+        if (feeSpec) quoteOut -= feeSpec.amount;
+        w.applyPaperFill(b.base || "LEEF", decision.amountLeef, b.quote || "WAX", quoteOut);
       }
-      const pnlUsd = position ? waxOut * bounds.quoteUsd - position.entryCostUsd : 0;
+      const pnlUsd = position ? quoteOut * bounds.quoteUsd - position.entryCostUsd : 0;
       b.setPosition(null);
       b.setGridAnchor(usdPriceOf(b.base || "LEEF", book) || snap.leefUsd);
       b.markTrade(adaptiveCooldownSec(b.risk.cooldownSec, b.strategy, pnlUsd));
       b.recordResult(pnlUsd, equityUsd + pnlUsd);
+      // A successful execution breaks the consecutive-rejection run.
+      b.clearRejectionStreak();
       // Calibration: predicted edge (stored at entry) vs the realized edge.
       b.recordStrategyPerf(position?.strategy ?? b.strategy, {
         pnlUsd,
@@ -1552,7 +1572,7 @@ async function runBotOnceInner(
         kind: "execution", action: "sell", strategy: position?.strategy ?? b.strategy, mode,
         tokenIn: b.base || "LEEF", tokenOut: b.quote || "WAX",
         amountIn: decision.amountLeef, expectedOut: decision.route.amountOut,
-        actualOut: waxOut, txid, status: execStatus, pnlUsd,
+        actualOut: quoteOut, txid, status: execStatus, pnlUsd,
         platformFeeAmount: feeInfo?.amount,
         platformFeeToken: feeInfo?.symbol,
         platformFeeCollected:
@@ -1594,7 +1614,7 @@ async function runBotOnceInner(
         ctx: ctxOf(),
       });
       toast({
-        title: `${live ? "Live" : "Paper"} sell · ${fmtNum(waxOut, { digits: 2 })} WAX · ${
+        title: `${live ? "Live" : "Paper"} sell · ${fmtNum(quoteOut, { digits: 2 })} ${quoteTok} · ${
           pnlUsd >= 0 ? "+" : ""
         }$${pnlUsd.toFixed(2)}`,
         description: decision.reason + note + (txid ? ` · tx ${txid.slice(0, 10)}…` : ""),
@@ -1654,7 +1674,8 @@ async function runBotOnceInner(
       const outUsd = outAmt * (usdPriceOf(decision.tokenOut, book) || 0);
       const tapePnl = outUsd - inUsd;
       b.markTrade(adaptiveCooldownSec(b.risk.cooldownSec, b.strategy, tapePnl));
-      if (b.strategy === "volume-x" || /Volume-X|Unleashed tape/i.test(decision.reason)) {
+      b.clearRejectionStreak();
+      if (b.strategy === "volume" || /Volume tape|Unleashed tape/i.test(decision.reason)) {
         b.recordVolume(inUsd + outUsd, -tapePnl);
         b.recordResult(tapePnl, equityUsd + tapePnl);
       }
@@ -1716,6 +1737,12 @@ async function runBotOnceInner(
 
     if (decision.kind === "arb") {
       let plan = decision.plan;
+      // The arb is denominated in the plan's quote token (ANY configured
+      // quote — WAX by default). The USD mark comes from the risk bounds
+      // (oracle-gated, fail-closed); it is never assumed to be the WAX mark.
+      const qSym = plan.quoteToken.symbol.toUpperCase();
+      const qContract = plan.quoteToken.contract;
+      const quoteMarkUsd = bounds.quoteUsd;
       // The hard floor this arb must enforce on-chain: spread arbs enforce the
       // profit floor; volume echoes enforce the loss budget (negative floor).
       // The decision's arbKind (not the globally selected strategy) decides —
@@ -1740,7 +1767,7 @@ async function runBotOnceInner(
           toast({ title: "Volume quote failed", description: msg, variant: "destructive" });
           return decision;
         }
-        const costPct = (1 - plan.waxOut / plan.waxIn) * 100;
+        const costPct = (1 - plan.quoteOut / plan.quoteIn) * 100;
         if (isEcho && costPct > b.risk.maxEchoLossPct) {
           // Real round-trip cost exceeds the budget — skip, don't burn CPU.
           const reason = `Alcor round-trip costs ${costPct.toFixed(2)}% — above the ${b.risk.maxEchoLossPct}% budget`;
@@ -1759,11 +1786,13 @@ async function runBotOnceInner(
         // re-checks the same invariant at the signing boundary.
         if (live) {
           const floorViolation = arbFloorViolation({
-            waxIn: plan.waxIn,
+            quoteIn: plan.quoteIn,
             minProfitPct: floorPct,
             buyLegs: plan.buyLegs ?? [],
             sellLegs: plan.sellLegs ?? [],
             account: w.account,
+            quote: { symbol: qSym, contract: qContract },
+            base: { symbol: plan.baseToken.symbol, contract: plan.baseToken.contract },
           });
           if (floorViolation) {
             const reason = `Arb blocked — ${floorViolation}`;
@@ -1777,8 +1806,8 @@ async function runBotOnceInner(
       let note = "";
       let feeInfo: { amount: number; symbol: string } | undefined;
       let execStatus: "confirmed" | "included" | "unknown" | "paper" = live ? "unknown" : "paper";
-      /** Net WAX delta read from the confirmed transaction (null = estimate). */
-      let realizedWax: number | null = null;
+      /** Net quote-token delta read from the confirmed transaction (null = estimate). */
+      let realizedQuote: number | null = null;
       const t0 = Date.now();
       if (live) {
         if (!beginSigning()) return decision;
@@ -1804,7 +1833,7 @@ async function runBotOnceInner(
             throw new Error(rec.error);
           }
           if (rec.status === "confirmed") {
-            realizedWax = assetDelta(rec.transfers, w.account, "WAX", WAX_CONTRACT);
+            realizedQuote = assetDelta(rec.transfers, w.account, qSym, qContract);
             note = rec.transfers.length ? " · confirmed on-chain" : " · included (transfers pending)";
             execStatus = rec.transfers.length ? "confirmed" : "included";
             markConfirmed();
@@ -1820,25 +1849,27 @@ async function runBotOnceInner(
         }
       } else {
         // Same symbol in and out — the fill nets the profit onto the balance.
-        const feeSpec = platformFeeOn(plan.waxOut, metaOf("WAX", book));
-        w.applyPaperFill("WAX", plan.waxIn, "WAX", plan.waxOut - (feeSpec?.amount ?? 0));
+        const feeSpec = platformFeeOn(plan.quoteOut, metaOf(qSym, book));
+        w.applyPaperFill(qSym, plan.quoteIn, qSym, plan.quoteOut - (feeSpec?.amount ?? 0));
       }
       const pnlUsd =
-        realizedWax != null
-          ? realizedWax * snap.waxUsd
-          : (plan.waxOut - plan.waxIn) * snap.waxUsd;
+        realizedQuote != null
+          ? realizedQuote * quoteMarkUsd
+          : (plan.quoteOut - plan.quoteIn) * quoteMarkUsd;
       b.markTrade(adaptiveCooldownSec(b.risk.cooldownSec, b.strategy, pnlUsd));
       b.recordResult(pnlUsd, equityUsd + pnlUsd);
+      // A successful execution breaks the consecutive-rejection run.
+      b.clearRejectionStreak();
       // Calibration: the router-quoted edge vs what the chain actually paid.
       b.recordStrategyPerf(b.strategy, {
         pnlUsd,
         predEdgePct: plan.profitPct * 100,
         realEdgePct:
-          (realizedWax != null ? realizedWax / plan.waxIn : plan.waxOut / plan.waxIn - 1) * 100,
+          (realizedQuote != null ? realizedQuote / plan.quoteIn : plan.quoteOut / plan.quoteIn - 1) * 100,
         latencyMs: live ? Date.now() - t0 : null,
       }, mode);
       if (isEcho) {
-        b.recordVolume((plan.waxIn + plan.waxOut) * snap.waxUsd, -pnlUsd);
+        b.recordVolume((plan.quoteIn + plan.quoteOut) * quoteMarkUsd, -pnlUsd);
       }
       b.pushDecision({
         kind: "arb",
@@ -1850,12 +1881,12 @@ async function runBotOnceInner(
       });
       journal({
         kind: "execution", action: "arb", strategy: b.strategy, mode,
-        tokenIn: "WAX", tokenOut: "WAX",
-        amountIn: plan.waxIn, expectedOut: plan.waxOut,
-        actualOut: realizedWax ?? undefined, txid, status: execStatus, pnlUsd,
+        tokenIn: qSym, tokenOut: qSym,
+        amountIn: plan.quoteIn, expectedOut: plan.quoteOut,
+        actualOut: realizedQuote ?? undefined, txid, status: execStatus, pnlUsd,
         predEdgePct: plan.profitPct * 100,
         realEdgePct:
-          (realizedWax != null ? realizedWax / plan.waxIn : plan.waxOut / plan.waxIn - 1) * 100,
+          (realizedQuote != null ? realizedQuote / plan.quoteIn : plan.quoteOut / plan.quoteIn - 1) * 100,
         platformFeeAmount: feeInfo?.amount,
         platformFeeToken: feeInfo?.symbol,
         platformFeeCollected:
@@ -1864,18 +1895,18 @@ async function runBotOnceInner(
         poolIds: [plan.buyPool.id, plan.sellPool.id],
         hops: 2,
         venues: ["alcor"],
-        sizeUsd: plan.waxIn * snap.waxUsd,
+        sizeUsd: plan.quoteIn * quoteMarkUsd,
         ...ctxOf(),
         leefUsd: snap.leefUsd, waxUsd: snap.waxUsd,
       });
       if (live && (execStatus === "confirmed" || execStatus === "included")) {
-        noteSelfImpact(book, plan.buyPool.id, "arb", plan.waxIn * snap.waxUsd, "WAX", "WAX");
+        noteSelfImpact(book, plan.buyPool.id, "arb", plan.quoteIn * quoteMarkUsd, qSym, qSym);
       }
-      const diff = realizedWax ?? plan.waxOut - plan.waxIn;
+      const diff = realizedQuote ?? plan.quoteOut - plan.quoteIn;
       toast({
         title: `${live ? "Live" : "Paper"} ${isEcho ? "echo" : "arb"} · ${
           diff >= 0 ? "+" : ""
-        }${fmtNum(diff, { digits: 3 })} WAX`,
+        }${fmtNum(diff, { digits: 3 })} ${qSym}`,
         description: decision.reason + note + (txid ? ` · tx ${txid.slice(0, 10)}…` : ""),
       });
       return decision;
@@ -1895,7 +1926,7 @@ async function runBotOnceInner(
       failureClass: code,
       reason: `${code}: ${message}`,
       ...("route" in decision && decision.route
-        ? routeJournalMeta(decision.route, "amountWax" in decision ? decision.amountWax : "amountIn" in decision ? decision.amountIn : 0, 0)
+        ? routeJournalMeta(decision.route, "amountIn" in decision ? decision.amountIn : 0, 0)
         : {}),
       ...ctxOf(),
       leefUsd: snap.leefUsd,
@@ -1914,6 +1945,31 @@ async function runBotOnceInner(
     b.pushDecision({ kind: "error", mode, reason, priceUsd: snap.leefUsd });
     b.setLastReason(reason);
     toast({ title: toastTitleFor(code), description: message, variant: "destructive" });
+    // Retry-storm guard: consecutive IDENTICAL on-chain rejections mean the
+    // trade reverts deterministically — re-planning it every cycle is what
+    // trips the account-level node greylist (~24h). Halt the strategy after
+    // RETRY_STORM_LIMIT identical rejections; manual resume required.
+    if (live && (code === "TRANSACTION_REJECTED" || code === "TRANSACTION_FAILED")) {
+      const key = rejectionKey({
+        message,
+        strategy: b.strategy,
+        pair: `${b.quote || "WAX"}/${b.base || "LEEF"}`,
+      });
+      if (b.noteRejection(key, { strategy: b.strategy, reason })) {
+        const haltReason = `strategy halted after ${RETRY_STORM_LIMIT} identical on-chain rejections — ${message} — manual resume required`;
+        b.pushDecision({ kind: "stop", mode, reason: haltReason, priceUsd: snap.leefUsd });
+        b.setLastReason(haltReason);
+        toast({
+          title: "Strategy halted — manual resume required",
+          description: haltReason,
+          variant: "destructive",
+        });
+        return decision;
+      }
+    } else {
+      // A different failure class breaks the consecutive identical run.
+      b.clearRejectionStreak();
+    }
     // Don't hammer the same dead clip next cycle — look for something else.
     const fp =
       (decision.kind === "buy" || decision.kind === "arb") && decision.opportunity

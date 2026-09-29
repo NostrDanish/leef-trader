@@ -19,7 +19,7 @@
  *
  * `arbFloorViolation` enforces the second hard invariant: an atomic arb is
  * only signed when the sell legs' ON-CHAIN min-outs (what the chain actually
- * guarantees) sum to at least `waxIn × (1 + minProfitPct)`. Quoted profit is
+ * guarantees) sum to at least `quoteIn × (1 + minProfitPct)`. Quoted profit is
  * not proof — the memo min-outs are.
  */
 import { LEEF_CONTRACT, LEEF_SYMBOL, WAX_CONTRACT, WAX_SYMBOL } from "@/lib/leef/types";
@@ -332,14 +332,27 @@ export type ArbLegLike = { input: string; memo: string };
  * signature exists. Returns null when the invariant holds, else the reason.
  */
 export function arbFloorViolation(opts: {
-  waxIn: number;
+  /** Total quote-token input the plan sized (ANY quote token, not just WAX). */
+  quoteIn: number;
   minProfitPct: number;
   buyLegs: ArbLegLike[];
   sellLegs: ArbLegLike[];
   account: string;
+  /** Quote token identity — defaults to canonical WAX. */
+  quote?: { symbol: string; contract: string };
+  /** Intermediate base token identity — defaults to canonical LEEF. */
+  base?: { symbol: string; contract: string };
 }): string | null {
-  const { waxIn, minProfitPct, buyLegs, sellLegs, account } = opts;
-  if (!(waxIn > 0)) return "arb size must be positive";
+  const { quoteIn, minProfitPct, buyLegs, sellLegs, account } = opts;
+  const quote = {
+    symbol: (opts.quote?.symbol ?? WAX_SYMBOL).toUpperCase(),
+    contract: opts.quote?.contract ?? WAX_CONTRACT,
+  };
+  const base = {
+    symbol: (opts.base?.symbol ?? LEEF_SYMBOL).toUpperCase(),
+    contract: opts.base?.contract ?? LEEF_CONTRACT,
+  };
+  if (!(quoteIn > 0)) return "arb size must be positive";
   if (buyLegs.length === 0 || sellLegs.length === 0) {
     return "arb needs fresh Alcor router legs for both sides";
   }
@@ -347,43 +360,43 @@ export function arbFloorViolation(opts: {
   let buyIn = 0;
   for (const leg of buyLegs) {
     const input = parseAsset(leg.input);
-    if (!input || input.symbol !== WAX_SYMBOL || !(input.amount > 0)) {
-      return `buy leg input isn't a WAX amount: "${leg.input}"`;
+    if (!input || input.symbol !== quote.symbol || !(input.amount > 0)) {
+      return `buy leg input isn't a ${quote.symbol} amount: "${leg.input}"`;
     }
     const memo = parseSwapMemo(leg.memo, account);
     if (!memo) return "buy leg memo failed validation (pools/receiver/min-out)";
-    if (memo.minSymbol !== LEEF_SYMBOL || memo.minContract !== LEEF_CONTRACT) {
-      return `buy leg min-out isn't ${LEEF_SYMBOL}@${LEEF_CONTRACT}`;
+    if (memo.minSymbol !== base.symbol || memo.minContract !== base.contract) {
+      return `buy leg min-out isn't ${base.symbol}@${base.contract}`;
     }
     buyIn += input.amount;
   }
   // Router splits must never pull MORE than the risk-sized clip. (Less is
   // fine — the floor below scales to the actual spend.)
-  if (buyIn > waxIn * 1.0001) {
-    return `router wants to pull ${buyIn.toFixed(8)} WAX but the plan sized ${waxIn.toFixed(8)} WAX`;
+  if (buyIn > quoteIn * 1.0001) {
+    return `router wants to pull ${buyIn.toFixed(8)} ${quote.symbol} but the plan sized ${quoteIn.toFixed(8)} ${quote.symbol}`;
   }
 
-  let minWaxOut = 0;
+  let minQuoteOut = 0;
   for (const leg of sellLegs) {
     const input = parseAsset(leg.input);
-    if (!input || input.symbol !== LEEF_SYMBOL || !(input.amount > 0)) {
-      return `sell leg input isn't a LEEF amount: "${leg.input}"`;
+    if (!input || input.symbol !== base.symbol || !(input.amount > 0)) {
+      return `sell leg input isn't a ${base.symbol} amount: "${leg.input}"`;
     }
     const memo = parseSwapMemo(leg.memo, account);
     if (!memo) return "sell leg memo failed validation (pools/receiver/min-out)";
-    if (memo.minSymbol !== WAX_SYMBOL || memo.minContract !== WAX_CONTRACT) {
-      return `sell leg min-out isn't ${WAX_SYMBOL}@${WAX_CONTRACT}`;
+    if (memo.minSymbol !== quote.symbol || memo.minContract !== quote.contract) {
+      return `sell leg min-out isn't ${quote.symbol}@${quote.contract}`;
     }
-    minWaxOut += memo.minAmount;
+    minQuoteOut += memo.minAmount;
   }
 
   const floor = buyIn * (1 + minProfitPct / 100);
-  // One WAX quantum (1e-8) of slack: 10 * 1.012 is 10.120000000000001 in
+  // One quote quantum (1e-8) of slack: 10 * 1.012 is 10.120000000000001 in
   // IEEE-754 — an exactly-at-floor min-out must pass, not die to float dust.
-  if (minWaxOut + 1e-8 < floor) {
+  if (minQuoteOut + 1e-8 < floor) {
     return (
-      `route no longer clears the profit floor — enforced min-out ${minWaxOut.toFixed(8)} WAX ` +
-      `< required ${floor.toFixed(8)} WAX (${minProfitPct}% over ${buyIn.toFixed(4)} WAX in)`
+      `route no longer clears the profit floor — enforced min-out ${minQuoteOut.toFixed(8)} ${quote.symbol} ` +
+      `< required ${floor.toFixed(8)} ${quote.symbol} (${minProfitPct}% over ${buyIn.toFixed(4)} ${quote.symbol} in)`
     );
   }
   return null;
