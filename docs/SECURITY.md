@@ -50,10 +50,65 @@ unknown token: it does not feed pricing, routing, arb scans, or signing.
 
 ## Recommended account setup
 
-Use a **dedicated trading permission** (custom permission or `active` on a
-dedicated account) holding only the funds intended for the bot. Never import
-an `owner` key. The import dialog warns accordingly; the app cannot enforce
-this cryptographically — it is operational hygiene.
+Use a **dedicated bot account** holding only the funds you are willing to
+risk, and a **dedicated `trade` permission** on it, linked (`linkauth`) only to
+the actions the bot needs.
+
+What the app enforces:
+
+- A session key that controls **`owner`** is refused at import, even if the
+  same key is also on `active`/a custom permission.
+- Key import resolves **all** permissions the key satisfies on its own
+  (`choosePermission` in `src/lib/wallet/chain.ts`): exactly one custom
+  permission → used; several custom permissions → refused (ambiguous);
+  `active` only → allowed with a warning.
+- Every signer path (session key and Cloud Wallet/Anchor) refuses to sign
+  with `owner` or without an explicit permission (`assertSigningPermission`
+  in `policy.ts`) — there is no silent `active` default anymore.
+
+### Creating a `trade` permission (run once, from the account's `active`)
+
+Use Anchor or a block explorer's "push transaction" page. Replace
+`yourbotacct1` and the public key. The app never sends these actions itself.
+
+```json
+{
+  "actions": [
+    { "account": "eosio", "name": "updateauth",
+      "authorization": [{ "actor": "yourbotacct1", "permission": "active" }],
+      "data": { "account": "yourbotacct1", "permission": "trade", "parent": "active",
+                "auth": { "threshold": 1,
+                          "keys": [{ "key": "PUB_K1_REPLACE_WITH_TRADE_PUBLIC_KEY", "weight": 1 }],
+                          "accounts": [], "waits": [] } } },
+    { "account": "eosio", "name": "linkauth",
+      "authorization": [{ "actor": "yourbotacct1", "permission": "active" }],
+      "data": { "account": "yourbotacct1", "code": "eosio.token", "type": "transfer", "requirement": "trade" } },
+    { "account": "eosio", "name": "linkauth",
+      "authorization": [{ "actor": "yourbotacct1", "permission": "active" }],
+      "data": { "account": "yourbotacct1", "code": "leefmaincorp", "type": "transfer", "requirement": "trade" } },
+    { "account": "eosio", "name": "linkauth",
+      "authorization": [{ "actor": "yourbotacct1", "permission": "active" }],
+      "data": { "account": "yourbotacct1", "code": "swap.alcor", "type": "addliquid", "requirement": "trade" } },
+    { "account": "eosio", "name": "linkauth",
+      "authorization": [{ "actor": "yourbotacct1", "permission": "active" }],
+      "data": { "account": "yourbotacct1", "code": "swap.alcor", "type": "subliquid", "requirement": "trade" } },
+    { "account": "eosio", "name": "linkauth",
+      "authorization": [{ "actor": "yourbotacct1", "permission": "active" }],
+      "data": { "account": "yourbotacct1", "code": "swap.alcor", "type": "collect", "requirement": "trade" } }
+  ]
+}
+```
+
+Optional extra links: `<token contract>::transfer` for every other token the
+bot may trade (e.g. `eth.token` for WAXUSDC), and `eosio::delegatebw` only if
+you use the "stake CPU" button. The platform fee uses the same token
+`transfer` actions, so it needs no extra link. Undo with `eosio::unlinkauth` /
+`eosio::deleteauth`.
+
+**Caveat:** `linkauth` limits *which actions* a key can sign, **not the
+recipient** — a leaked `trade` key can still transfer linked tokens anywhere.
+The small float on a dedicated account is the real cap. Cloud Wallet always
+signs with its own permission; Anchor lets you pick one.
 
 ## Web security
 

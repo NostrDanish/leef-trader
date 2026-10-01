@@ -245,6 +245,25 @@ function checkTransfer(
 }
 
 /**
+ * The signing permission must be explicit and never `owner`. Returns null
+ * when acceptable, else the reason. Checked by every signer path (session
+ * key AND external wallet) right next to `assertActionPolicy`.
+ */
+export function signingPermissionViolation(permission: string | null | undefined): string | null {
+  const p = (permission ?? "").trim();
+  if (!p) return "signer requires an explicit permission (no silent 'active' default)";
+  if (p === "owner") return "refusing to sign with the owner permission";
+  if (!/^[a-z1-5.]{1,12}$/.test(p)) return `"${p}" is not a valid permission name`;
+  return null;
+}
+
+/** Throwing form of `signingPermissionViolation`. */
+export function assertSigningPermission(permission: string | null | undefined): void {
+  const v = signingPermissionViolation(permission);
+  if (v) fail(v);
+}
+
+/**
  * Validate a whole action list against the trading policy. Throws with a
  * precise reason on the first violation; returns void when every action is
  * an allowed, well-formed trading action.

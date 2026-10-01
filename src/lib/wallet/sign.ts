@@ -29,6 +29,7 @@ import {
   ALCOR_SWAP_CONTRACT,
   arbFloorViolation,
   assertActionPolicy,
+  assertSigningPermission,
   memoMinOutSum,
   swapFloorViolation,
   type PolicyContext,
@@ -261,7 +262,7 @@ type ActionSpec = {
 
 async function dispatchActions(opts: {
   account: string;
-  permission?: string;
+  permission: string;
   actions: ActionSpec[];
   policy?: PolicyContext;
 }): Promise<{ txid: string }> {
@@ -276,6 +277,8 @@ async function dispatchActions(opts: {
   if (sess) {
     const actor = String(sess.actor);
     const permission = String(sess.permission);
+    // Wallets sign with their own session permission — never owner.
+    assertSigningPermission(permission);
     const result = await sess.transact({
       actions: opts.actions.map((a) => ({
         account: a.contract,
@@ -293,6 +296,9 @@ async function dispatchActions(opts: {
   }
 
   if (!hasSecret()) throw new Error("Connect a wallet or import a session key first");
+  // Session key: the permission must be explicit (resolved at import) and
+  // never owner. Checked before any chain read or signature.
+  assertSigningPermission(opts.permission);
 
   const rawInfo = (await getChainInfo()) as ChainInfo;
   const header = transactionHeaderFromInfo(rawInfo, 90);
@@ -306,7 +312,7 @@ async function dispatchActions(opts: {
       account: a.contract,
       name: a.name,
       actor: opts.account,
-      permission: opts.permission ?? "active",
+      permission: opts.permission,
       dataBytes: a.dataBytes,
     })),
   });
@@ -352,7 +358,7 @@ function transferSpec(contract: string, data: TransferActionData): ActionSpec {
 
 async function signAndPushTransfers(opts: {
   account: string;
-  permission?: string;
+  permission: string;
   transfers: { contract: string; data: TransferActionData }[];
   policy?: PolicyContext;
 }): Promise<{ txid: string }> {
@@ -380,7 +386,7 @@ async function signAndPushTransfers(opts: {
 export async function signAndPushSwap(opts: {
   account: string;
   /** Permission the session key authorizes on the account. */
-  permission?: string;
+  permission: string;
   route: SwapRoute;
   amountIn: number;
   slippagePct: number;
@@ -582,7 +588,7 @@ async function revalidateBatchLegs(opts: {
  */
 export async function signAndPushBatch(opts: {
   account: string;
-  permission?: string;
+  permission: string;
   legs: BatchLeg[];
   /** Snapshot the legs were planned against — feeds the policy token catalog. */
   snap: LeefSnapshot;
@@ -638,7 +644,7 @@ export async function signAndPushBatch(opts: {
  */
 export async function signAndPushArb(opts: {
   account: string;
-  permission?: string;
+  permission: string;
   plan: ArbPlan;
   /** Hard profit floor the sell legs must enforce on-chain, percent. */
   minProfitPct: number;
@@ -742,7 +748,7 @@ export async function signAndPushArb(opts: {
  */
 export async function signAndPushStakeCpu(opts: {
   account: string;
-  permission?: string;
+  permission: string;
   waxAmount: number;
 }): Promise<{ txid: string }> {
   const owner = walletSession() ? String(walletSession()!.actor) : opts.account;
@@ -771,7 +777,7 @@ export async function signAndPushStakeCpu(opts: {
  */
 export async function signAndPushAddLiquidity(opts: {
   account: string;
-  permission?: string;
+  permission: string;
   poolId: number;
   tokenA: { contract: string; symbol: string; decimals: number };
   tokenB: { contract: string; symbol: string; decimals: number };
@@ -833,7 +839,7 @@ export async function signAndPushAddLiquidity(opts: {
  */
 export async function signAndPushRemoveLiquidity(opts: {
   account: string;
-  permission?: string;
+  permission: string;
   poolId: number;
   tickLower: number;
   tickUpper: number;
