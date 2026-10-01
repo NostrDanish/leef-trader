@@ -23,7 +23,7 @@ function decimalsForAlcorId(id: string): number {
  * full concentrated-liquidity math (ticks, splits) server-side and returns
  * ready-to-sign transfer memos for the `swap.alcor` contract.
  */
-const ROUTER = "https://wax.alcor.exchange/api/v2/swapRouter/getRoute";
+export const ROUTER = "https://wax.alcor.exchange/api/v2/swapRouter/getRoute";
 
 export type AlcorSwapLeg = {
   /** Asset string being sent, e.g. "10.00000000 WAX". */
