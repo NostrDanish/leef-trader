@@ -151,3 +151,18 @@ describe("cross-venue routing", () => {
     expect(bestExecutionRoute([], [fake], 10, "WAX", "LEEF")).toBeNull();
   });
 });
+
+describe("venue memo builders never emit a zero min-out", () => {
+  it("defiboxMemo throws when the min-out rounds to 0 units", () => {
+    expect(() => defiboxMemo(0, 4, 140)).toThrow(/rounds to 0 units/);
+    expect(() => defiboxMemo(0.00009, 4, 140)).toThrow(/rounds to 0 units/);
+    expect(() => defiboxMemo(Number.NaN, 4, 140)).toThrow(/rounds to 0 units/);
+    expect(defiboxMemo(0.0001, 4, 140)).toBe("swap,1,140");
+  });
+
+  it("tacoMemo throws when the min-out rounds to 0 units", () => {
+    expect(() => tacoMemo(0, "LEEF", "leefmaincorp", 4)).toThrow(/rounds to 0 units/);
+    expect(() => tacoMemo(-1, "LEEF", "leefmaincorp", 4)).toThrow(/rounds to 0 units/);
+    expect(tacoMemo(0.0001, "LEEF", "leefmaincorp", 4)).toBe("0.0001 LEEF@leefmaincorp");
+  });
+});

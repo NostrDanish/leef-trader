@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import { formatAmountParam, formatAsset } from "./tokens";
 import {
   ALCOR_SWAP_CONTRACT,
+  MAX_SLIPPAGE_PCT,
   arbFloorViolation,
   assertActionPolicy,
   memoMinOutSum,
@@ -96,6 +97,41 @@ describe("assertActionPolicy", () => {
         [transfer({ to: "swap.taco", memo: "1.50000000 WAX@eosio.token", quantity: "10.0000 LEEF", contract: "leefmaincorp" })],
         ACCOUNT,
       ),
+    ).not.toThrow();
+  });
+
+  it("rejects a Defibox memo with a zero min-out", () => {
+    expect(() =>
+      assertActionPolicy([transfer({ to: "swap.box", memo: "swap,0,140" })], ACCOUNT),
+    ).toThrow(/zero min-out/);
+    expect(() =>
+      assertActionPolicy([transfer({ to: "swap.box", memo: "swap,000,140" })], ACCOUNT),
+    ).toThrow(/zero min-out/);
+    expect(() =>
+      assertActionPolicy([transfer({ to: "swap.box", memo: "swap,1,140" })], ACCOUNT),
+    ).not.toThrow();
+  });
+
+  it("rejects a Taco memo with a zero min-out", () => {
+    const leefIn = { to: "swap.taco", quantity: "10.0000 LEEF", contract: "leefmaincorp" };
+    expect(() =>
+      assertActionPolicy([transfer({ ...leefIn, memo: "0.00000000 WAX@eosio.token" })], ACCOUNT),
+    ).toThrow(/zero min-out/);
+    expect(() =>
+      assertActionPolicy([transfer({ ...leefIn, memo: "0.00000001 WAX@eosio.token" })], ACCOUNT),
+    ).not.toThrow();
+  });
+
+  it("rejects a Taco memo whose min-out precision doesn't match the token", () => {
+    const leefIn = { to: "swap.taco", quantity: "10.0000 LEEF", contract: "leefmaincorp" };
+    expect(() =>
+      assertActionPolicy([transfer({ ...leefIn, memo: "1 WAX@eosio.token" })], ACCOUNT),
+    ).toThrow(/precision/);
+    expect(() =>
+      assertActionPolicy([transfer({ ...leefIn, memo: "1.5 WAX@eosio.token" })], ACCOUNT),
+    ).toThrow(/precision/);
+    expect(() =>
+      assertActionPolicy([transfer({ to: "swap.taco", memo: "0.0001 LEEF@leefmaincorp" })], ACCOUNT),
     ).not.toThrow();
   });
 
@@ -386,6 +422,30 @@ describe("swapFloorViolation (non-arb Alcor swap floor)", () => {
         account: ACCOUNT,
       }),
     ).toMatch(/slippage floor/);
+  });
+
+  it("rejects a slippage tolerance above the hard cap", () => {
+    expect(
+      swapFloorViolation({
+        floor: { ...floor(), slippagePct: MAX_SLIPPAGE_PCT + 2 },
+        legs: [leg("10.00000000")],
+        account: ACCOUNT,
+      }),
+    ).toMatch(/hard cap/);
+    expect(
+      swapFloorViolation({
+        floor: { ...floor(), slippagePct: Number.NaN },
+        legs: [leg("10.00000000")],
+        account: ACCOUNT,
+      }),
+    ).toMatch(/hard cap/);
+    expect(
+      swapFloorViolation({
+        floor: { ...floor(), slippagePct: MAX_SLIPPAGE_PCT },
+        legs: [leg("10.00000000")],
+        account: ACCOUNT,
+      }),
+    ).toBeNull();
   });
 
   it("rejects an inflated input (router pulling more than approved)", () => {

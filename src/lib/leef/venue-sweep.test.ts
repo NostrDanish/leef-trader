@@ -130,6 +130,11 @@ describe("minOut rounding dust (roundingSafeMin audit)", () => {
       for (const slip of [0.001, 0.005, 0.03]) {
         for (const d of [0, 4, 8]) {
           const minOut = amountOut * (1 - slip);
+          if (Math.floor(minOut * 10 ** d + 1e-9) < 1) {
+            // A 0-unit min-out is no guarantee: the builder fails closed.
+            expect(() => defiboxMemo(minOut, d, 12)).toThrow(/rounds to 0 units/);
+            continue;
+          }
           const memo = defiboxMemo(minOut, d, 12);
           const units = Number(memo.split(",")[1]);
           const poolGuaranteed = Math.floor(amountOut * 10 ** d);
@@ -145,6 +150,11 @@ describe("minOut rounding dust (roundingSafeMin audit)", () => {
       for (const slip of [0.001, 0.005, 0.03]) {
         for (const d of [0, 4, 8]) {
           const minOut = amountOut * (1 - slip);
+          if (Math.floor(minOut * 10 ** d + 1e-9) < 1) {
+            // A 0-unit min-out is no guarantee: the builder fails closed.
+            expect(() => tacoMemo(minOut, "LEEF", "leefmaincorp", d)).toThrow(/rounds to 0 units/);
+            continue;
+          }
           const memo = tacoMemo(minOut, "LEEF", "leefmaincorp", d);
           const body = memo.split(" ")[0]!;
           const [whole, frac = ""] = body.split(".");
