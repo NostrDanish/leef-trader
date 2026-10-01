@@ -840,7 +840,7 @@ function GoalsCard() {
     <Card className="p-4 sm:p-5">
       <h3 className="mb-1 text-sm font-medium">Goals &amp; guards</h3>
       <p className="mb-4 text-xs text-muted-foreground">
-        Enforced on every position, any strategy. 0 disables the session guards.
+        Enforced on every position, any strategy. 0 disables a session guard (unsafe).
       </p>
       <div className="grid grid-cols-2 gap-3">
         <NumField
@@ -888,7 +888,35 @@ function GoalsCard() {
           step={1}
           onChange={(maxDrawdownPct) => setGoals({ maxDrawdownPct })}
         />
+        <NumField
+          label="Session loss stop (0 = use %)"
+          suffix="$"
+          value={goals.maxSessionLossUsd}
+          min={0}
+          max={100000}
+          step={1}
+          onChange={(maxSessionLossUsd) => setGoals({ maxSessionLossUsd })}
+        />
+        <NumField
+          label="Session loss stop"
+          suffix="%"
+          value={goals.maxDailyLossPct}
+          min={0}
+          max={50}
+          step={0.5}
+          onChange={(maxDailyLossPct) => setGoals({ maxDailyLossPct })}
+        />
       </div>
+      {(goals.maxDrawdownPct === 0 ||
+        (goals.maxSessionLossUsd === 0 && goals.maxDailyLossPct === 0)) && (
+        <p className="mt-3 rounded-md border border-sell/40 bg-sell/10 px-2 py-1 text-xs text-sell">
+          {goals.maxDrawdownPct === 0 ? "Drawdown stop is OFF. " : ""}
+          {goals.maxSessionLossUsd === 0 && goals.maxDailyLossPct === 0
+            ? "Session loss stop is OFF. "
+            : ""}
+          Unsafe: nothing stops the bot on losses.
+        </p>
+      )}
     </Card>
   );
 }
@@ -1349,6 +1377,16 @@ function RiskCard({ strategy, snap }: { strategy: BotStrategy; snap: LeefSnapsho
           step={0.1}
           format={(v) => `${v.toFixed(1)}%`}
           onChange={(maxImpactPct) => setRisk({ maxImpactPct })}
+        />
+        <Knob
+          ready={slidersOn}
+          label="Max pool share"
+          value={risk.maxPoolSharePct}
+          min={0}
+          max={25}
+          step={0.5}
+          format={(v) => (v === 0 ? "off" : `${v.toFixed(1)}% of TVL`)}
+          onChange={(maxPoolSharePct) => setRisk({ maxPoolSharePct })}
         />
         <Knob
           ready={slidersOn}

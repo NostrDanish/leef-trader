@@ -12,20 +12,23 @@ default. Nothing secret is ever stored.
 | `stopLossPct` | 4 | Per-position stop-loss, %. |
 | `trailingPct` | 3 | Trailing stop arm + giveback, %. |
 | `sessionGoalUsd` | 0 (off) | Stop the bot when session realized P&L reaches this USD amount. |
-| `maxDrawdownPct` | 0 (off) | Stop the bot when session equity drawdown exceeds this %. |
+| `maxDrawdownPct` | 10 | Stop the bot when session equity drawdown exceeds this %. 0 = off (unsafe). |
+| `maxSessionLossUsd` | 0 (derive) | Stop the bot when session **realized** P&L reaches −this USD. 0 = use `maxDailyLossPct`. |
+| `maxDailyLossPct` | 3 | Session loss stop as % of session-start equity (when `maxSessionLossUsd` is 0). Persists across stop/start until stats are reset. 0 = off (unsafe). |
 
 ## Bot risk (`risk`, defaults in `DEFAULT_RISK`)
 
 | Key | Default | Meaning |
 |---|---|---|
-| `minTradeUsd` | 0.01 | **Minimum** notional per new trade, USD. Converted to quote-token units at the live mark. Not a promise a $0.01 trade is executable. |
-| `maxPositionUsd` | 1000 | **Maximum** marked position value, USD. Remaining capacity = cap − current market value. |
+| `minTradeUsd` | 0 | **Minimum** notional per new trade, USD. Converted to quote-token units at the live mark. Not a promise a $0.01 trade is executable. |
+| `maxPositionUsd` | 100 | **Maximum** marked position value, USD. Remaining capacity = cap − current market value. |
 | `maxImpactPct` | 3 | Reject trades above this price impact. |
-| `cooldownSec` | 60 | Base cooldown; adaptive ×0.5 (arb/echo), ×2 (DCA), ×1.5 (after a loss), floor 10s. UI 10s–30m. |
-| `maxTradesHour` | 10 | Hourly trade cap (UI slider 1–120). |
+| `cooldownSec` | 30 | Base cooldown; adaptive ×0.5 (arb/echo), ×2 (DCA), ×1.5 (after a loss), floor 10s. UI 10s–30m. |
+| `maxTradesHour` | 20 | Hourly trade cap (UI slider 1–120). |
+| `maxPoolSharePct` | 5 | Cap a position at this % of the deepest **direct** base/quote pool's TVL (fails closed on a direct pool with unknown TVL; pairs without a direct pool rely on `maxImpactPct`). 0 = off. |
 | `slippage` | 0.6 | Min-out guard on swap memos (the hard limit, not the estimate). |
-| `minConfidence` | 55 | Signal strategy vote threshold, %. |
-| `minEdgePct` | 1.2 | Spread arb: minimum profit, enforced on-chain via memo min-outs. |
+| `minConfidence` | 65 | Signal strategy vote threshold, %. |
+| `minEdgePct` | 0.45 | Spread arb: minimum profit, enforced on-chain via memo min-outs. |
 | `gridStepPct` | 2.5 | Grid step size. |
 | `maxEchoLossPct` | 1.5 | Volume maker: max round-trip cost, enforced on-chain. |
 | `minNetEdgePct` | 0.1 | Minimum net edge after ALL modeled costs for any entry. |

@@ -10,6 +10,7 @@ import {
   type PricePoint,
 } from "@/lib/leef/bot-engine";
 import { migrateRiskToUsd } from "@/lib/leef/risk-usd";
+import { migrateSaferRiskDefaults } from "@/lib/leef/risk-defaults-migration";
 import {
   DEFAULT_GROWTH_TARGETS,
   normalizeTargets,
@@ -405,8 +406,11 @@ export const useBot = create<BotState>()(
       // v11: stats.byStrategyPaper — paper/live calibration split. The merge
       // below ({ ...freshStats(0), ...p.stats }) fills it for old saves.
       // v12: strategyHalt — persisted retry-storm halt flag (null for old saves).
-      version: 12,
-      migrate: (persisted) => {
+      // v13: safer risk defaults — breakers on (maxDrawdownPct 0 → 10, new
+      // maxDailyLossPct 3), pacing at the OLD defaults (120/h, 15 s) moves to
+      // 20/h, 30 s, new maxPoolSharePct 5. A user can set 0 again afterwards.
+      version: 13,
+      migrate: (persisted, version) => {
         const p = (
           persisted && typeof persisted === "object" ? persisted : {}
         ) as Partial<{
@@ -426,6 +430,7 @@ export const useBot = create<BotState>()(
           decisions: BotDecisionLog[];
         }>;
         const usd = migrateRiskToUsd(p.risk);
+        const safer = version < 13 ? migrateSaferRiskDefaults(p.goals, p.risk) : null;
         const { clipWax: _c, maxPositionWax: _m, ...restRisk } = (p.risk ?? {}) as Record<string, unknown>;
         void _c;
         void _m;
@@ -441,10 +446,11 @@ export const useBot = create<BotState>()(
           growthMode: p.growthMode === "max" || p.growthMode === "compound" ? p.growthMode : "balanced",
           growthStart: p.growthStart && typeof p.growthStart === "object" ? p.growthStart : {},
           sessionStartBalances: {},
-          goals: { ...DEFAULT_GOALS, ...(p.goals ?? {}) },
+          goals: { ...DEFAULT_GOALS, ...(p.goals ?? {}), ...(safer?.goals ?? {}) },
           risk: {
             ...DEFAULT_RISK,
             ...(restRisk as Partial<BotRisk>),
+            ...(safer?.risk ?? {}),
             minTradeUsd: usd.minTradeUsd,
             maxPositionUsd: usd.maxPositionUsd,
             operationalReserveUsd: usd.operationalReserveUsd,
@@ -461,7 +467,7 @@ export const useBot = create<BotState>()(
               : freshStats(0),
           series: Array.isArray(p.series) ? p.series : [],
           decisions: Array.isArray(p.decisions) ? p.decisions : [],
-          riskMigrationNotice: usd.notice,
+          riskMigrationNotice: [usd.notice, safer?.notice].filter(Boolean).join(" ") || null,
           // Forward-safe: future version bumps must not silently re-enable the
           // venue for a user who switched it off (default ON only when unset).
           neftyVenue: (p as { neftyVenue?: unknown }).neftyVenue !== false,
