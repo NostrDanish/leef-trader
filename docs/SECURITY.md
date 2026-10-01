@@ -28,7 +28,14 @@ list is signed only when every action is one of:
    well-formed `swapexactin#<pools>#<receiver>#<minOut SYM@contract>#<flags>`
    paying the signing account; or
 2. `addliquid` / `subliquid` / `collect` on `swap.alcor` owned by — and paying
-   — the signing account.
+   — the signing account; or
+3. a **reward claim**: `leefrewarder::claim { user }` with `user` = the signing
+   account (no other fields), or `swap.alcor::getreward { incentiveId, posId }`
+   with well-formed non-negative integer ids (the contract pays the position
+   owner and requires the owner's auth). Farm management actions (`stake`,
+   `unstake`, `lockpos`, `transferpos`, `withdraw`, …) stay refused. When using
+   a linked `trade` permission, add `linkauth` for `leefrewarder::claim` and
+   `swap.alcor::getreward` to use the Rewards card.
 
 Anything else throws before a signer is invoked. A UI or strategy bug cannot
 become an arbitrary on-chain action.

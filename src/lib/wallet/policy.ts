@@ -11,7 +11,9 @@
  *    verified token catalog, and a memo that is either an LP `deposit` or a
  *    well-formed `swapexactin#…` route paying out to the signing account;
  *  - `addliquid` / `subliquid` / `collect` on `swap.alcor`, owned by (and
- *    paying to) the signing account.
+ *    paying to) the signing account;
+ *  - reward claims only: `swap.alcor::getreward` (well-formed incentive +
+ *    position ids) and `leefrewarder::claim` for the signing account.
  *
  * Anything else — unknown contracts, unknown actions, spoofed token
  * contracts, foreign receivers, malformed memos — is rejected, so a UI or
@@ -36,7 +38,10 @@ export const ALCOR_SWAP_CONTRACT = "swap.alcor";
 const ALLOWED_SWAP_TO = new Set([ALCOR_SWAP_CONTRACT, DEFIBOX_SWAP, TACO_SWAP, NEFTY_SWAP]);
 
 /** The only actions this app may ever call on the AMM contract itself. */
-const ALCOR_AMM_ACTIONS = new Set(["addliquid", "subliquid", "collect"]);
+const ALCOR_AMM_ACTIONS = new Set(["addliquid", "subliquid", "collect", "getreward"]);
+
+/** LEEF staking rewarder: `claim { user }` pays the caller's own rewards. */
+export const LEEF_REWARDER = "leefrewarder";
 
 /** System contract for resource staking (CPU/NET). Self-stake only. */
 const EOSIO_SYSTEM = "eosio";
@@ -266,6 +271,25 @@ export function assertActionPolicy(
       if (owner && owner !== account) fail(`${action.name} owner "${owner}" ≠ signer`);
       const recipient = String(action.plain.recipient ?? "");
       if (recipient && recipient !== account) fail(`${action.name} pays "${recipient}" ≠ signer`);
+      if (action.name === "getreward") {
+        // Incentive reward claim: pays the position owner (the contract
+        // requires the owner's auth). Only well-formed ids, nothing else.
+        const keys = Object.keys(action.plain).sort().join(",");
+        if (keys !== "incentiveId,posId") fail("getreward takes exactly incentiveId + posId");
+        for (const k of ["incentiveId", "posId"] as const) {
+          const v = action.plain[k];
+          if (typeof v !== "number" || !Number.isSafeInteger(v) || v < 0) {
+            fail(`getreward ${k} must be a non-negative integer`);
+          }
+        }
+      }
+      continue;
+    }
+    // LEEF rewarder claim: only for the signing account, no other fields.
+    if (action.contract === LEEF_REWARDER) {
+      if (action.name !== "claim") fail(`action ${action.name} on ${LEEF_REWARDER} is not allowed`);
+      if (Object.keys(action.plain).join(",") !== "user") fail("claim takes exactly { user }");
+      if (String(action.plain.user ?? "") !== account) fail("claim may only claim for the signing account");
       continue;
     }
     // Resource staking: only self-delegatebw with plain WAX quantities.

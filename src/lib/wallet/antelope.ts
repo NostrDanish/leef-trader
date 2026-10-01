@@ -541,6 +541,16 @@ export function packCollect(d: CollectData): Uint8Array {
   return w.done();
 }
 
+/** `leefrewarder::claim { user }` */
+export function packRewarderClaim(user: string): Uint8Array {
+  return new Writer().name(user).done();
+}
+
+/** `swap.alcor::getreward { incentiveId: uint64, posId: uint64 }` */
+export function packAlcorGetReward(d: { incentiveId: number; posId: number }): Uint8Array {
+  return new Writer().u64(BigInt(d.incentiveId)).u64(BigInt(d.posId)).done();
+}
+
 export type PackedAction = {
   account: string;
   name: string;
