@@ -2,7 +2,7 @@
 import type { LeefSnapshot } from "@/lib/leef/types";
 import type { UniverseToken } from "@/lib/leef/universe";
 import { stableAnchorPrice, tokenPrice } from "@/lib/market/price-oracle";
-import { canonicalTokenId, isTrustedStable } from "@/lib/market/stables";
+import { canonicalTokenId, isTrustedStable, trustedStablePreference } from "@/lib/market/stables";
 
 export type BalanceBook = Record<string, number>;
 
@@ -45,8 +45,10 @@ export function balanceAmount(
     // because a clone exists in the universe. The bare alias itself is only
     // written by canonicalBalanceBook when the wallet holds exactly one
     // contract for this symbol, so it cannot mix clone + real balances.
-    const trusted = matches.filter((t) => isTrustedStable(t.symbol, t.contract));
-    if (trusted.length !== 1) return 0;
+    const trusted = matches
+      .filter((t) => isTrustedStable(t.symbol, t.contract))
+      .sort((a, b) => trustedStablePreference(a.symbol, a.contract) - trustedStablePreference(b.symbol, b.contract));
+    if (trusted.length === 0) return 0;
     return asBook(balances)[token.symbol] ?? 0;
   }
   return asBook(balances)[token.symbol] ?? 0;
@@ -73,8 +75,10 @@ export function balanceForIdentifier(
     // the trusted-stable contract wins when exactly one matches — same rule
     // as resolveOracleToken in the price oracle — and balanceAmount falls
     // back to the wallet's own bare alias (single-contract holdings only).
-    const trusted = matches.filter((t) => isTrustedStable(t.symbol, t.contract));
-    if (trusted.length === 1) return balanceAmount(balances, trusted[0]!, universe);
+    const trusted = matches
+      .filter((t) => isTrustedStable(t.symbol, t.contract))
+      .sort((a, b) => trustedStablePreference(a.symbol, a.contract) - trustedStablePreference(b.symbol, b.contract));
+    if (trusted.length > 0) return balanceAmount(balances, trusted[0]!, universe);
   }
   return 0;
 }

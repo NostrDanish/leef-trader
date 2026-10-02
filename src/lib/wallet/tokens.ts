@@ -1,4 +1,5 @@
 import type { LeefSnapshot } from "@/lib/leef/types";
+import { trustedStablePreference } from "@/lib/market/stables";
 
 export type TokenMeta = {
   symbol: string;
@@ -14,6 +15,9 @@ const BASE: TokenMeta[] = [
   { symbol: "WAXUSDC", contract: "eth.token", decimals: 6, alcorId: "waxusdc-eth.token" },
   { symbol: "WAXUSDT", contract: "eth.token", decimals: 6, alcorId: "waxusdt-eth.token" },
   { symbol: "PARAUSD", contract: "parareserves", decimals: 6, alcorId: "parausd-parareserves" },
+  // wrap.alcor bridged stables (issuer bridge.alcor, verified on-chain).
+  { symbol: "USDC", contract: "wrap.alcor", decimals: 6, alcorId: "usdc-wrap.alcor" },
+  { symbol: "USDT", contract: "wrap.alcor", decimals: 6, alcorId: "usdt-wrap.alcor" },
 ];
 
 export function tokenCatalog(
@@ -59,6 +63,15 @@ export function metaOf(
   if (exact) return exact;
   const matches = catalog.filter((t) => t.symbol === up);
   if (matches.length === 1) return matches[0]!;
+  if (matches.length > 1) {
+    // Bare symbol with several contracts: deterministic tiebreak toward the
+    // preferred trusted stable (registry order), never arbitrary order.
+    // Anything else stays fail-closed (ambiguity must be explicit).
+    const trusted = matches
+      .filter((t) => trustedStablePreference(t.symbol, t.contract) !== Number.POSITIVE_INFINITY)
+      .sort((a, b) => trustedStablePreference(a.symbol, a.contract) - trustedStablePreference(b.symbol, b.contract));
+    if (trusted.length > 0) return trusted[0]!;
+  }
   throw new Error(
     matches.length > 1
       ? `${up} is ambiguous — select SYMBOL@CONTRACT`

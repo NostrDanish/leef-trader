@@ -1,5 +1,6 @@
 import { backedPools, quoteConstantProduct } from "./amm";
 import { rankExecutionRoutes } from "./route-optimizer";
+import { isTrustedStable } from "@/lib/market/stables";
 import type { LeefPool, LeefSnapshot, SwapRoute } from "./types";
 
 export { backedPools, isBackedPool, MIN_LEEF_BACKING } from "./amm";
@@ -27,12 +28,14 @@ export type BookScore = {
   bestSell: boolean;
 };
 
-const STABLES = new Set(["USDT", "USDC", "WAXUSDT", "WAXUSDC"]);
+const STABLES = new Set(["USDT", "USDC", "WAXUSDT", "WAXUSDC", "PARAUSD"]);
 
 export function usdPerPairToken(pool: LeefPool, waxUsd: number): number {
   const s = pool.pair.symbol.toUpperCase();
   if (s === "WAX" || s === "WAXP") return waxUsd > 0 ? waxUsd : 0;
-  if (STABLES.has(s)) return 1;
+  // $1 anchor only for verified stable contracts — a clone "USDT" pool is
+  // priced from its own book, never handed a dollar mark.
+  if (STABLES.has(s) && isTrustedStable(pool.pair.symbol, pool.pair.contract)) return 1;
   if (pool.usdPerLeef && pool.pairPerLeef > 0) return pool.usdPerLeef / pool.pairPerLeef;
   if (pool.waxPerLeef && pool.pairPerLeef > 0 && waxUsd > 0) {
     return (pool.waxPerLeef / pool.pairPerLeef) * waxUsd;

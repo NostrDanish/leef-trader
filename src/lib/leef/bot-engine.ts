@@ -36,7 +36,7 @@ import {
   type UsdBounds,
 } from "./risk-usd";
 import { snapFreshAtMs, LEEF_CONTRACT, LEEF_SYMBOL, WAX_CONTRACT, WAX_SYMBOL, type LeefPool, type LeefSnapshot, type SwapRoute, type TokenRef } from "./types";
-import { isTrustedStable } from "@/lib/market/stables";
+import { isTrustedStable, trustedStablePreference } from "@/lib/market/stables";
 import {
   buildScoredOpportunity,
   calibrationHaircut,
@@ -621,19 +621,38 @@ function bestSellRoute(
  * min-out memo remain the hard guards at execution.
  */
 /**
- * Resolve the configured quote/base symbols to contract-aware identities via
- * the snapshot universe. Symbol-only fallback only when the universe carries
- * no entry (WAX/LEEF always resolve to their canonical contracts).
+ * Resolve the configured quote/base identifiers to contract-aware identities
+ * via the snapshot universe. Accepts a bare symbol ("USDT") or a
+ * contract-qualified id ("USDT@wrap.alcor"). Symbol-only fallback only when
+ * the universe carries no entry (WAX/LEEF always resolve to their canonical
+ * contracts).
  */
-function resolvePoolToken(snap: LeefSnapshot, symbol: string): Pick<TokenRef, "symbol" | "contract"> {
-  const s = symbol.toUpperCase();
+function resolvePoolToken(snap: LeefSnapshot, identifier: string): Pick<TokenRef, "symbol" | "contract"> {
+  const raw = identifier.trim();
+  const at = raw.indexOf("@");
+  if (at > 0) {
+    // Qualified form is exact identity — required when a symbol lives at
+    // more than one trusted contract (USDT@usdt.alcor vs USDT@wrap.alcor).
+    const sym = raw.slice(0, at).toUpperCase();
+    const contract = raw.slice(at + 1).toLowerCase();
+    if (sym === WAX_SYMBOL && contract === WAX_CONTRACT) return { symbol: WAX_SYMBOL, contract: WAX_CONTRACT };
+    if (sym === LEEF_SYMBOL && contract === LEEF_CONTRACT) return { symbol: LEEF_SYMBOL, contract: LEEF_CONTRACT };
+    const exact = snap.universe.find(
+      (u) => u.symbol.toUpperCase() === sym && u.contract.toLowerCase() === contract,
+    );
+    return { symbol: sym, contract: exact ? exact.contract : contract };
+  }
+  const s = raw.toUpperCase();
   if (s === "WAX") return { symbol: WAX_SYMBOL, contract: WAX_CONTRACT };
   if (s === "LEEF") return { symbol: LEEF_SYMBOL, contract: LEEF_CONTRACT };
   const matches = snap.universe.filter((u) => u.symbol.toUpperCase() === s);
   // Unique contract wins; on collision the trusted-stable registry is the
-  // tiebreak (clone symbols must never borrow the real token's pools).
-  const trusted = matches.find((u) => isTrustedStable(u.symbol, u.contract));
-  const pick = trusted ?? (matches.length === 1 ? matches[0] : undefined);
+  // tiebreak, in registry preference order so a bare symbol is deterministic
+  // (clone symbols must never borrow the real token's pools).
+  const trusted = matches
+    .filter((u) => isTrustedStable(u.symbol, u.contract))
+    .sort((a, b) => trustedStablePreference(a.symbol, a.contract) - trustedStablePreference(b.symbol, b.contract));
+  const pick = trusted[0] ?? (matches.length === 1 ? matches[0] : undefined);
   return pick ? { symbol: pick.symbol.toUpperCase(), contract: pick.contract } : { symbol: s, contract: "" };
 }
 

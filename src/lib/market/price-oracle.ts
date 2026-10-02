@@ -20,6 +20,7 @@ import {
   canonicalTokenId,
   isTrustedStable,
   trustedStableOf,
+  trustedStablePreference,
   type StableState,
 } from "./stables";
 
@@ -83,8 +84,10 @@ export function resolveOracleToken(
   // Symbol collision (clone contracts): the TRUSTED stable contract wins —
   // a deeper manipulated clone pool must never hijack or DoS the real
   // token's price. Still fail closed when nothing is trusted.
-  const trusted = matches.filter((t) => isTrustedStable(t.symbol, t.contract));
-  return trusted.length === 1 ? trusted[0]! : null;
+  const trusted = matches
+    .filter((t) => isTrustedStable(t.symbol, t.contract))
+    .sort((a, b) => trustedStablePreference(a.symbol, a.contract) - trustedStablePreference(b.symbol, b.contract));
+  return trusted[0] ?? null;
 }
 
 function stablePrice(t: UniverseToken, timestamp: number, now: number): TokenPrice {
