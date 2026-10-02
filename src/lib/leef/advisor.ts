@@ -8,6 +8,7 @@
  * User-facing risk is USD VALUE. Token amounts are derived at the live mark.
  */
 import { usdPriceOf } from "./cost-model";
+import { isTrustedStable } from "@/lib/market/stables";
 import { DEFAULT_RISK, type BotRisk, type BotStrategy } from "./bot-engine";
 import { DEFAULT_MAX_POSITION_USD } from "./risk-usd";
 import type { LeefSnapshot } from "./types";
@@ -43,7 +44,7 @@ export type AdvisorSuggestion = {
 
 const STABLEISH = new Set(["USDT", "USDC", "WAXUSDT", "WAXUSDC", "PARAUSD", "DAI"]);
 
-const CORE = ["LEEF", "WAX", "WAXUSDC", "WAXUSDT", "USDT", "PARAUSD"] as const;
+const CORE = ["LEEF", "WAX", "WAXUSDC", "WAXUSDT", "USDT", "USDC", "PARAUSD"] as const;
 
 /** Bases you can accumulate. WAX is the quote/gas asset — never a base. */
 export function listBaseTokens(snap: LeefSnapshot): string[] {
@@ -66,11 +67,28 @@ export function listBaseTokens(snap: LeefSnapshot): string[] {
 /** Quote side: any liquid token — WAX and stables pinned first, LEEF allowed. */
 export function listQuoteTokens(snap: LeefSnapshot, base = "LEEF"): string[] {
   const b = base.toUpperCase();
-  const set = new Set<string>(["WAX", "WAXUSDC", "WAXUSDT", "USDT", "PARAUSD", "LEEF"]);
+  const set = new Set<string>(["WAX", "WAXUSDC", "WAXUSDT", "USDT", "USDC", "PARAUSD", "LEEF"]);
   for (const u of snap.universe) {
     const s = u.symbol.toUpperCase();
     if (s === b) continue;
     if (u.usdPrice > 0 && (u.tvlUsd >= 15 || STABLEISH.has(s)) && !u.alcorScam) set.add(s);
+  }
+  // When one symbol lives at several trusted contracts (USDT@usdt.alcor vs
+  // USDT@wrap.alcor), expose the contract-qualified alternates so the user
+  // can pick the exact token — the bare symbol stays the registry-preferred
+  // contract for backward compatibility.
+  const bySymbol = new Map<string, Set<string>>();
+  for (const u of snap.universe) {
+    if (!isTrustedStable(u.symbol, u.contract) || u.alcorScam) continue;
+    const s = u.symbol.toUpperCase();
+    if (s === b) continue;
+    if (!bySymbol.has(s)) bySymbol.set(s, new Set());
+    bySymbol.get(s)!.add(u.contract);
+  }
+  for (const [s, contracts] of bySymbol) {
+    if (contracts.size > 1) {
+      for (const c of contracts) set.add(`${s}@${c}`);
+    }
   }
   for (const p of snap.pools) {
     const s = p.pair.symbol.toUpperCase();
@@ -78,8 +96,9 @@ export function listQuoteTokens(snap: LeefSnapshot, base = "LEEF"): string[] {
   }
   set.delete(b);
   return [...set].sort((a, c) => {
+    const sym = (x: string) => x.split("@")[0]!;
     const rank = (x: string) =>
-      x === "WAX" ? 0 : STABLEISH.has(x) ? 1 : x === "LEEF" ? 2 : x === "TLM" ? 3 : 4;
+      sym(x) === "WAX" ? 0 : STABLEISH.has(sym(x)) ? 1 : sym(x) === "LEEF" ? 2 : sym(x) === "TLM" ? 3 : 4;
     return rank(a) - rank(c) || a.localeCompare(c);
   });
 }
