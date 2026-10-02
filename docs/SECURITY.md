@@ -59,6 +59,22 @@ this cryptographically — it is operational hygiene.
 
 - The app ships a restrictive CSP (`index.html`): `script-src 'self'`, no
   inline scripts, no eval. Do not relax it.
+- **connect-src allowlist (rolling out).** `src/lib/csp.ts` builds a CSP whose
+  `connect-src` lists only the origins the app really talks to (WAX RPC +
+  Hyperion pools, Alcor, the read-only CORS proxy, the AI gateway, Anchor buoy,
+  Cloud Wallet, Nostr template relays/Blossom) instead of `https: wss:`.
+  - **Phase 1 (now):** served as `Content-Security-Policy-Report-Only` from
+    `vercel.json`. Nothing is blocked; violations appear in DevTools as
+    `[Report Only]`. Smoke-test every desk + Anchor + Cloud Wallet + Nostr
+    login on a preview and add any missing host to `csp.ts`.
+  - **Phase 2:** switch the `index.html` meta tag to `buildCsp()` so it is
+    enforced (also on hosts that ignore `vercel.json`, e.g. nsite).
+  - `csp.test.ts` fails if `vercel.json` drifts from `buildCsp()`, if a
+    wildcard scheme sneaks in, or if a new `https://`/`wss://` literal in
+    `src/lib` is not on the allowlist.
+  - Once enforced, **custom RPC/Hyperion endpoints, a custom AI gateway and
+    users' own NIP-65 relays are blocked unless added to `csp.ts`** — by
+    design: it closes the "malicious endpoint override" exfiltration vector.
 - All market/chain data comes from public endpoints over HTTPS; JSON is
   parsed, never rendered as HTML. No `dangerouslySetInnerHTML` anywhere.
 - Nostr keys (template shell) are separate from WAX keys and can never sign
