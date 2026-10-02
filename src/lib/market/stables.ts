@@ -40,7 +40,23 @@ export const TRUSTED_STABLES: TrustedStable[] = [
   { symbol: "WAXUSDT", contract: "eth.token", targetUsd: 1 },
   { symbol: "USDT", contract: "usdt.alcor", targetUsd: 1 },
   { symbol: "PARAUSD", contract: "parareserves", targetUsd: 1 },
+  // wrap.alcor bridged stables (issuer bridge.alcor, 6 decimals, verified
+  // on-chain via get_currency_stats; Alcor ids usdc-wrap.alcor/usdt-wrap.alcor).
+  { symbol: "USDC", contract: "wrap.alcor", targetUsd: 1 },
+  { symbol: "USDT", contract: "wrap.alcor", targetUsd: 1 },
 ];
+
+/**
+ * Preference order when a bare symbol maps to several trusted contracts
+ * (e.g. USDT exists at both usdt.alcor and wrap.alcor). Earlier entry wins —
+ * keeps legacy bare "USDT" meaning usdt.alcor for backward compatibility.
+ */
+export function trustedStablePreference(symbol: string, contract: string): number {
+  const s = symbol.toUpperCase();
+  const c = contract.toLowerCase();
+  const i = TRUSTED_STABLES.findIndex((t) => t.symbol === s && t.contract.toLowerCase() === c);
+  return i === -1 ? Number.POSITIVE_INFINITY : i;
+}
 
 export function canonicalTokenId(symbol: string, contract: string): string {
   return `${symbol.toUpperCase()}@${contract}`;
