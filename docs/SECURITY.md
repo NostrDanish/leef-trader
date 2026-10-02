@@ -28,7 +28,14 @@ list is signed only when every action is one of:
    well-formed `swapexactin#<pools>#<receiver>#<minOut SYM@contract>#<flags>`
    paying the signing account; or
 2. `addliquid` / `subliquid` / `collect` on `swap.alcor` owned by — and paying
-   — the signing account.
+   — the signing account; or
+3. a **reward claim**: `leefrewarder::claim { user }` with `user` = the signing
+   account (no other fields), or `swap.alcor::getreward { incentiveId, posId }`
+   with well-formed non-negative integer ids (the contract pays the position
+   owner and requires the owner's auth). Farm management actions (`stake`,
+   `unstake`, `lockpos`, `transferpos`, `withdraw`, …) stay refused. When using
+   a linked `trade` permission, add `linkauth` for `leefrewarder::claim` and
+   `swap.alcor::getreward` to use the Rewards card.
 
 Anything else throws before a signer is invoked. A UI or strategy bug cannot
 become an arbitrary on-chain action.
@@ -47,18 +54,98 @@ unknown token: it does not feed pricing, routing, arb scans, or signing.
   min-outs must provably sum to `stake × (1 + floor)` before signing.
 - Unknown transaction status after broadcast is never retried blindly; the
   chain is reconciled first (double-spend protection).
+- **Pre-broadcast simulation (session key):** the exact packed transaction is
+  first run read-only through `/v1/chain/compute_transaction` on nodes known
+  to enforce contract assertions (`DEFAULT_SIMULATION_NODES` in
+  `src/lib/wallet/simulate.ts` — several public nodes were observed returning
+  success for an Alcor swap whose min-out was not met). An assert refuses the
+  trade before signing. If no simulator answers, mode `auto` (default)
+  proceeds — the on-chain min-outs still protect the trade — and `require`
+  refuses. Cloud Wallet / Anchor build their own transactions and are not
+  simulated.
 
 ## Recommended account setup
 
-Use a **dedicated trading permission** (custom permission or `active` on a
-dedicated account) holding only the funds intended for the bot. Never import
-an `owner` key. The import dialog warns accordingly; the app cannot enforce
-this cryptographically — it is operational hygiene.
+Use a **dedicated bot account** holding only the funds you are willing to
+risk, and a **dedicated `trade` permission** on it, linked (`linkauth`) only to
+the actions the bot needs.
+
+What the app enforces:
+
+- A session key that controls **`owner`** is refused at import, even if the
+  same key is also on `active`/a custom permission.
+- Key import resolves **all** permissions the key satisfies on its own
+  (`choosePermission` in `src/lib/wallet/chain.ts`): exactly one custom
+  permission → used; several custom permissions → refused (ambiguous);
+  `active` only → allowed with a warning.
+- Every signer path (session key and Cloud Wallet/Anchor) refuses to sign
+  with `owner` or without an explicit permission (`assertSigningPermission`
+  in `policy.ts`) — there is no silent `active` default anymore.
+
+### Creating a `trade` permission (run once, from the account's `active`)
+
+Use Anchor or a block explorer's "push transaction" page. Replace
+`yourbotacct1` and the public key. The app never sends these actions itself.
+
+```json
+{
+  "actions": [
+    { "account": "eosio", "name": "updateauth",
+      "authorization": [{ "actor": "yourbotacct1", "permission": "active" }],
+      "data": { "account": "yourbotacct1", "permission": "trade", "parent": "active",
+                "auth": { "threshold": 1,
+                          "keys": [{ "key": "PUB_K1_REPLACE_WITH_TRADE_PUBLIC_KEY", "weight": 1 }],
+                          "accounts": [], "waits": [] } } },
+    { "account": "eosio", "name": "linkauth",
+      "authorization": [{ "actor": "yourbotacct1", "permission": "active" }],
+      "data": { "account": "yourbotacct1", "code": "eosio.token", "type": "transfer", "requirement": "trade" } },
+    { "account": "eosio", "name": "linkauth",
+      "authorization": [{ "actor": "yourbotacct1", "permission": "active" }],
+      "data": { "account": "yourbotacct1", "code": "leefmaincorp", "type": "transfer", "requirement": "trade" } },
+    { "account": "eosio", "name": "linkauth",
+      "authorization": [{ "actor": "yourbotacct1", "permission": "active" }],
+      "data": { "account": "yourbotacct1", "code": "swap.alcor", "type": "addliquid", "requirement": "trade" } },
+    { "account": "eosio", "name": "linkauth",
+      "authorization": [{ "actor": "yourbotacct1", "permission": "active" }],
+      "data": { "account": "yourbotacct1", "code": "swap.alcor", "type": "subliquid", "requirement": "trade" } },
+    { "account": "eosio", "name": "linkauth",
+      "authorization": [{ "actor": "yourbotacct1", "permission": "active" }],
+      "data": { "account": "yourbotacct1", "code": "swap.alcor", "type": "collect", "requirement": "trade" } }
+  ]
+}
+```
+
+Optional extra links: `<token contract>::transfer` for every other token the
+bot may trade (e.g. `eth.token` for WAXUSDC), and `eosio::delegatebw` only if
+you use the "stake CPU" button. The platform fee uses the same token
+`transfer` actions, so it needs no extra link. Undo with `eosio::unlinkauth` /
+`eosio::deleteauth`.
+
+**Caveat:** `linkauth` limits *which actions* a key can sign, **not the
+recipient** — a leaked `trade` key can still transfer linked tokens anywhere.
+The small float on a dedicated account is the real cap. Cloud Wallet always
+signs with its own permission; Anchor lets you pick one.
 
 ## Web security
 
 - The app ships a restrictive CSP (`index.html`): `script-src 'self'`, no
   inline scripts, no eval. Do not relax it.
+- **connect-src allowlist (rolling out).** `src/lib/csp.ts` builds a CSP whose
+  `connect-src` lists only the origins the app really talks to (WAX RPC +
+  Hyperion pools, Alcor, the read-only CORS proxy, the AI gateway, Anchor buoy,
+  Cloud Wallet, Nostr template relays/Blossom) instead of `https: wss:`.
+  - **Phase 1 (now):** served as `Content-Security-Policy-Report-Only` from
+    `vercel.json`. Nothing is blocked; violations appear in DevTools as
+    `[Report Only]`. Smoke-test every desk + Anchor + Cloud Wallet + Nostr
+    login on a preview and add any missing host to `csp.ts`.
+  - **Phase 2:** switch the `index.html` meta tag to `buildCsp()` so it is
+    enforced (also on hosts that ignore `vercel.json`, e.g. nsite).
+  - `csp.test.ts` fails if `vercel.json` drifts from `buildCsp()`, if a
+    wildcard scheme sneaks in, or if a new `https://`/`wss://` literal in
+    `src/lib` is not on the allowlist.
+  - Once enforced, **custom RPC/Hyperion endpoints, a custom AI gateway and
+    users' own NIP-65 relays are blocked unless added to `csp.ts`** — by
+    design: it closes the "malicious endpoint override" exfiltration vector.
 - All market/chain data comes from public endpoints over HTTPS; JSON is
   parsed, never rendered as HTML. No `dangerouslySetInnerHTML` anywhere.
 - Nostr keys (template shell) are separate from WAX keys and can never sign

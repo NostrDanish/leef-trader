@@ -14,7 +14,7 @@
  * - On 429/503 the host gets a cooldown and the caller retries once after
  *   it — but only for bodyless GETs; a POST is never re-submitted.
  */
-const CORS_PROXY = "https://proxy.shakespeare.diy/?url=";
+export const CORS_PROXY = "https://proxy.shakespeare.diy/?url=";
 
 export class FetchJsonError extends Error {
   constructor(

@@ -2,13 +2,17 @@ import type { ArbPlan } from "@/lib/leef/bot-engine";
 import type { LeefSnapshot, SwapRoute } from "@/lib/leef/types";
 import { dustSafeMinOut, isDustOutput, swapContractOf, venueOfPoolId } from "@/lib/leef/venues";
 import { verifyExecutableRoute } from "@/lib/leef/quote-verify";
-import { TradeError } from "./trade-error";
+import { crossCheckAlcorQuote, type OnchainCheckMode } from "@/lib/leef/onchain-check";
+import { TradeError, classifyTradeError } from "./trade-error";
+import { simulatePackedTransaction, type SimulationMode } from "./simulate";
 import { fetchAlcorRoute, parseAssetAmount, type AlcorRouteQuote } from "./alcor-route";
 import {
   delegateBwData,
   packAddLiquid,
+  packAlcorGetReward,
   packCollect,
   packDelegateBw,
+  packRewarderClaim,
   packSubLiquid,
   packTransaction,
   packedTransactionBody,
@@ -29,6 +33,7 @@ import {
   ALCOR_SWAP_CONTRACT,
   arbFloorViolation,
   assertActionPolicy,
+  assertSigningPermission,
   memoMinOutSum,
   swapFloorViolation,
   type PolicyContext,
@@ -116,6 +121,10 @@ async function buildTransfers(opts: {
    * the gate approved quote A but the chain sees quote B.
    */
   preQuoted?: AlcorRouteQuote;
+  /** On-chain cross-check of Alcor router quotes (see onchain-check.ts). Default "warn". */
+  onchainCheck?: OnchainCheckMode;
+  /** Route price-impact allowance for the cross-check's lower band, percent. Default 5. */
+  maxImpactPct?: number;
 }): Promise<{ transfers: TransferSpec[]; expectedOut: number; guaranteedOut: number }> {
   const tokenIn = metaOf(opts.route.tokenIn, opts.snap);
   const tokenOut = metaOf(opts.route.tokenOut, opts.snap);
@@ -197,6 +206,36 @@ async function buildTransfers(opts: {
         "Alcor quote carried no parseable minReceived — refusing to sign without an on-chain floor",
       );
     }
+    // Independent chain-truth bound: the quote, minReceived and memos all
+    // came from one HTTP response, so cross-check them against the memo's
+    // pools read straight from swap.alcor via RPC. Dust trades are skipped
+    // (their 1-unit ask is deliberately far under spot).
+    const mode = opts.onchainCheck ?? "warn";
+    if (mode !== "off" && !dust) {
+      const check = crossCheckAlcorQuote({
+        swaps: transfers.map((t) => ({ input: t.quantity, memo: t.memo })),
+        account: opts.account,
+        tokenIn,
+        tokenOut,
+        expectedOut,
+        guaranteedOut: memoMinOutSum(
+          transfers.map((t) => ({ input: t.quantity, memo: t.memo })),
+          opts.account,
+        ),
+        slippagePct: opts.slippagePct,
+        maxImpactPct: opts.maxImpactPct ?? 5,
+      });
+      if (mode === "enforce") {
+        const res = await check;
+        if (!res.ok) throw new TradeError("QUOTE_FAILURE", `On-chain cross-check: ${res.reason}`);
+      } else {
+        // Warn mode: never adds latency or blocks — observe and report only,
+        // so the tolerance can be tuned from evidence before enforcing.
+        void check.then((res) => {
+          if (!res.ok) console.warn(`[onchain-check] would reject: ${res.reason}`);
+        });
+      }
+    }
     return { transfers, expectedOut, guaranteedOut };
   }
 
@@ -261,9 +300,11 @@ type ActionSpec = {
 
 async function dispatchActions(opts: {
   account: string;
-  permission?: string;
+  permission: string;
   actions: ActionSpec[];
   policy?: PolicyContext;
+  /** Pre-broadcast compute_transaction simulation (session-key path). Default "auto". */
+  simulate?: SimulationMode;
 }): Promise<{ txid: string }> {
   // Policy firewall: EVERY action list — session key, Cloud Wallet or Anchor —
   // is validated before a signer ever sees it. The signer is never asked to
@@ -276,6 +317,8 @@ async function dispatchActions(opts: {
   if (sess) {
     const actor = String(sess.actor);
     const permission = String(sess.permission);
+    // Wallets sign with their own session permission — never owner.
+    assertSigningPermission(permission);
     const result = await sess.transact({
       actions: opts.actions.map((a) => ({
         account: a.contract,
@@ -293,6 +336,9 @@ async function dispatchActions(opts: {
   }
 
   if (!hasSecret()) throw new Error("Connect a wallet or import a session key first");
+  // Session key: the permission must be explicit (resolved at import) and
+  // never owner. Checked before any chain read or signature.
+  assertSigningPermission(opts.permission);
 
   const rawInfo = (await getChainInfo()) as ChainInfo;
   const header = transactionHeaderFromInfo(rawInfo, 90);
@@ -306,10 +352,30 @@ async function dispatchActions(opts: {
       account: a.contract,
       name: a.name,
       actor: opts.account,
-      permission: opts.permission ?? "active",
+      permission: opts.permission,
       dataBytes: a.dataBytes,
     })),
   });
+
+  // Pre-broadcast simulation: run the exact transaction read-only on an
+  // assertion-enforcing node BEFORE signing. A contract assert (min-out not
+  // met, overdrawn balance, paused pool…) refuses the trade without spending
+  // CPU. Unreachable simulators only block in "require" mode — the on-chain
+  // min-outs still protect the trade in "auto".
+  const simMode = opts.simulate ?? "auto";
+  if (simMode !== "off") {
+    const sim = await simulatePackedTransaction(packedTx);
+    if (!sim.ok && sim.kind === "assert") {
+      const classified = classifyTradeError(new Error(sim.reason));
+      throw new TradeError(
+        classified.code === "UNKNOWN" ? "TRANSACTION_REJECTED" : classified.code,
+        `Simulation refused the transaction (${new URL(sim.node).host}): ${sim.reason}`,
+      );
+    }
+    if (!sim.ok && simMode === "require") {
+      throw new TradeError("RPC_FAILURE", `Simulation required but unavailable: ${sim.reason}`);
+    }
+  }
 
   // Transaction id is sha256(packed_trx) — known BEFORE broadcast, so a
   // network timeout can be reconciled by txid instead of guessed at.
@@ -352,7 +418,7 @@ function transferSpec(contract: string, data: TransferActionData): ActionSpec {
 
 async function signAndPushTransfers(opts: {
   account: string;
-  permission?: string;
+  permission: string;
   transfers: { contract: string; data: TransferActionData }[];
   policy?: PolicyContext;
 }): Promise<{ txid: string }> {
@@ -380,13 +446,17 @@ async function signAndPushTransfers(opts: {
 export async function signAndPushSwap(opts: {
   account: string;
   /** Permission the session key authorizes on the account. */
-  permission?: string;
+  permission: string;
   route: SwapRoute;
   amountIn: number;
   slippagePct: number;
   snap: LeefSnapshot;
   /** Gate-approved quote — sign these memos, not a fresh re-quote. */
   preQuoted?: AlcorRouteQuote;
+  /** On-chain cross-check of Alcor router quotes: "off" | "warn" (default) | "enforce". */
+  onchainCheck?: OnchainCheckMode;
+  /** Price-impact allowance used by the cross-check's lower band, percent (default 5). */
+  maxImpactPct?: number;
 }): Promise<SwapExecution> {
   const { transfers, expectedOut, guaranteedOut } = await buildTransfers(opts);
   // Platform fee: once, on the guaranteed output, inside the same atomic
@@ -582,7 +652,7 @@ async function revalidateBatchLegs(opts: {
  */
 export async function signAndPushBatch(opts: {
   account: string;
-  permission?: string;
+  permission: string;
   legs: BatchLeg[];
   /** Snapshot the legs were planned against — feeds the policy token catalog. */
   snap: LeefSnapshot;
@@ -638,7 +708,7 @@ export async function signAndPushBatch(opts: {
  */
 export async function signAndPushArb(opts: {
   account: string;
-  permission?: string;
+  permission: string;
   plan: ArbPlan;
   /** Hard profit floor the sell legs must enforce on-chain, percent. */
   minProfitPct: number;
@@ -742,7 +812,7 @@ export async function signAndPushArb(opts: {
  */
 export async function signAndPushStakeCpu(opts: {
   account: string;
-  permission?: string;
+  permission: string;
   waxAmount: number;
 }): Promise<{ txid: string }> {
   const owner = walletSession() ? String(walletSession()!.actor) : opts.account;
@@ -762,6 +832,48 @@ export async function signAndPushStakeCpu(opts: {
 }
 
 /* ------------------------------------------------------------------ */
+/* Reward claims (claim only — never stake / unstake / lock)            */
+/* ------------------------------------------------------------------ */
+
+/**
+ * Claim LEEF staking rewards (`leefrewarder::claim`) and/or Alcor farm
+ * incentives (`swap.alcor::getreward`) in ONE transaction. Goes through the
+ * policy firewall like every action: the rewarder claim must be for the
+ * signer, getreward only takes well-formed ids.
+ */
+export async function signAndPushClaimRewards(opts: {
+  account: string;
+  permission: string;
+  claims: (
+    | { contract: "leefrewarder"; name: "claim"; data: { user: string } }
+    | { contract: "swap.alcor"; name: "getreward"; data: { incentiveId: number; posId: number } }
+  )[];
+}): Promise<{ txid: string }> {
+  if (opts.claims.length === 0) throw new Error("Nothing to claim");
+  const sess = walletSession();
+  const owner = sess ? String(sess.actor) : opts.account;
+  return await dispatchActions({
+    account: owner,
+    permission: opts.permission,
+    actions: opts.claims.map((c) =>
+      c.contract === "leefrewarder"
+        ? {
+            contract: c.contract,
+            name: c.name,
+            plain: { user: owner },
+            dataBytes: packRewarderClaim(owner),
+          }
+        : {
+            contract: c.contract,
+            name: c.name,
+            plain: { incentiveId: c.data.incentiveId, posId: c.data.posId },
+            dataBytes: packAlcorGetReward(c.data),
+          },
+    ),
+  });
+}
+
+/* ------------------------------------------------------------------ */
 /* Liquidity positions (Alcor AMM, full-range)                          */
 /* ------------------------------------------------------------------ */
 
@@ -771,7 +883,7 @@ export async function signAndPushStakeCpu(opts: {
  */
 export async function signAndPushAddLiquidity(opts: {
   account: string;
-  permission?: string;
+  permission: string;
   poolId: number;
   tokenA: { contract: string; symbol: string; decimals: number };
   tokenB: { contract: string; symbol: string; decimals: number };
@@ -833,7 +945,7 @@ export async function signAndPushAddLiquidity(opts: {
  */
 export async function signAndPushRemoveLiquidity(opts: {
   account: string;
-  permission?: string;
+  permission: string;
   poolId: number;
   tickLower: number;
   tickUpper: number;

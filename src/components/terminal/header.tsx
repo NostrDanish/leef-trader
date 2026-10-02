@@ -3,7 +3,7 @@ import { LazyLoginArea } from "@/components/auth/LazyLoginArea";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { marketStats } from "@/lib/leef/analytics";
-import { fmtLeefLot, fmtNum, fmtUsd } from "@/lib/leef/format";
+import { fmtNum, fmtUsd } from "@/lib/leef/format";
 import type { LeefSnapshot } from "@/lib/leef/types";
 import { toast } from "@/hooks/useToast";
 import { cn } from "@/lib/utils";
@@ -16,20 +16,23 @@ import { TokenMark } from "./token-mark";
 /**
  * Emergency stop: halts the bot AND the rebalancer immediately. Open
  * positions are left untouched (nothing is sold); restarting is a deliberate
- * manual action from each desk. The session key stays in memory — use
- * "forget key" on the wallet desk to drop it.
+ * manual action from each desk. An in-tab session key is dropped and its
+ * bytes zeroized (re-import it to trade again); Cloud Wallet / Anchor
+ * sessions stay connected — they hold no key in this tab.
  */
 function emergencyStopAll() {
   const botWasRunning = useBot.getState().running;
   const rebalWasRunning = usePortfolio.getState().running;
   useBot.getState().stop("Emergency stop — automation halted");
   usePortfolio.getState().stop();
+  const keyDropped = useWallet.getState().forgetSessionKey();
+  const base =
+    botWasRunning || rebalWasRunning
+      ? "All automation halted. Open positions were NOT closed — manage them from the Bot desk."
+      : "Nothing was running.";
   toast({
     title: "Emergency stop",
-    description:
-      botWasRunning || rebalWasRunning
-        ? "All automation halted. Open positions were NOT closed — manage them from the Bot desk."
-        : "Nothing was running.",
+    description: keyDropped ? `${base} Session key forgotten — re-import it to trade.` : base,
     variant: "destructive",
   });
 }

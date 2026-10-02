@@ -1,6 +1,7 @@
 import { lazy, Suspense } from "react";
 import { BrowserRouter, Route, Routes } from "react-router-dom";
 import { ScrollToTop } from "./components/ScrollToTop";
+import { TelegramMiniApp } from "./components/TelegramMiniApp";
 
 import Index from "./pages/Index";
 import NotFound from "./pages/NotFound";
@@ -16,6 +17,8 @@ export function AppRouter() {
   return (
     <BrowserRouter>
       <ScrollToTop />
+      {/* No-op outside Telegram; see src/lib/telegram/miniapp.ts */}
+      <TelegramMiniApp />
       <Routes>
         <Route path="/" element={<Index />} />
         {/* NIP-19 route for npub1, note1, naddr1, nevent1, nprofile1 */}

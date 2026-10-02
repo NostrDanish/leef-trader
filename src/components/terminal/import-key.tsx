@@ -8,7 +8,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
-import { accountsForKeys, permissionForKey } from "@/lib/wallet/chain";
+import { accountsForKeys, choosePermission, permissionsForKey } from "@/lib/wallet/chain";
 import { describeKey, importSecret, parsePrivateKey } from "@/lib/wallet/secret";
 import { loginWallet, type WalletKind } from "@/lib/wallet/session";
 import { isAccountName } from "@/lib/wallet/tokens";
@@ -68,17 +68,32 @@ export function ImportKeyDialog() {
           `That key is not on ${name}. Found ${found.map((f) => f.name).join(", ")}`,
         );
       }
-      const permission =
-        found.find((f) => f.name === name)?.permission ??
-        (await permissionForKey(name, [pub.publicKey, pub.legacy]));
+      // Resolve EVERY permission the key satisfies on that account and pick
+      // one explicitly: owner is refused, a single custom permission wins,
+      // active is allowed with a warning. No silent "active" default.
+      const choice = choosePermission(
+        await permissionsForKey(name, [pub.publicKey, pub.legacy]),
+      );
+      if (!choice.ok) throw new Error(choice.reason);
+      const permission = choice.permission;
       importSecret(wif);
       setWif("");
       setLive({ account: name, publicKey: pub.publicKey, permission });
       setOpen(false);
+      const linkedNote =
+        permission !== "active" && choice.linked.length > 0
+          ? `Linked actions: ${choice.linked
+              .map((l) => `${l.account}::${l.action || "*"}`)
+              .join(", ")}`
+          : undefined;
       toast({
         title: `Session key for ${name}@${permission} — stays in this tab only`,
+        description: choice.warning ?? linkedNote,
+        variant: choice.warning ? "destructive" : undefined,
       });
     } catch (err) {
+      // Never leave a pasted key sitting in the input after a failed import.
+      setWif("");
       setError(err instanceof Error ? err.message : "Import failed");
     } finally {
       setBusy(null);
@@ -138,8 +153,15 @@ export function ImportKeyDialog() {
                 <p className="text-xs text-subtle">
                   A WIF/PVT_K1 key is held in this tab's memory only — never
                   written to disk, never sent anywhere. Refreshing forgets it.
-                  Use an <span className="font-mono">active</span>-permission
-                  key, never the owner key.
+                  Use a key for a dedicated{" "}
+                  <span className="font-mono">trade</span> permission on a
+                  dedicated bot account holding only funds you are willing to
+                  risk, linked (linkauth) only to the token{" "}
+                  <span className="font-mono">transfer</span> and{" "}
+                  <span className="font-mono">swap.alcor</span> actions the bot
+                  needs. Owner keys are refused. An{" "}
+                  <span className="font-mono">active</span> key works but is
+                  discouraged: it can move all funds and change your keys.
                 </p>
                 <label className="block">
                   <span className="mb-1 block text-xs text-muted-foreground">
