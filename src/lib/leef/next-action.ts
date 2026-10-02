@@ -39,7 +39,7 @@ export type NextActionPlan = {
  * favorite trade. Every cycle still passes the exact-quote gate with a
  * ≥0 net floor before it can sign — fantasy cycles are refused, not fired.
  */
-const CYCLE_ASSETS = new Set(["LEEF", "WAX", "WAXUSDC", "WAXUSDT", "USDT", "PARAUSD"]);
+const CYCLE_ASSETS = new Set(["LEEF", "WAX", "WAXUSDC", "WAXUSDT", "USDT", "USDC", "PARAUSD"]);
 
 function destinationSymbols(snap: LeefSnapshot): string[] {
   const ranked = [...snap.universe]
@@ -251,7 +251,7 @@ export function planLeefTape(
 
     if (token.symbol.toUpperCase() !== base) tryPair(token.symbol, base, spend);
     if (token.symbol.toUpperCase() === base) {
-      for (const q of [...new Set([quote, "WAX", "WAXUSDC", "USDT", "PARAUSD"])]) {
+      for (const q of [...new Set([quote, "WAX", "WAXUSDC", "USDT", "USDC", "PARAUSD"])]) {
         if (q === base) continue;
         tryPair(base, q, spend);
       }
