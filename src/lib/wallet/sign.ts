@@ -2,6 +2,7 @@ import type { ArbPlan } from "@/lib/leef/bot-engine";
 import type { LeefSnapshot, SwapRoute } from "@/lib/leef/types";
 import { dustSafeMinOut, isDustOutput, swapContractOf, venueOfPoolId } from "@/lib/leef/venues";
 import { verifyExecutableRoute } from "@/lib/leef/quote-verify";
+import { crossCheckAlcorQuote, type OnchainCheckMode } from "@/lib/leef/onchain-check";
 import { TradeError, classifyTradeError } from "./trade-error";
 import { simulatePackedTransaction, type SimulationMode } from "./simulate";
 import { fetchAlcorRoute, parseAssetAmount, type AlcorRouteQuote } from "./alcor-route";
@@ -118,6 +119,10 @@ async function buildTransfers(opts: {
    * the gate approved quote A but the chain sees quote B.
    */
   preQuoted?: AlcorRouteQuote;
+  /** On-chain cross-check of Alcor router quotes (see onchain-check.ts). Default "warn". */
+  onchainCheck?: OnchainCheckMode;
+  /** Route price-impact allowance for the cross-check's lower band, percent. Default 5. */
+  maxImpactPct?: number;
 }): Promise<{ transfers: TransferSpec[]; expectedOut: number; guaranteedOut: number }> {
   const tokenIn = metaOf(opts.route.tokenIn, opts.snap);
   const tokenOut = metaOf(opts.route.tokenOut, opts.snap);
@@ -198,6 +203,36 @@ async function buildTransfers(opts: {
         "QUOTE_FAILURE",
         "Alcor quote carried no parseable minReceived — refusing to sign without an on-chain floor",
       );
+    }
+    // Independent chain-truth bound: the quote, minReceived and memos all
+    // came from one HTTP response, so cross-check them against the memo's
+    // pools read straight from swap.alcor via RPC. Dust trades are skipped
+    // (their 1-unit ask is deliberately far under spot).
+    const mode = opts.onchainCheck ?? "warn";
+    if (mode !== "off" && !dust) {
+      const check = crossCheckAlcorQuote({
+        swaps: transfers.map((t) => ({ input: t.quantity, memo: t.memo })),
+        account: opts.account,
+        tokenIn,
+        tokenOut,
+        expectedOut,
+        guaranteedOut: memoMinOutSum(
+          transfers.map((t) => ({ input: t.quantity, memo: t.memo })),
+          opts.account,
+        ),
+        slippagePct: opts.slippagePct,
+        maxImpactPct: opts.maxImpactPct ?? 5,
+      });
+      if (mode === "enforce") {
+        const res = await check;
+        if (!res.ok) throw new TradeError("QUOTE_FAILURE", `On-chain cross-check: ${res.reason}`);
+      } else {
+        // Warn mode: never adds latency or blocks — observe and report only,
+        // so the tolerance can be tuned from evidence before enforcing.
+        void check.then((res) => {
+          if (!res.ok) console.warn(`[onchain-check] would reject: ${res.reason}`);
+        });
+      }
     }
     return { transfers, expectedOut, guaranteedOut };
   }
@@ -416,6 +451,10 @@ export async function signAndPushSwap(opts: {
   snap: LeefSnapshot;
   /** Gate-approved quote — sign these memos, not a fresh re-quote. */
   preQuoted?: AlcorRouteQuote;
+  /** On-chain cross-check of Alcor router quotes: "off" | "warn" (default) | "enforce". */
+  onchainCheck?: OnchainCheckMode;
+  /** Price-impact allowance used by the cross-check's lower band, percent (default 5). */
+  maxImpactPct?: number;
 }): Promise<SwapExecution> {
   const { transfers, expectedOut, guaranteedOut } = await buildTransfers(opts);
   // Platform fee: once, on the guaranteed output, inside the same atomic
