@@ -573,7 +573,12 @@ export async function refreshVenuePair(
 export function defiboxMemo(minOut: number, decimals: number, pairId: number): string {
   // Truncate toward zero (never demand more than quoted) — +1e-9 absorbs
   // IEEE-754 dust (12.3456 * 1e4 is 123455.999…), same as tacoMemo/formatAsset.
-  const units = Math.max(0, Math.floor(minOut * 10 ** decimals + 1e-9));
+  const units = Math.floor(minOut * 10 ** decimals + 1e-9);
+  // Fail closed: a 0-unit (or NaN) min-out is no on-chain guarantee, and the
+  // policy firewall refuses it anyway. Never emit one.
+  if (!Number.isFinite(units) || units < 1) {
+    throw new RangeError(`Defibox min-out ${minOut} rounds to 0 units — refusing to build memo`);
+  }
   return `swap,${units},${pairId}`;
 }
 
@@ -597,6 +602,10 @@ export function tacoMemo(minOut: number, symbol: string, contract: string, decim
   const d = Math.max(0, Math.min(18, decimals | 0));
   const scale = 10 ** d;
   const units = Math.floor(Math.max(0, minOut) * scale + 1e-9);
+  // Fail closed, as in defiboxMemo: never emit a zero min-out.
+  if (!Number.isFinite(units) || units < 1) {
+    throw new RangeError(`Taco min-out ${minOut} rounds to 0 units — refusing to build memo`);
+  }
   const whole = Math.floor(units / scale);
   const frac = units % scale;
   const body = d === 0 ? String(whole) : `${whole}.${String(frac).padStart(d, "0")}`;

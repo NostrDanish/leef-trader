@@ -33,6 +33,13 @@ import { isAccountName, parseAsset, tokenCatalog } from "./tokens";
 
 /** Alcor's on-chain AMM contract on WAX. Swaps execute as token transfers into it. */
 export const ALCOR_SWAP_CONTRACT = "swap.alcor";
+
+/**
+ * Hard ceiling on the slippage tolerance the firewall will sign, percent.
+ * The UI sliders already stop at 2.5–3%; anything larger is refused outright
+ * (a bug or a tampered setting must not widen the on-chain floor).
+ */
+export const MAX_SLIPPAGE_PCT = 3;
 const ALLOWED_SWAP_TO = new Set([ALCOR_SWAP_CONTRACT, DEFIBOX_SWAP, TACO_SWAP, NEFTY_SWAP]);
 
 /** The only actions this app may ever call on the AMM contract itself. */
@@ -203,17 +210,31 @@ function checkTransfer(
 
   if (memo.trim() === "deposit") return; // LP deposit leg
   if (to === DEFIBOX_SWAP) {
-    if (!/^swap,\d+,\d+$/.test(memo.trim())) {
-      fail("Defibox memo must be swap,<min_out_units>,<pair_id>");
+    const m = memo.trim().match(/^swap,(\d+),(\d+)$/);
+    if (!m) fail("Defibox memo must be swap,<min_out_units>,<pair_id>");
+    // Same rule as Nefty: the min-out (raw output units) must ask >= 1 unit.
+    // `swap,0,<pair>` is structurally valid but guarantees nothing on-chain.
+    if (!/^[1-9]\d*$/.test(m[1]!)) {
+      fail("Defibox memo carries a zero min-out — no on-chain guarantee");
     }
     return;
   }
   if (to === TACO_SWAP) {
-    const m = memo.trim().match(/^(\d+(?:\.\d+)?)\s+([A-Z0-9]+)@([a-z1-5.]{1,13})$/);
+    const m = memo.trim().match(/^(\d+)(?:\.(\d+))?\s+([A-Z0-9]+)@([a-z1-5.]{1,13})$/);
     if (!m) fail("Taco memo must be `<min> SYM@contract`");
-    const minToken = tokens.get(m[2]!);
-    if (!minToken || minToken.contract !== m[3]) {
-      fail(`Taco min-out ${m[2]}@${m[3]} isn't the verified token for that symbol`);
+    const minToken = tokens.get(m[3]!);
+    if (!minToken || minToken.contract !== m[4]) {
+      fail(`Taco min-out ${m[3]}@${m[4]} isn't the verified token for that symbol`);
+    }
+    // The min-out asset must use the token's verified precision, otherwise
+    // the contract may misread the amount (or refuse the memo).
+    if ((m[2] ?? "").length !== minToken!.decimals) {
+      fail(
+        `Taco min-out precision ${(m[2] ?? "").length} doesn't match ${m[3]}'s ${minToken!.decimals}`,
+      );
+    }
+    if (!/[1-9]/.test(`${m[1]}${m[2] ?? ""}`)) {
+      fail("Taco memo carries a zero min-out — no on-chain guarantee");
     }
     return;
   }
@@ -422,6 +443,9 @@ export function swapFloorViolation(opts: {
 }): string | null {
   const { floor, legs, account } = opts;
   if (!(floor.amountIn > 0)) return "swap size must be positive";
+  if (!Number.isFinite(floor.slippagePct) || floor.slippagePct > MAX_SLIPPAGE_PCT) {
+    return `slippage ${floor.slippagePct}% exceeds the ${MAX_SLIPPAGE_PCT}% hard cap`;
+  }
   if (legs.length === 0) return "swap needs fresh Alcor router legs";
 
   let spent = 0;
