@@ -3,7 +3,8 @@ import type { LeefSnapshot, SwapRoute } from "@/lib/leef/types";
 import { dustSafeMinOut, isDustOutput, swapContractOf, venueOfPoolId } from "@/lib/leef/venues";
 import { verifyExecutableRoute } from "@/lib/leef/quote-verify";
 import { crossCheckAlcorQuote, type OnchainCheckMode } from "@/lib/leef/onchain-check";
-import { TradeError } from "./trade-error";
+import { TradeError, classifyTradeError } from "./trade-error";
+import { simulatePackedTransaction, type SimulationMode } from "./simulate";
 import { fetchAlcorRoute, parseAssetAmount, type AlcorRouteQuote } from "./alcor-route";
 import {
   delegateBwData,
@@ -30,6 +31,7 @@ import {
   ALCOR_SWAP_CONTRACT,
   arbFloorViolation,
   assertActionPolicy,
+  assertSigningPermission,
   memoMinOutSum,
   swapFloorViolation,
   type PolicyContext,
@@ -296,9 +298,11 @@ type ActionSpec = {
 
 async function dispatchActions(opts: {
   account: string;
-  permission?: string;
+  permission: string;
   actions: ActionSpec[];
   policy?: PolicyContext;
+  /** Pre-broadcast compute_transaction simulation (session-key path). Default "auto". */
+  simulate?: SimulationMode;
 }): Promise<{ txid: string }> {
   // Policy firewall: EVERY action list — session key, Cloud Wallet or Anchor —
   // is validated before a signer ever sees it. The signer is never asked to
@@ -311,6 +315,8 @@ async function dispatchActions(opts: {
   if (sess) {
     const actor = String(sess.actor);
     const permission = String(sess.permission);
+    // Wallets sign with their own session permission — never owner.
+    assertSigningPermission(permission);
     const result = await sess.transact({
       actions: opts.actions.map((a) => ({
         account: a.contract,
@@ -328,6 +334,9 @@ async function dispatchActions(opts: {
   }
 
   if (!hasSecret()) throw new Error("Connect a wallet or import a session key first");
+  // Session key: the permission must be explicit (resolved at import) and
+  // never owner. Checked before any chain read or signature.
+  assertSigningPermission(opts.permission);
 
   const rawInfo = (await getChainInfo()) as ChainInfo;
   const header = transactionHeaderFromInfo(rawInfo, 90);
@@ -341,10 +350,30 @@ async function dispatchActions(opts: {
       account: a.contract,
       name: a.name,
       actor: opts.account,
-      permission: opts.permission ?? "active",
+      permission: opts.permission,
       dataBytes: a.dataBytes,
     })),
   });
+
+  // Pre-broadcast simulation: run the exact transaction read-only on an
+  // assertion-enforcing node BEFORE signing. A contract assert (min-out not
+  // met, overdrawn balance, paused pool…) refuses the trade without spending
+  // CPU. Unreachable simulators only block in "require" mode — the on-chain
+  // min-outs still protect the trade in "auto".
+  const simMode = opts.simulate ?? "auto";
+  if (simMode !== "off") {
+    const sim = await simulatePackedTransaction(packedTx);
+    if (!sim.ok && sim.kind === "assert") {
+      const classified = classifyTradeError(new Error(sim.reason));
+      throw new TradeError(
+        classified.code === "UNKNOWN" ? "TRANSACTION_REJECTED" : classified.code,
+        `Simulation refused the transaction (${new URL(sim.node).host}): ${sim.reason}`,
+      );
+    }
+    if (!sim.ok && simMode === "require") {
+      throw new TradeError("RPC_FAILURE", `Simulation required but unavailable: ${sim.reason}`);
+    }
+  }
 
   // Transaction id is sha256(packed_trx) — known BEFORE broadcast, so a
   // network timeout can be reconciled by txid instead of guessed at.
@@ -387,7 +416,7 @@ function transferSpec(contract: string, data: TransferActionData): ActionSpec {
 
 async function signAndPushTransfers(opts: {
   account: string;
-  permission?: string;
+  permission: string;
   transfers: { contract: string; data: TransferActionData }[];
   policy?: PolicyContext;
 }): Promise<{ txid: string }> {
@@ -415,7 +444,7 @@ async function signAndPushTransfers(opts: {
 export async function signAndPushSwap(opts: {
   account: string;
   /** Permission the session key authorizes on the account. */
-  permission?: string;
+  permission: string;
   route: SwapRoute;
   amountIn: number;
   slippagePct: number;
@@ -621,7 +650,7 @@ async function revalidateBatchLegs(opts: {
  */
 export async function signAndPushBatch(opts: {
   account: string;
-  permission?: string;
+  permission: string;
   legs: BatchLeg[];
   /** Snapshot the legs were planned against — feeds the policy token catalog. */
   snap: LeefSnapshot;
@@ -677,7 +706,7 @@ export async function signAndPushBatch(opts: {
  */
 export async function signAndPushArb(opts: {
   account: string;
-  permission?: string;
+  permission: string;
   plan: ArbPlan;
   /** Hard profit floor the sell legs must enforce on-chain, percent. */
   minProfitPct: number;
@@ -781,7 +810,7 @@ export async function signAndPushArb(opts: {
  */
 export async function signAndPushStakeCpu(opts: {
   account: string;
-  permission?: string;
+  permission: string;
   waxAmount: number;
 }): Promise<{ txid: string }> {
   const owner = walletSession() ? String(walletSession()!.actor) : opts.account;
@@ -810,7 +839,7 @@ export async function signAndPushStakeCpu(opts: {
  */
 export async function signAndPushAddLiquidity(opts: {
   account: string;
-  permission?: string;
+  permission: string;
   poolId: number;
   tokenA: { contract: string; symbol: string; decimals: number };
   tokenB: { contract: string; symbol: string; decimals: number };
@@ -872,7 +901,7 @@ export async function signAndPushAddLiquidity(opts: {
  */
 export async function signAndPushRemoveLiquidity(opts: {
   account: string;
-  permission?: string;
+  permission: string;
   poolId: number;
   tickLower: number;
   tickUpper: number;
