@@ -9,7 +9,14 @@ import { fmtNum, fmtUsd } from "@/lib/leef/format";
 import type { LeefSnapshot } from "@/lib/leef/types";
 import { TRUSTED_STABLES } from "@/lib/market/stables";
 import { balanceForIdentifier, rowPrice, walletBalanceRows } from "@/lib/wallet/balances";
-import { signAndPushStakeCpu } from "@/lib/wallet/sign";
+import { signAndPushClaimRewards, signAndPushStakeCpu } from "@/lib/wallet/sign";
+import { fetchPositions } from "@/lib/leef/positions";
+import {
+  claimActionsFor,
+  fetchAlcorIncentiveRewards,
+  fetchRewarderClaimable,
+  type RewardItem,
+} from "@/lib/leef/rewards";
 import { toast } from "@/hooks/useToast";
 import { useBot } from "@/store/bot";
 import { useTerminal } from "@/store/terminal";
@@ -175,6 +182,8 @@ export function WalletDesk({ snap }: { snap: LeefSnapshot }) {
           )}
         </Card>
       </div>
+
+      {mode === "live" && <RewardsCard />}
 
       {stables.length > 0 && (
         <Card className="p-4 sm:p-5">
@@ -391,5 +400,108 @@ function StakeCpu({ waxBalance, cpuPct }: { waxBalance: number; cpuPct: number }
         </Button>
       </div>
     </div>
+  );
+}
+
+/**
+ * Claimable rewards: LEEF staking (leefrewarder) + Alcor farm incentives on
+ * the account's LP positions. On demand only (no background polling), and
+ * claim-only — never stakes, unstakes or locks. The claim goes through the
+ * policy firewall like every other action.
+ */
+function RewardsCard() {
+  const account = useWallet((s) => s.account);
+  const permission = useWallet((s) => s.permission);
+  const canSign = useWallet((s) => s.canSign());
+  const [items, setItems] = useState<RewardItem[] | null>(null);
+  const [checking, setChecking] = useState(false);
+  const [claiming, setClaiming] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  async function check() {
+    setChecking(true);
+    setError(null);
+    try {
+      const [rewarder, positions] = await Promise.all([
+        fetchRewarderClaimable(account),
+        fetchPositions(account).catch(() => []),
+      ]);
+      const alcor = await fetchAlcorIncentiveRewards(positions.map((p) => p.id));
+      setItems([...(rewarder ? [rewarder] : []), ...alcor]);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Reward lookup failed");
+    } finally {
+      setChecking(false);
+    }
+  }
+
+  async function claim() {
+    if (!items || items.length === 0 || !canSign) return;
+    setClaiming(true);
+    try {
+      const { txid } = await signAndPushClaimRewards({
+        account,
+        permission,
+        claims: claimActionsFor(account, items),
+      });
+      toast({ title: "Rewards claimed", description: `tx ${txid.slice(0, 10)}…` });
+      setItems(null);
+    } catch (err) {
+      toast({
+        title: "Claim failed",
+        description: err instanceof Error ? err.message : "unknown error",
+        variant: "destructive",
+      });
+    } finally {
+      setClaiming(false);
+    }
+  }
+
+  return (
+    <Card className="p-4 sm:p-5">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <h3 className="text-sm font-medium">Rewards</h3>
+        <div className="flex gap-2">
+          <Button variant="outline" size="sm" disabled={checking} onClick={() => void check()}>
+            {checking ? "Checking…" : "Check rewards"}
+          </Button>
+          <Button
+            variant="leef"
+            size="sm"
+            disabled={claiming || !canSign || !items || items.length === 0}
+            onClick={() => void claim()}
+          >
+            {claiming ? "Claiming…" : "Claim all"}
+          </Button>
+        </div>
+      </div>
+      {error && <p className="mt-2 text-xs text-sell">{error}</p>}
+      {items && items.length === 0 && (
+        <p className="mt-2 text-xs text-muted-foreground">Nothing to claim right now.</p>
+      )}
+      {items && items.length > 0 && (
+        <div className="mt-2 space-y-1 font-mono text-xs text-muted-foreground">
+          {items.map((i) => (
+            <div
+              key={i.kind === "alcor" ? `a:${i.incentiveId}:${i.posId}` : "leefrewarder"}
+              className="flex flex-wrap items-center justify-between gap-2"
+            >
+              <span>
+                {i.kind === "leefrewarder"
+                  ? "LEEF staking (leefrewarder)"
+                  : `Alcor farm #${i.incentiveId} · position ${i.posId} · pool ${i.poolId}`}
+              </span>
+              <span className="tabular-nums">
+                {fmtNum(i.amount, { compact: true, digits: 4 })} {i.symbol}
+              </span>
+            </div>
+          ))}
+        </div>
+      )}
+      <p className="mt-2 text-[11px] text-subtle">
+        Claim only — nothing is staked, unstaked or locked. Alcor amounts are
+        computed from on-chain farm state and may differ slightly at claim time.
+      </p>
+    </Card>
   );
 }

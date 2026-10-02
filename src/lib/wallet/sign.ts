@@ -9,8 +9,10 @@ import { fetchAlcorRoute, parseAssetAmount, type AlcorRouteQuote } from "./alcor
 import {
   delegateBwData,
   packAddLiquid,
+  packAlcorGetReward,
   packCollect,
   packDelegateBw,
+  packRewarderClaim,
   packSubLiquid,
   packTransaction,
   packedTransactionBody,
@@ -826,6 +828,48 @@ export async function signAndPushStakeCpu(opts: {
         dataBytes: packDelegateBw(data),
       },
     ],
+  });
+}
+
+/* ------------------------------------------------------------------ */
+/* Reward claims (claim only — never stake / unstake / lock)            */
+/* ------------------------------------------------------------------ */
+
+/**
+ * Claim LEEF staking rewards (`leefrewarder::claim`) and/or Alcor farm
+ * incentives (`swap.alcor::getreward`) in ONE transaction. Goes through the
+ * policy firewall like every action: the rewarder claim must be for the
+ * signer, getreward only takes well-formed ids.
+ */
+export async function signAndPushClaimRewards(opts: {
+  account: string;
+  permission?: string;
+  claims: (
+    | { contract: "leefrewarder"; name: "claim"; data: { user: string } }
+    | { contract: "swap.alcor"; name: "getreward"; data: { incentiveId: number; posId: number } }
+  )[];
+}): Promise<{ txid: string }> {
+  if (opts.claims.length === 0) throw new Error("Nothing to claim");
+  const sess = walletSession();
+  const owner = sess ? String(sess.actor) : opts.account;
+  return await dispatchActions({
+    account: owner,
+    permission: opts.permission,
+    actions: opts.claims.map((c) =>
+      c.contract === "leefrewarder"
+        ? {
+            contract: c.contract,
+            name: c.name,
+            plain: { user: owner },
+            dataBytes: packRewarderClaim(owner),
+          }
+        : {
+            contract: c.contract,
+            name: c.name,
+            plain: { incentiveId: c.data.incentiveId, posId: c.data.posId },
+            dataBytes: packAlcorGetReward(c.data),
+          },
+    ),
   });
 }
 
