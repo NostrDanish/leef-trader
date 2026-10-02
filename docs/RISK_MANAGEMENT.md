@@ -11,10 +11,12 @@ the execution loop (`use-bot-loop.ts`). Both fail closed.
 | Book must be live Alcor data | — | fallback book = hold |
 | Book freshness | `risk.maxQuoteAgeSec` | 45s (one missed 30s pull tolerated) |
 | Session profit goal → stop | `goals.sessionGoalUsd` | 0 (off) |
-| Max drawdown → stop | `goals.maxDrawdownPct` | 0 (off) |
-| Cooldown | `risk.cooldownSec` (adaptive ×0.5–×1.5, floor 10s) | 15s |
-| Hourly trade cap | `risk.maxTradesHour` | 120 |
-| Position cap | `risk.maxPositionUsd` | $1,000 marked value |
+| Max drawdown → stop | `goals.maxDrawdownPct` | 10% |
+| Session loss → stop | `goals.maxSessionLossUsd` / `goals.maxDailyLossPct` | 3% of session-start equity (realized) |
+| Cooldown | `risk.cooldownSec` (adaptive ×0.5–×1.5, floor 10s) | 30s |
+| Hourly trade cap | `risk.maxTradesHour` | 20 |
+| Position cap | `risk.maxPositionUsd` | $100 marked value |
+| Liquidity-relative position cap | `risk.maxPoolSharePct` | 5% of the deepest direct pool's TVL |
 | Entry impact cap | `risk.maxImpactPct` | 3% |
 | Min confidence (signal) | `risk.minConfidence` | 65% (+ 2-print confirmation) |
 | Min arb edge (on-chain floor) | `risk.minEdgePct` | 0.45% |

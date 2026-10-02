@@ -36,7 +36,35 @@ export type UsdRisk = {
   maxPositionUsd: number;
   /** USD value the governor keeps unspent for operational safety. */
   operationalReserveUsd: number;
+  /**
+   * Cap positions at this percent of the deepest direct base/quote pool's
+   * TVL. Undefined / 0 = no liquidity cap.
+   */
+  maxPoolSharePct?: number;
 };
+
+/**
+ * TVL (USD) of the deepest DIRECT pool trading base↔quote in the snapshot
+ * (LEEF pools + aux pools, matched by symbol). null when the pair has no
+ * direct pool (multi-hop only) — the per-route impact cap still applies then.
+ */
+export function deepestPairTvlUsd(
+  snap: Pick<LeefSnapshot, "pools" | "aux">,
+  base: string,
+  quote: string,
+): number | null {
+  const want = new Set([base.toUpperCase(), quote.toUpperCase()]);
+  if (want.size !== 2) return null;
+  const pair = (a: string, b: string) => want.has(a.toUpperCase()) && want.has(b.toUpperCase()) && a.toUpperCase() !== b.toUpperCase();
+  let best: number | null = null;
+  const consider = (tvl: number) => {
+    const v = Number.isFinite(tvl) ? Math.max(0, tvl) : 0;
+    best = best == null ? v : Math.max(best, v);
+  };
+  for (const p of snap.pools ?? []) if (pair(p.leef.symbol, p.pair.symbol)) consider(p.tvlUsd);
+  for (const p of snap.aux ?? []) if (pair(p.tokenA.symbol, p.tokenB.symbol)) consider(p.tvlUsd);
+  return best;
+}
 
 export type MarkedPosition = {
   /** Amount of the base token held (legacy field name was `amountLeef`). */
@@ -68,8 +96,13 @@ export type UsdBounds = {
   walletUsd: number;
   /** Spendable USD after operational reserve is held back. */
   spendableUsd: number;
-  /** Effective USD ceiling = min(configured max, spendable, position headroom). */
+  /** Effective USD ceiling = min(configured max, liquidity cap, spendable, position headroom). */
   effectiveMaxUsd: number;
+  /**
+   * Liquidity cap = maxPoolSharePct × deepest direct pool TVL (USD), when it
+   * applies. Lets the desk show the binding constraint.
+   */
+  liquidityCapUsd?: number;
 };
 
 /**
@@ -105,10 +138,20 @@ export function usdToTokenBounds(opts: {
   const walletUsd = walletQuote * quoteUsd;
   const reserveUsd = Math.max(0, opts.risk.operationalReserveUsd ?? 0);
   const spendableUsd = Math.max(0, walletUsd - reserveUsd);
+  // Liquidity-relative cap: never size a position beyond a share of the
+  // deepest direct pool. A direct pool with unknown/zero TVL fails closed
+  // (cap 0); a pair with no direct pool is left to the route impact cap.
+  const share = Math.max(0, opts.risk.maxPoolSharePct ?? 0);
+  const tvl = share > 0 ? deepestPairTvlUsd(opts.snap, opts.base, quote) : null;
+  const liquidityCapUsd = tvl == null ? undefined : tvl * (share / 100);
+  // Position headroom under the liquidity cap (it bounds the POSITION, like maxPositionUsd).
+  const liquidityHeadroomUsd =
+    liquidityCapUsd == null ? Number.POSITIVE_INFINITY : Math.max(0, liquidityCapUsd - positionUsd);
   const effectiveMaxUsd = Math.min(
     Math.max(0, opts.risk.maxPositionUsd),
     spendableUsd,
     remainingUsd,
+    liquidityHeadroomUsd,
   );
   // Convert the USD ceiling back to quote-token units.
   const maxIn = effectiveMaxUsd / quoteUsd;
@@ -122,6 +165,7 @@ export function usdToTokenBounds(opts: {
     walletUsd,
     spendableUsd,
     effectiveMaxUsd,
+    ...(liquidityCapUsd != null ? { liquidityCapUsd } : {}),
   };
 }
 

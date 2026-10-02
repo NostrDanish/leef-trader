@@ -180,8 +180,18 @@ export type BotGoals = {
   trailingPct: number;
   /** Stop the bot for the session once realized P&L reaches this USD amount. */
   sessionGoalUsd: number;
-  /** Stop the bot if session equity drawdown exceeds this percent. */
+  /** Stop the bot if session equity drawdown exceeds this percent. 0 = off (unsafe). */
   maxDrawdownPct: number;
+  /**
+   * Stop the bot once session REALIZED P&L falls to −this many USD.
+   * 0 = derive it from `maxDailyLossPct` × session-start equity.
+   */
+  maxSessionLossUsd: number;
+  /**
+   * Session loss limit as a percent of session-start equity, used when
+   * `maxSessionLossUsd` is 0. 0 (with maxSessionLossUsd 0) = off (unsafe).
+   */
+  maxDailyLossPct: number;
 };
 
 export type BotRisk = {
@@ -230,14 +240,36 @@ export type BotRisk = {
   maxQuoteAgeSec: number;
   /** Graph depth cap for routing (1–10). Strategies pick ≤ this, not always 10. */
   maxHops: number;
+  /**
+   * Liquidity-relative position cap: a position may not exceed this percent
+   * of the deepest DIRECT base/quote pool's TVL. 0 = off.
+   */
+  maxPoolSharePct: number;
 };
+
+/**
+ * Effective session loss limit in USD: the explicit USD value when set,
+ * else `maxDailyLossPct` of session-start equity. 0 = no limit.
+ */
+export function sessionLossCapUsd(
+  goals: Pick<BotGoals, "maxSessionLossUsd" | "maxDailyLossPct">,
+  sessionStartEquityUsd: number,
+): number {
+  if (goals.maxSessionLossUsd > 0) return goals.maxSessionLossUsd;
+  if (!(goals.maxDailyLossPct > 0) || !(sessionStartEquityUsd > 0)) return 0;
+  return sessionStartEquityUsd * (goals.maxDailyLossPct / 100);
+}
 
 export const DEFAULT_GOALS: BotGoals = {
   takeProfitPct: 6,
   stopLossPct: 4,
   trailingPct: 3,
   sessionGoalUsd: 0,
-  maxDrawdownPct: 0,
+  // Breakers ON by default: a 10% equity drawdown or a realized session loss
+  // of 3% of starting equity stops the bot (and drops an in-tab key).
+  maxDrawdownPct: 10,
+  maxSessionLossUsd: 0,
+  maxDailyLossPct: 3,
 };
 
 export const DEFAULT_RISK: BotRisk = {
@@ -245,8 +277,11 @@ export const DEFAULT_RISK: BotRisk = {
   maxPositionUsd: DEFAULT_MAX_POSITION_USD,
   operationalReserveUsd: DEFAULT_OPERATIONAL_RESERVE_USD,
   maxImpactPct: 3,
-  cooldownSec: 15,
-  maxTradesHour: 120,
+  // Pacing: thin WAX books (main LEEF/WAX pool ≈ $1.6k TVL) don't refill
+  // fast enough for 120 clips/hour; 20/h with a 30 s cooldown keeps the bot
+  // from walking its own price. The sliders still go higher.
+  cooldownSec: 30,
+  maxTradesHour: 20,
   slippage: 0.6,
   // Dead books make a step-function series: one print can fake a confident
   // blend. 65 + the 2-print confirmation rule keeps dust wiggles out.
@@ -274,6 +309,7 @@ export const DEFAULT_RISK: BotRisk = {
   minNetEdgePct: 0,
   maxQuoteAgeSec: 45,
   maxHops: 4,
+  maxPoolSharePct: 5,
 };
 
 export type Position = {
@@ -973,6 +1009,16 @@ export function evaluateBot(input: BotInput): Decision {
     return {
       kind: "stop",
       reason: `Max drawdown ${goals.maxDrawdownPct}% hit (equity $${equityUsd.toFixed(2)}) — bot stopped`,
+    };
+  }
+
+  // Session loss limit (realized). stats persist across stop/start, so a
+  // restart does not reset it — only an explicit stats reset does.
+  const lossCap = sessionLossCapUsd(goals, input.sessionStartEquityUsd);
+  if (lossCap > 0 && input.sessionRealizedUsd <= -lossCap) {
+    return {
+      kind: "stop",
+      reason: `Session loss limit −$${lossCap.toFixed(2)} hit (realized $${input.sessionRealizedUsd.toFixed(2)}) — bot stopped`,
     };
   }
 
