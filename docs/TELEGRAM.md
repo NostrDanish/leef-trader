@@ -28,7 +28,9 @@ Everything here is **presentation only** and is inert in a normal browser.
   other origin is still blocked (clickjacking protection). `X-Frame-Options` was
   dropped because it has no allow-list form; all modern browsers honour
   `frame-ancestors`.
-  Note: a `<meta>` CSP cannot carry `frame-ancestors`, so on hosts that ignore
+  The separate `Content-Security-Policy-Report-Only` allowlist policy is unaffected
+  by this change and still ships intact. Note: a `<meta>` CSP cannot carry
+  `frame-ancestors`, so on hosts that ignore
   `vercel.json` (static mirrors, `.nsite`) framing is not restricted by headers.
 
 ## Known limits
