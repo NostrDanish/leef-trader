@@ -843,7 +843,7 @@ export async function signAndPushStakeCpu(opts: {
  */
 export async function signAndPushClaimRewards(opts: {
   account: string;
-  permission?: string;
+  permission: string;
   claims: (
     | { contract: "leefrewarder"; name: "claim"; data: { user: string } }
     | { contract: "swap.alcor"; name: "getreward"; data: { incentiveId: number; posId: number } }
