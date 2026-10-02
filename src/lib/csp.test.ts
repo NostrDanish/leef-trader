@@ -13,6 +13,9 @@ const ROOT = path.resolve(import.meta.dirname, "../..");
 const NOT_FETCHED = new Set([
   "https://waxblock.io",
   "https://developer.mozilla.org",
+  // Provenance comment for the vendored Telegram SDK — the app never fetches
+  // from telegram.org (script-src is 'self' and the SDK ships in src/vendor).
+  "https://telegram.org",
 ]);
 
 function walk(dir: string): string[] {
