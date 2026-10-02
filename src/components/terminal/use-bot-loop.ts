@@ -69,6 +69,7 @@ import { platformFeeOn } from "@/lib/leef/platform-fee";
 import { metaOf } from "@/lib/wallet/tokens";
 import { useBot } from "@/store/bot";
 import { clampSyncSec, DEFAULT_SYNC_SEC, useTerminal } from "@/store/terminal";
+import { usePortfolio } from "@/store/portfolio";
 import { useWallet } from "@/store/wallet";
 import { toast } from "@/hooks/useToast";
 import { lastFetchTiming } from "@/lib/fetchJson";
@@ -543,7 +544,18 @@ async function runBotOnceInner(
   if (decision.kind === "stop") {
     b.pushDecision({ kind: "stop", mode, reason: decision.reason, priceUsd: snap.leefUsd });
     b.stop(decision.reason);
-    toast({ title: "Bot stopped", description: decision.reason });
+    // Circuit-breaker stop (drawdown / session goal / retry storm…): drop an
+    // in-tab session key so nothing can sign until the user deliberately
+    // re-imports it. Skipped while the rebalancer is still running on the
+    // same key — it has its own guards and would otherwise fail mid-cycle.
+    const keyDropped =
+      !usePortfolio.getState().running && useWallet.getState().forgetSessionKey();
+    toast({
+      title: "Bot stopped",
+      description: keyDropped
+        ? `${decision.reason} · session key forgotten — re-import it to trade`
+        : decision.reason,
+    });
     return decision;
   }
 

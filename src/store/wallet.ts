@@ -33,6 +33,12 @@ type WalletState = {
   resetPaper: () => void;
   applyPaperFill: (tokenIn: string, amountIn: number, tokenOut: string, amountOut: number) => void;
   forgetLive: () => void;
+  /**
+   * Kill-switch hygiene: drop an in-tab session key (zeroized) and return to
+   * paper. External wallet sessions (Cloud Wallet / Anchor) are untouched —
+   * they hold no key in this tab. Returns true when a key was dropped.
+   */
+  forgetSessionKey: () => boolean;
   balances: () => Record<string, number>;
   hasKey: () => boolean;
   /** Live and able to sign — via session key or an external wallet. */
@@ -110,6 +116,13 @@ export const useWallet = create<WalletState>()(
           netPct: null,
           ramPct: null,
         });
+      },
+      forgetSessionKey: () => {
+        const s = get();
+        if (s.authType !== "key" && !hasSecret()) return false;
+        if (s.authType === "anchor" || s.authType === "wcw") return false;
+        get().forgetLive();
+        return true;
       },
       balances: () => {
         const s = get();

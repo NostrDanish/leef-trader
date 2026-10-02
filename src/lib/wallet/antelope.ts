@@ -119,14 +119,20 @@ function base58CheckEncode(data: Uint8Array, suffix: string | null): string {
 
 function base58CheckDecode(str: string, suffix: string | null): Uint8Array {
   const raw = base58Decode(str);
-  if (raw.length < 5) throw new Error("Key is too short");
-  const data = raw.slice(0, raw.length - 4);
-  const check = raw.slice(raw.length - 4);
-  const want = keyChecksum(data, suffix);
-  if (!want.every((b, i) => b === check[i])) {
-    throw new Error("Key checksum mismatch — a character is off");
+  try {
+    if (raw.length < 5) throw new Error("Key is too short");
+    const data = raw.slice(0, raw.length - 4);
+    const check = raw.slice(raw.length - 4);
+    const want = keyChecksum(data, suffix);
+    if (!want.every((b, i) => b === check[i])) {
+      data.fill(0);
+      throw new Error("Key checksum mismatch — a character is off");
+    }
+    return data;
+  } finally {
+    // The decode buffer holds the key bytes too — wipe it once copied out.
+    raw.fill(0);
   }
-  return data;
 }
 
 /**
@@ -136,18 +142,24 @@ function base58CheckDecode(str: string, suffix: string | null): Uint8Array {
  */
 function wifDecode(str: string): Uint8Array {
   const raw = base58Decode(str);
-  if (raw.length < 5) throw new Error("Key is too short");
-  const data = raw.slice(0, raw.length - 4);
-  const check = raw.slice(raw.length - 4);
-  const want = sha256(sha256(data)).slice(0, 4);
-  if (!want.every((b, i) => b === check[i])) {
-    throw new Error("Key checksum mismatch — a character is off");
+  const data = raw.slice(0, Math.max(0, raw.length - 4));
+  try {
+    if (raw.length < 5) throw new Error("Key is too short");
+    const check = raw.slice(raw.length - 4);
+    const want = sha256(sha256(data)).slice(0, 4);
+    if (!want.every((b, i) => b === check[i])) {
+      throw new Error("Key checksum mismatch — a character is off");
+    }
+    if (data[0] !== 0x80) throw new Error("Not a WIF key");
+    if (data.length === 33) return data.slice(1);
+    // Bitcoin-style compressed-key WIF carries a trailing 0x01 marker.
+    if (data.length === 34 && data[33] === 0x01) return data.slice(1, 33);
+    throw new Error("Malformed WIF payload");
+  } finally {
+    // Intermediate buffers hold the key bytes — wipe them once copied out.
+    raw.fill(0);
+    data.fill(0);
   }
-  if (data[0] !== 0x80) throw new Error("Not a WIF key");
-  if (data.length === 33) return data.slice(1);
-  // Bitcoin-style compressed-key WIF carries a trailing 0x01 marker.
-  if (data.length === 34 && data[33] === 0x01) return data.slice(1, 33);
-  throw new Error("Malformed WIF payload");
 }
 
 /* ------------------------------------------------------------------ */
@@ -192,9 +204,11 @@ export function parsePrivateKey(raw: string): AntelopeKeyPair {
   for (const attempt of attempts) {
     try {
       const candidate = attempt();
-      if (candidate.length !== 32) throw new Error("Key must be 32 bytes");
-      if (!secp256k1.utils.isValidSecretKey(candidate)) {
-        throw new Error("Key is outside the secp256k1 range");
+      if (candidate.length !== 32 || !secp256k1.utils.isValidSecretKey(candidate)) {
+        const msg =
+          candidate.length !== 32 ? "Key must be 32 bytes" : "Key is outside the secp256k1 range";
+        candidate.fill(0); // never leave a rejected candidate's bytes behind
+        throw new Error(msg);
       }
       priv = candidate;
       break;
