@@ -152,27 +152,106 @@ export async function accountsForKeys(keys: string[]): Promise<KeyAccount[]> {
   return [...found].map(([name, permission]) => ({ name, permission }));
 }
 
+/** One permission on an account that a key can satisfy on its own. */
+export type KeyPermissionMatch = {
+  perm: string;
+  parent: string;
+  /** `contract::action` pairs linked (linkauth) to this permission. */
+  linked: { account: string; action: string }[];
+};
+
+type RawAccountPermissions = {
+  permissions?: {
+    perm_name?: string;
+    parent?: string;
+    required_auth?: { threshold?: number; keys?: { key?: string; weight?: number }[] };
+    linked_actions?: { account?: string; action?: string }[];
+  }[];
+};
+
 /**
- * Resolve which permission on `account` holds one of `keys` — so imports of a
- * custom trading permission (not just "active") sign with the right auth.
+ * Pure: every permission in a `get_account` response that one of `keys`
+ * satisfies ALONE (key weight ≥ threshold). Owner is included when matched —
+ * callers must refuse it (see `choosePermission`).
  */
-export async function permissionForKey(account: string, keys: string[]): Promise<string> {
-  try {
-    const raw = (await rpcPost("/v1/chain/get_account", { account_name: account })) as {
-      permissions?: {
-        perm_name?: string;
-        required_auth?: { keys?: { key?: string }[] };
-      }[];
-    };
-    for (const perm of raw.permissions ?? []) {
-      for (const k of perm.required_auth?.keys ?? []) {
-        if (k.key && keys.includes(k.key)) return perm.perm_name || "active";
-      }
-    }
-  } catch {
-    /* default below */
+export function parseKeyPermissions(
+  raw: RawAccountPermissions,
+  keys: string[],
+): KeyPermissionMatch[] {
+  const out: KeyPermissionMatch[] = [];
+  for (const p of raw.permissions ?? []) {
+    if (!p.perm_name) continue;
+    const threshold = Math.max(1, Number(p.required_auth?.threshold ?? 1));
+    const satisfied = (p.required_auth?.keys ?? []).some(
+      (k) => !!k.key && keys.includes(k.key) && Number(k.weight ?? 0) >= threshold,
+    );
+    if (!satisfied) continue;
+    out.push({
+      perm: p.perm_name,
+      parent: p.parent ?? "",
+      linked: (p.linked_actions ?? [])
+        .filter((l) => !!l.account)
+        .map((l) => ({ account: l.account!, action: l.action ?? "" })),
+    });
   }
-  return "active";
+  return out;
+}
+
+/** ALL permissions on `account` the key satisfies (reads get_account, incl. linked_actions). */
+export async function permissionsForKey(
+  account: string,
+  keys: string[],
+): Promise<KeyPermissionMatch[]> {
+  const raw = (await rpcPost("/v1/chain/get_account", {
+    account_name: account,
+  })) as RawAccountPermissions;
+  return parseKeyPermissions(raw, keys);
+}
+
+export type PermissionChoice =
+  | { ok: true; permission: string; warning?: string; linked: KeyPermissionMatch["linked"] }
+  | { ok: false; reason: string };
+
+/**
+ * Decide which permission a session key may sign with:
+ *  - a key that controls `owner` is refused outright (even if it also holds
+ *    active/custom — the key itself is too powerful to keep in a browser tab);
+ *  - exactly one custom permission → use it;
+ *  - several custom permissions → refuse (ambiguous, the user must pick);
+ *  - only `active` → allowed, with a warning;
+ *  - nothing → refused.
+ */
+export function choosePermission(matches: KeyPermissionMatch[]): PermissionChoice {
+  if (matches.some((m) => m.perm === "owner")) {
+    return {
+      ok: false,
+      reason:
+        "This key controls the OWNER permission. Refusing to hold it — create a dedicated 'trade' permission instead (see docs/SECURITY.md).",
+    };
+  }
+  const custom = matches.filter((m) => m.perm !== "active");
+  if (custom.length === 1) {
+    return { ok: true, permission: custom[0]!.perm, linked: custom[0]!.linked };
+  }
+  if (custom.length > 1) {
+    return {
+      ok: false,
+      reason: `Key matches several custom permissions (${custom
+        .map((m) => m.perm)
+        .join(", ")}) — use a key that is on exactly one.`,
+    };
+  }
+  const active = matches.find((m) => m.perm === "active");
+  if (active) {
+    return {
+      ok: true,
+      permission: "active",
+      linked: active.linked,
+      warning:
+        "ACTIVE key: it can move ALL funds and change permissions. Prefer a dedicated 'trade' permission linked only to the swap/transfer actions.",
+    };
+  }
+  return { ok: false, reason: "Key does not satisfy any permission on this account on its own." };
 }
 
 export async function accountResources(name: string): Promise<ChainAccount> {

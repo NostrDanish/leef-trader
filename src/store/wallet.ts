@@ -24,7 +24,7 @@ type WalletState = {
   importOpen: boolean;
   setImportOpen: (v: boolean) => void;
   setAccount: (name: string) => void;
-  setLiveSession: (p: { account: string; publicKey: string; permission?: string }) => void;
+  setLiveSession: (p: { account: string; publicKey: string; permission: string }) => void;
   setWalletSession: (p: { account: string; permission: string; kind: WalletKind }) => void;
   setLiveBalances: (
     bal: Record<string, number>,
@@ -66,7 +66,7 @@ export const useWallet = create<WalletState>()(
         set({
           mode: "live",
           account,
-          permission: permission ?? "active",
+          permission,
           authType: "key",
           publicKey,
           liveAccountHint: account,
