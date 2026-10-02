@@ -47,6 +47,15 @@ unknown token: it does not feed pricing, routing, arb scans, or signing.
   min-outs must provably sum to `stake × (1 + floor)` before signing.
 - Unknown transaction status after broadcast is never retried blindly; the
   chain is reconciled first (double-spend protection).
+- **Pre-broadcast simulation (session key):** the exact packed transaction is
+  first run read-only through `/v1/chain/compute_transaction` on nodes known
+  to enforce contract assertions (`DEFAULT_SIMULATION_NODES` in
+  `src/lib/wallet/simulate.ts` — several public nodes were observed returning
+  success for an Alcor swap whose min-out was not met). An assert refuses the
+  trade before signing. If no simulator answers, mode `auto` (default)
+  proceeds — the on-chain min-outs still protect the trade — and `require`
+  refuses. Cloud Wallet / Anchor build their own transactions and are not
+  simulated.
 
 ## Recommended account setup
 

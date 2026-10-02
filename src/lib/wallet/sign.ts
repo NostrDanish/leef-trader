@@ -2,7 +2,8 @@ import type { ArbPlan } from "@/lib/leef/bot-engine";
 import type { LeefSnapshot, SwapRoute } from "@/lib/leef/types";
 import { dustSafeMinOut, isDustOutput, swapContractOf, venueOfPoolId } from "@/lib/leef/venues";
 import { verifyExecutableRoute } from "@/lib/leef/quote-verify";
-import { TradeError } from "./trade-error";
+import { TradeError, classifyTradeError } from "./trade-error";
+import { simulatePackedTransaction, type SimulationMode } from "./simulate";
 import { fetchAlcorRoute, parseAssetAmount, type AlcorRouteQuote } from "./alcor-route";
 import {
   delegateBwData,
@@ -265,6 +266,8 @@ async function dispatchActions(opts: {
   permission: string;
   actions: ActionSpec[];
   policy?: PolicyContext;
+  /** Pre-broadcast compute_transaction simulation (session-key path). Default "auto". */
+  simulate?: SimulationMode;
 }): Promise<{ txid: string }> {
   // Policy firewall: EVERY action list — session key, Cloud Wallet or Anchor —
   // is validated before a signer ever sees it. The signer is never asked to
@@ -316,6 +319,26 @@ async function dispatchActions(opts: {
       dataBytes: a.dataBytes,
     })),
   });
+
+  // Pre-broadcast simulation: run the exact transaction read-only on an
+  // assertion-enforcing node BEFORE signing. A contract assert (min-out not
+  // met, overdrawn balance, paused pool…) refuses the trade without spending
+  // CPU. Unreachable simulators only block in "require" mode — the on-chain
+  // min-outs still protect the trade in "auto".
+  const simMode = opts.simulate ?? "auto";
+  if (simMode !== "off") {
+    const sim = await simulatePackedTransaction(packedTx);
+    if (!sim.ok && sim.kind === "assert") {
+      const classified = classifyTradeError(new Error(sim.reason));
+      throw new TradeError(
+        classified.code === "UNKNOWN" ? "TRANSACTION_REJECTED" : classified.code,
+        `Simulation refused the transaction (${new URL(sim.node).host}): ${sim.reason}`,
+      );
+    }
+    if (!sim.ok && simMode === "require") {
+      throw new TradeError("RPC_FAILURE", `Simulation required but unavailable: ${sim.reason}`);
+    }
+  }
 
   // Transaction id is sha256(packed_trx) — known BEFORE broadcast, so a
   // network timeout can be reconciled by txid instead of guessed at.
