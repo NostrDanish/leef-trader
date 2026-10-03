@@ -133,7 +133,7 @@ export function WalletDesk({ snap }: { snap: LeefSnapshot }) {
       </div>
 
       <div className="grid gap-3 sm:grid-cols-3">
-        <Card className="border-l-2 border-l-accent p-4">
+        <Card className="stat-card p-4">
           <div className="text-xs uppercase tracking-wider text-subtle">Session</div>
           <div className="mt-1 font-mono text-lg">{account}</div>
           <div className="mt-1 flex flex-wrap gap-1.5">
