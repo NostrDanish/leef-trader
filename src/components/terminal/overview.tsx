@@ -301,16 +301,21 @@ function Kpi({
   tone?: "leef" | "wax";
 }) {
   return (
-    <Card
-      className={cn(
-        "p-4 border-l-2",
-        tone === "leef" ? "border-l-leef" : tone === "wax" ? "border-l-wax" : "border-l-accent",
-      )}
-    >
-      <div className="text-xs uppercase tracking-wider text-subtle">{label}</div>
-      <div className="mt-1 truncate font-mono text-lg tabular-nums">{value}</div>
-      <div className="text-xs text-muted-foreground">{sub}</div>
-    </Card>
+    <div className="stat-card p-4">
+      <div className="flex items-center gap-2 text-xs font-medium uppercase tracking-wider text-subtle">
+        <span
+          className={cn(
+            "size-1.5 rounded-full",
+            tone === "leef" ? "bg-leef" : tone === "wax" ? "bg-wax" : "bg-accent",
+          )}
+        />
+        {label}
+      </div>
+      <div className="mt-2 truncate font-mono text-xl font-medium tabular-nums tracking-tight">
+        {value}
+      </div>
+      <div className="mt-1 text-xs text-muted-foreground">{sub}</div>
+    </div>
   );
 }
 
