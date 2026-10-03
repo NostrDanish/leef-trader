@@ -38,7 +38,7 @@ export function TickDesk({ snap, tick }: { snap: LeefSnapshot; tick: LiveTickSta
       </div>
 
       <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
-        <Card className="border-l-2 border-l-accent p-4">
+        <Card className="stat-card p-4">
           <div className="text-xs uppercase tracking-wider text-subtle">LEEF price</div>
           <div className="mt-1 font-mono text-xl tabular-nums text-fg">
             {fmtUsd(snap.leefUsd)}
