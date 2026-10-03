@@ -74,22 +74,22 @@
   }
 }
 
-/* LEEF terminal palette — extra brand colors used across the trading desks */
+/* LEEF terminal palette — modern trading-platform theme used across the desks */
 @theme {
-  --font-sans: "IBM Plex Sans", ui-sans-serif, system-ui, sans-serif;
+  --font-sans: "Inter", "IBM Plex Sans", ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
   --font-mono: "IBM Plex Mono", ui-monospace, "SF Mono", Menlo, Consolas, monospace;
 
-  --color-bg: #08090c;
-  --color-fg: #e8eae9;
-  --color-surface: #101218;
-  --color-surface-2: #171a22;
-  --color-surface-3: #1e232c;
-  --color-subtle: #5c6361;
+  --color-bg: #0a0c11;
+  --color-fg: #f0f3f6;
+  --color-surface: #10141c;
+  --color-surface-2: #161b25;
+  --color-surface-3: #1f2531;
+  --color-subtle: #707886;
   --color-leef: #34d399;
-  --color-wax: #c8a44a;
-  --color-buy: #34d399;
-  --color-sell: #f07171;
-  --color-warn: #d4a017;
+  --color-wax: #d9ad55;
+  --color-buy: #2ebd85;
+  --color-sell: #f6465d;
+  --color-warn: #e8a33d;
 
   --ease-out: cubic-bezier(0.23, 1, 0.32, 1);
   --motion-quick: 150ms;
@@ -106,7 +106,7 @@
 }
 
 :root {
-  --radius: 0.625rem;
+  --radius: 0.75rem;
 
   --background: hsl(0 0% 100%);
   --foreground: hsl(222.2 84% 4.9%);
@@ -153,48 +153,48 @@
 }
 
 .dark {
-  --background: #08090c;
-  --foreground: #e8eae9;
+  --background: #0a0c11;
+  --foreground: #f0f3f6;
 
-  --card: #101218;
-  --card-foreground: #e8eae9;
+  --card: #10141c;
+  --card-foreground: #f0f3f6;
 
-  --popover: #171a22;
-  --popover-foreground: #e8eae9;
+  --popover: #161b25;
+  --popover-foreground: #f0f3f6;
 
-  --primary: #5eead4;
-  --primary-foreground: #04201c;
+  --primary: #34d399;
+  --primary-foreground: #05241a;
 
-  --secondary: #1e232c;
-  --secondary-foreground: #e8eae9;
+  --secondary: #1f2531;
+  --secondary-foreground: #f0f3f6;
 
-  --muted: #171a22;
-  --muted-foreground: #8b918f;
+  --muted: #161b25;
+  --muted-foreground: #98a1af;
 
-  --accent: #5eead4;
-  --accent-foreground: #04201c;
+  --accent: #34d399;
+  --accent-foreground: #05241a;
 
-  --destructive: hsl(0 62.8% 30.6%);
+  --destructive: #f6465d;
   --destructive-foreground: hsl(210 40% 98%);
 
-  --border: #23282f;
-  --input: #23282f;
-  --ring: #5eead4;
+  --border: #1e2430;
+  --input: #1e2430;
+  --ring: #34d399;
 
-  --chart-1: #5eead4;
-  --chart-2: #34d399;
-  --chart-3: #c8a44a;
-  --chart-4: #f07171;
-  --chart-5: #d4a017;
+  --chart-1: #34d399;
+  --chart-2: #2ebd85;
+  --chart-3: #d9ad55;
+  --chart-4: #f6465d;
+  --chart-5: #e8a33d;
 
-  --sidebar: #101218;
-  --sidebar-foreground: #e8eae9;
-  --sidebar-primary: #5eead4;
-  --sidebar-primary-foreground: #04201c;
-  --sidebar-accent: #171a22;
-  --sidebar-accent-foreground: #e8eae9;
-  --sidebar-border: #23282f;
-  --sidebar-ring: #5eead4;
+  --sidebar: #10141c;
+  --sidebar-foreground: #f0f3f6;
+  --sidebar-primary: #34d399;
+  --sidebar-primary-foreground: #05241a;
+  --sidebar-accent: #161b25;
+  --sidebar-accent-foreground: #f0f3f6;
+  --sidebar-border: #1e2430;
+  --sidebar-ring: #34d399;
 }
 
 @layer base {
@@ -215,6 +215,24 @@
     @apply bg-background text-foreground;
     font-family: var(--font-sans);
     line-height: 1.5;
+    letter-spacing: -0.011em;
+  }
+
+  /* Modern platform chrome: thin scrollbars, soft focus rings */
+  * {
+    scrollbar-width: thin;
+    scrollbar-color: var(--color-surface-3) transparent;
+  }
+  ::-webkit-scrollbar {
+    width: 8px;
+    height: 8px;
+  }
+  ::-webkit-scrollbar-thumb {
+    background: var(--color-surface-3);
+    border-radius: 999px;
+  }
+  ::-webkit-scrollbar-track {
+    background: transparent;
   }
 
   button:not(:disabled),
@@ -250,5 +268,26 @@
 
 .tabular {
   font-variant-numeric: tabular-nums;
+}
+
+/* Ambient page glow behind the app shell */
+.app-glow {
+  background:
+    radial-gradient(1100px 480px at 15% -10%, color-mix(in oklab, var(--color-leef) 7%, transparent), transparent 60%),
+    radial-gradient(900px 420px at 85% -12%, color-mix(in oklab, var(--color-wax) 5%, transparent), transparent 60%),
+    var(--color-bg);
+}
+
+/* Elevated panel used by KPI / stat cards */
+.stat-card {
+  position: relative;
+  border-radius: var(--radius-xl);
+  border: 1px solid color-mix(in oklab, var(--color-border) 70%, transparent);
+  background: linear-gradient(180deg, color-mix(in oklab, var(--color-surface-2) 60%, transparent), transparent 55%), var(--color-surface);
+  box-shadow: 0 1px 0 0 rgb(255 255 255 / 0.03) inset, 0 12px 32px -16px rgb(0 0 0 / 0.6);
+  transition: border-color var(--motion-quick) var(--ease-out), transform var(--motion-quick) var(--ease-out);
+}
+.stat-card:hover {
+  border-color: var(--color-surface-3);
 }
 

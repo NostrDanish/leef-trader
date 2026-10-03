@@ -38,9 +38,9 @@ export function StatusBar({
   const conversion = route && route.amountIn > 0 ? route.amountOut / route.amountIn : 0;
 
   return (
-    <div className="border-b border-border bg-surface">
+    <div className="border-b border-border/70 bg-surface/50">
       <VersionBanner />
-      <div className="mx-auto flex max-w-7xl flex-col gap-2 px-4 py-2 text-xs text-muted-foreground sm:flex-row sm:items-center sm:justify-between sm:px-6">
+      <div className="mx-auto flex max-w-[1440px] flex-col gap-2 px-4 py-2 text-xs text-muted-foreground sm:flex-row sm:items-center sm:justify-between sm:px-6">
         <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
           <span className="relative flex size-2">
             <span

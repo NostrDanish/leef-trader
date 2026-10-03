@@ -419,7 +419,7 @@ export function BotDesk({ snap }: { snap: LeefSnapshot }) {
 
           {b.strategy !== "growth" && (
           <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
-            <Card className="border-l-2 border-l-leef p-4">
+            <Card className="stat-card p-4">
               <div className="text-xs uppercase tracking-wider text-subtle">Position</div>
               {b.position ? (
                 <>
@@ -935,7 +935,7 @@ function GrowthPnlCards({ snap }: { snap: LeefSnapshot }) {
   return (
     <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
       {rows.map((r) => (
-        <Card key={r.symbol} className="border-l-2 border-l-leef p-4">
+        <Card key={r.symbol} className="stat-card p-4">
           <div className="text-xs uppercase tracking-wider text-subtle">{r.symbol} growth</div>
           <div className={cn("mt-1 font-mono text-lg tabular-nums", r.delta >= 0 ? "text-leef" : "text-sell")}>
             {r.delta >= 0 ? "+" : ""}

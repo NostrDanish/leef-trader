@@ -1,4 +1,4 @@
-import { ArrowUpRight, KeyRound, RefreshCw, ShieldAlert } from "lucide-react";
+import { ArrowUpRight, RefreshCw, ShieldAlert, TrendingDown, TrendingUp, Wallet } from "lucide-react";
 import { LazyLoginArea } from "@/components/auth/LazyLoginArea";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -47,7 +47,6 @@ export function TerminalHeader({
   onRefresh: () => void;
 }) {
   const stats = marketStats(snap);
-  const waxPer10m = snap.waxPerLeef * 10_000_000;
   const chg = stats.change24;
   const mode = useWallet((s) => s.mode);
   const account = useWallet((s) => s.account);
@@ -57,62 +56,75 @@ export function TerminalHeader({
   const setTab = useTerminal((s) => s.setTab);
   const setImportOpen = useWallet((s) => s.setImportOpen);
 
-  return (
-    <header className="sticky top-0 z-40 border-b border-border bg-bg/90 backdrop-blur-md">
-      <div className="mx-auto flex max-w-7xl items-center justify-between gap-3 px-4 py-3 sm:px-6">
-        <div className="flex min-w-0 items-center gap-3">
-          <span className="flex -space-x-2">
-            <TokenMark symbol="LEEF" />
-            <TokenMark symbol="WAX" />
-          </span>
-          <div className="min-w-0">
-            <div className="flex items-center gap-2">
-              <h1 className="truncate text-sm font-medium tracking-tight">
-                LEEF Analytics
-              </h1>
-              <Badge variant={snap.source === "live" ? "leef" : "warn"}>
-                {snap.source === "live" ? "On-chain" : "Cached book"}
-              </Badge>
-            </div>
-            <p className="hidden text-xs text-muted-foreground lg:block">
-              AI bot + Alcor AMM desks for LEEF · leefmaincorp
-            </p>
-          </div>
-        </div>
+  const chgPos = chg != null && chg >= 0;
 
-        <div className="hidden items-center gap-5 rounded-lg border border-border bg-surface px-4 py-2 text-xs xl:flex">
-          <div>
-            <div className="text-subtle">10M LEEF</div>
-            <div className="font-mono tabular-nums text-wax">
-              {fmtNum(waxPer10m, { digits: 4 })} WAX
-            </div>
-          </div>
-          <div className="h-6 w-px bg-border" />
-          <div>
-            <div className="text-subtle">1 LEEF</div>
-            <div className="font-mono tabular-nums">{fmtUsd(snap.leefUsd)}</div>
-          </div>
-          <div className="h-6 w-px bg-border" />
-          <div>
-            <div className="text-subtle">24h</div>
-            <div
+  return (
+    <header className="sticky top-0 z-40 border-b border-border/70 bg-bg/80 backdrop-blur-xl">
+      <div className="mx-auto flex h-16 max-w-[1440px] items-center justify-between gap-3 px-4 sm:px-6">
+        {/* Brand */}
+        <button
+          type="button"
+          onClick={() => setTab("overview")}
+          className="flex min-w-0 items-center gap-3 rounded-lg outline-none focus-visible:ring-2 focus-visible:ring-ring/50"
+          aria-label="Go to overview"
+        >
+          <span className="grid size-9 place-items-center rounded-xl bg-leef/15 ring-1 ring-leef/30">
+            <TokenMark symbol="LEEF" size="sm" />
+          </span>
+          <span className="flex flex-col items-start leading-none">
+            <span className="text-sm font-semibold tracking-tight">LEEF Trader</span>
+            <span className="mt-1 hidden text-[11px] text-subtle sm:block">
+              Alcor AMM · WAX
+            </span>
+          </span>
+          <Badge
+            variant={snap.source === "live" ? "leef" : "warn"}
+            className="ml-1 hidden md:inline-flex"
+          >
+            <span
               className={cn(
-                "font-mono tabular-nums",
-                chg == null ? "text-muted-foreground" : chg >= 0 ? "text-buy" : "text-sell",
+                "size-1.5 rounded-full",
+                snap.source === "live" ? "animate-pulse bg-leef" : "bg-warn",
+              )}
+            />
+            {snap.source === "live" ? "Live" : "Cached"}
+          </Badge>
+        </button>
+
+        {/* Market stats pill */}
+        <div className="hidden items-center rounded-full border border-border/70 bg-surface/80 px-2 py-1.5 text-xs shadow-[0_1px_0_0_rgb(255_255_255/0.03)_inset] lg:flex">
+          <div className="flex items-center gap-2 px-3">
+            <span className="text-subtle">LEEF</span>
+            <span className="font-mono text-sm font-medium tabular-nums">
+              {fmtUsd(snap.leefUsd)}
+            </span>
+            <span
+              className={cn(
+                "flex items-center gap-1 rounded-full px-1.5 py-0.5 font-mono tabular-nums",
+                chg == null
+                  ? "text-muted-foreground"
+                  : chgPos
+                    ? "bg-buy/10 text-buy"
+                    : "bg-sell/10 text-sell",
               )}
             >
-              {chg == null ? "—" : `${chg >= 0 ? "+" : ""}${chg.toFixed(2)}%`}
-            </div>
+              {chg != null && (chgPos ? <TrendingUp className="size-3" /> : <TrendingDown className="size-3" />)}
+              {chg == null ? "—" : `${chgPos ? "+" : ""}${chg.toFixed(2)}%`}
+            </span>
           </div>
-          <div className="h-6 w-px bg-border" />
-          <div>
-            <div className="text-subtle">TVL</div>
-            <div className="font-mono tabular-nums text-accent">
-              {fmtUsd(stats.tvlUsd, 0)}
-            </div>
+          <div className="h-5 w-px bg-border" />
+          <div className="hidden px-3 xl:block">
+            <span className="text-subtle">TVL </span>
+            <span className="font-mono tabular-nums text-fg">{fmtUsd(stats.tvlUsd, 0)}</span>
+          </div>
+          <div className="hidden h-5 w-px bg-border xl:block" />
+          <div className="hidden px-3 xl:block">
+            <span className="text-subtle">24h </span>
+            <span className="font-mono tabular-nums text-fg">{fmtUsd(stats.volume24Usd, 0)}</span>
           </div>
         </div>
 
+        {/* Actions */}
         <div className="flex items-center gap-2">
           {(botRunning || rebalRunning) && (
             <Button
@@ -127,59 +139,61 @@ export function TerminalHeader({
             </Button>
           )}
           <Button
-            variant="secondary"
+            variant="ghost"
+            size="icon"
+            onClick={onRefresh}
+            aria-label="Refresh pools"
+            className="text-muted-foreground hover:text-fg"
+          >
+            <RefreshCw className={fetching ? "animate-spin" : ""} />
+          </Button>
+          <Button
+            variant="outline"
+            size="icon"
+            asChild
+            className="hidden sm:inline-flex"
+            title="Trade on Alcor"
+          >
+            <a
+              href="https://wax.alcor.exchange/swap?output=LEEF-leefmaincorp&input=WAX-eosio.token"
+              target="_blank"
+              rel="noreferrer"
+              aria-label="Trade on Alcor"
+            >
+              <ArrowUpRight className="size-4" />
+            </a>
+          </Button>
+          <Button
+            variant={mode === "live" ? "secondary" : "default"}
             size="sm"
             className="hidden sm:inline-flex"
             onClick={() => setTab("wallet")}
           >
-            <KeyRound className="size-3.5" />
+            <Wallet className="size-3.5" />
             <span className="font-mono">{account}</span>
-            <Badge
-              variant={
-                mode === "live" ? (botRunning ? "leef" : "plain") : botRunning ? "accent" : "plain"
-              }
-            >
-              {mode === "live"
-                ? botRunning
+            {mode === "live" && (
+              <Badge variant={botRunning ? "leef" : "plain"}>
+                {botRunning
                   ? "Live bot"
                   : authType === "key"
                     ? "Key"
                     : authType === "wcw"
                       ? "WCW"
-                      : "Anchor"
-                : botRunning
-                  ? "Paper bot"
-                  : "Wallet"}
-            </Badge>
+                      : "Anchor"}
+              </Badge>
+            )}
+            {mode !== "live" && botRunning && <Badge variant="accent">Paper bot</Badge>}
           </Button>
           <Button
-            variant="secondary"
+            variant="default"
             size="icon"
             className="sm:hidden"
             aria-label="Wallet"
             onClick={() => (mode === "live" ? setTab("wallet") : setImportOpen(true))}
           >
-            <KeyRound />
+            <Wallet />
           </Button>
-          <Button
-            variant="secondary"
-            size="icon"
-            onClick={onRefresh}
-            aria-label="Refresh pools"
-          >
-            <RefreshCw className={fetching ? "animate-spin" : ""} />
-          </Button>
-          <Button variant="outline" size="sm" asChild className="hidden sm:inline-flex">
-            <a
-              href="https://wax.alcor.exchange/swap?output=LEEF-leefmaincorp&input=WAX-eosio.token"
-              target="_blank"
-              rel="noreferrer"
-            >
-              Trade on Alcor
-              <ArrowUpRight className="size-3.5" />
-            </a>
-          </Button>
-          <LazyLoginArea className="hidden max-w-36 lg:inline-flex" />
+          <LazyLoginArea className="hidden max-w-36 xl:inline-flex" />
         </div>
       </div>
     </header>
