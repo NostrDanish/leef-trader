@@ -18,6 +18,7 @@ import type { LeefSnapshot, RankedPool, SwapRoute } from "@/lib/leef/types";
 import { cn } from "@/lib/utils";
 import { useTerminal } from "@/store/terminal";
 import { PairMarks, TokenMark } from "./token-mark";
+import { TokenRiskNotice } from "./token-risk-notice";
 
 const PRESETS = [1, 10, 50, 100];
 
@@ -297,6 +298,13 @@ export function Quotes({
               </dl>
             )}
 
+            {active && (
+              <TokenRiskNotice
+                tokens={[tokenIn, tokenOut].map((s) =>
+                  snap.universe.find((u) => u.symbol === s.toUpperCase()),
+                )}
+              />
+            )}
             {active && <TradeButton snap={snap} />}
             <p className="text-center text-xs text-subtle">
               {pinned

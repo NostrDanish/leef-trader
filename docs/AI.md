@@ -89,3 +89,15 @@ while a review is in flight.
   allowlisted (see checklist #2).
 - Health check (`GET /api/health`) validates the PPQ key without spending a
   model call — the desk pings it on open.
+
+## Jev token screen (advisory, server-side)
+
+`POST /api/token-risk` (Vercel function `api/token-risk.ts`) asks TypeSafe's Jev model two
+Noul questions per token — *likely copycat/impersonation of a well-known WAX token?* and
+*likely scam/honeypot/rug pattern?* — in one batched request, 3 s timeout, 6 h in-memory cache.
+The swap desk shows a caution (≥ 0.5) or warning (≥ 0.7) notice for the pair's tokens.
+
+- Key: server env `TYPESAFE_API_KEY` only (see `.env.example`; never `VITE_`-prefixed, never sent to the browser).
+- Advisory only: the notice never disables, sizes or alters a trade; it is not imported by the trade
+  path (enforced in `ai-boundary.test.ts`). Unconfigured/down/timeout → `{ available: false }` → no notice.
+- Known tokens (WAX, LEEF, wrapped stables, TLM, …) are never sent or flagged.
