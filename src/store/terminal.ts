@@ -101,7 +101,7 @@ type TerminalState = {
 export const useTerminal = create<TerminalState>()(
   persist(
     (set, get) => ({
-  tab: "tick",
+  tab: "overview",
   selectedPoolId: 217,
   tokenIn: "WAX",
   tokenOut: "LEEF",

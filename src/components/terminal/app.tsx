@@ -76,7 +76,7 @@ export function TerminalApp() {
   }, []);
 
   return (
-    <div className="flex min-h-screen flex-col overflow-x-hidden bg-bg text-fg">
+    <div className="app-glow flex min-h-screen flex-col overflow-x-hidden text-fg">
       <TerminalHeader
         snap={snap}
         fetching={isFetching}
@@ -88,14 +88,14 @@ export function TerminalApp() {
       <ImportKeyDialog />
 
       {snap.warning && snap.source === "fallback" && (
-        <div className="mx-auto w-full max-w-7xl px-4 pt-4 sm:px-6">
-          <div className="rounded-lg border border-warn/30 bg-warn/10 px-3 py-2 text-xs text-warn">
+        <div className="mx-auto w-full max-w-[1440px] px-4 pt-4 sm:px-6">
+          <div className="rounded-xl border border-warn/30 bg-warn/10 px-3 py-2 text-xs text-warn">
             {snap.warning}
           </div>
         </div>
       )}
 
-      <main className="mx-auto flex w-full max-w-7xl flex-1 flex-col gap-5 px-4 py-5 pb-24 sm:px-6 md:pb-5">
+      <main className="mx-auto flex w-full max-w-[1440px] flex-1 flex-col gap-6 px-4 py-6 pb-24 sm:px-6 md:pb-6">
         <div className="min-w-0">
           <DesktopNav poolCount={snap.pools.length} />
         </div>
@@ -118,12 +118,12 @@ export function TerminalApp() {
         </Suspense>
       </main>
 
-      <footer className="border-t border-border py-4 pb-24 text-xs text-subtle md:pb-4">
-        <div className="mx-auto flex max-w-7xl flex-col items-center justify-between gap-2 px-4 sm:flex-row sm:px-6">
-          <span>LEEF analytics · leefmaincorp · Alcor AMM on WAX</span>
+      <footer className="border-t border-border/70 py-5 pb-24 text-xs text-subtle md:pb-5">
+        <div className="mx-auto flex max-w-[1440px] flex-col items-center justify-between gap-2 px-4 sm:flex-row sm:px-6">
+          <span>LEEF Trader · leefmaincorp · Alcor AMM on WAX</span>
           <div className="flex items-center gap-4">
             <a
-              className="hover:text-fg"
+              className="transition-colors hover:text-fg"
               href="https://wax.alcor.exchange"
               target="_blank"
               rel="noreferrer"
@@ -131,7 +131,7 @@ export function TerminalApp() {
               Alcor
             </a>
             <a
-              className="hover:text-fg"
+              className="transition-colors hover:text-fg"
               href="https://waxblock.io/tokens/LEEF-wax-leefmaincorp"
               target="_blank"
               rel="noreferrer"
@@ -139,7 +139,7 @@ export function TerminalApp() {
               Explorer
             </a>
             <a
-              className="hover:text-fg"
+              className="transition-colors hover:text-fg"
               href="https://shakespeare.diy"
               target="_blank"
               rel="noreferrer"
