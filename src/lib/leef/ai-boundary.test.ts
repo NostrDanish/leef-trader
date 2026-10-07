@@ -39,7 +39,21 @@ describe("AI execution boundary", () => {
       const src = read(f);
       expect(src.includes("ai-analyst"), `${f} must not import ai-analyst`).toBe(false);
       expect(src.includes("aiTask"), `${f} must not call aiTask`).toBe(false);
+      expect(src.includes("token-risk"), `${f} must not import the Jev token screen`).toBe(false);
     }
+  });
+
+  it("the Jev token screen cannot sign, touch secrets or reach the trade path", () => {
+    for (const f of ["./token-risk.ts", "./token-risk-core.ts", "../../../api/token-risk.ts"]) {
+      const src = read(f);
+      expect(src.includes("lib/wallet"), `${f}`).toBe(false);
+      expect(src.includes("signAndPush"), `${f}`).toBe(false);
+      expect(src.includes("push_transaction"), `${f}`).toBe(false);
+    }
+    // the TypeSafe key is server-only: never referenced by client code
+    expect(read("./token-risk.ts").includes("TYPESAFE_API_KEY")).toBe(false);
+    expect(read("./token-risk-core.ts").includes("TYPESAFE_API_KEY")).toBe(false);
+    expect(read("../../components/terminal/token-risk-notice.tsx").includes("TYPESAFE_API_KEY")).toBe(false);
   });
 
   it("the AI client itself cannot sign or touch secrets", () => {
