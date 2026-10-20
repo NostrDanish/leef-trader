@@ -222,7 +222,7 @@ export async function verifyExecutableRoute(opts: {
       // min-out is the number the chain will actually enforce.
       const dust = isDustOutput(expectedOut, tokenOut.decimals);
       const minOut = dust
-? dustSafeMinOut(expectedOut, opts.slippagePct / 100, tokenOut.decimals)
+        ? dustSafeMinOut(expectedOut, opts.slippagePct / 100, tokenOut.decimals)
         : parseAssetAmount(quote.minReceived);
       if (!(minOut > 0)) {
         throw new TradeError(
