@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useEffect, useState } from "react";
 import {
   Brain,
   CheckCircle2,
@@ -36,6 +36,7 @@ import { useBot } from "@/store/bot";
 import { useTerminal } from "@/store/terminal";
 import { useToast } from "@/hooks/useToast";
 import { cn } from "@/lib/utils";
+import { AiExecPanel } from "./ai-exec-panel";
 
 /* ------------------------------------------------------------------ */
 /* Compact context builders — scalars and short lists, never snapshots  */
@@ -285,6 +286,54 @@ const TASKS: { id: AiTask; label: string; blurb: string }[] = [
   },
 ];
 
+/**
+ * Module-level so timestamps (Date.now) and journaling stay out of render
+ * scope. Runs one analyst task; on evidence_review also pushes any extracted
+ * learning artifacts into the governor's shadow pipeline. Advisory only.
+ */
+async function executeAnalystTask(
+  task: AiTask,
+  data: Record<string, unknown>,
+  aiGatewayUrl: string,
+): Promise<
+  | { ok: true; at: number; result: AiResult; proposed: number; rejected: number }
+  | { ok: false; at: number; error: string; failure?: string }
+> {
+  const t0 = Date.now();
+  try {
+    const result = await aiTask(task, data, { url: aiGatewayUrl });
+    journal({
+      kind: "ai",
+      reason: `${task}: ok · ${result.raw.slice(0, 180)}`,
+      latencyMs: Date.now() - t0,
+    });
+    let proposed = 0;
+    let rejected = 0;
+    if (task === "evidence_review") {
+      // AI pattern discovery: typed proposals only, governor-validated,
+      // shadow-first. The analyst discovers; statistics decide.
+      const artifacts = extractLearningArtifacts(
+        result.content,
+        getProfiles(),
+        Date.now(),
+        DEFAULT_LEARNING_CONFIG,
+        { slippagePct: 0.05 },
+      );
+      if (artifacts.length > 0) {
+        const r = injectArtifacts(artifacts);
+        proposed = r.added;
+        rejected = r.rejected;
+      }
+    }
+    return { ok: true, at: Date.now(), result, proposed, rejected };
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : "AI call failed";
+    const failure = err instanceof AiError ? err.failure : undefined;
+    journal({ kind: "ai", reason: `${task}: failed · ${msg}`, latencyMs: Date.now() - t0 });
+    return { ok: false, at: Date.now(), error: msg, failure };
+  }
+}
+
 export function AiDesk({ snap }: { snap: LeefSnapshot }) {
   const { toast } = useToast();
   const aiGatewayUrl = useTerminal((s) => s.aiGatewayUrl);
@@ -313,82 +362,71 @@ export function AiDesk({ snap }: { snap: LeefSnapshot }) {
   };
 
   const [urlDraft, setUrlDraft] = useState(aiGatewayUrl);
-  const [health, setHealth] = useState<"unknown" | "checking" | "ok" | "down">("unknown");
+  // Gateway health is derived: a stale entry for a different url/nonce reads
+  // as "checking" while the probe below resolves. No setState-in-effect.
+  const [healthNonce, setHealthNonce] = useState(0);
+  const healthKey = `${aiEnabled}:${aiGatewayUrl}:${healthNonce}`;
+  const [health, setHealth] = useState<{ key: string; ok: boolean } | null>(null);
   const [run, setRun] = useState<RunState>({ status: "idle" });
   const [, setBudgetTick] = useState(0);
   const budget = aiBudget();
-
-  const checkHealth = useCallback(async () => {
-    if (!useTerminal.getState().aiEnabled) return;
-    setHealth("checking");
-    setHealth((await aiHealth(aiGatewayUrl)) ? "ok" : "down");
-  }, [aiGatewayUrl]);
+  const healthShown: "off" | "checking" | "ok" | "down" = !aiEnabled
+    ? "off"
+    : health?.key === healthKey
+      ? health.ok
+        ? "ok"
+        : "down"
+      : "checking";
 
   useEffect(() => {
-    setHealth("unknown");
-    void checkHealth();
-  }, [checkHealth, aiEnabled]);
+    if (!aiEnabled) return;
+    let live = true;
+    void aiHealth(aiGatewayUrl).then((ok) => {
+      if (live) setHealth({ key: healthKey, ok });
+    });
+    return () => {
+      live = false;
+    };
+  }, [aiEnabled, aiGatewayUrl, healthKey]);
 
   const runTask = async (task: AiTask) => {
     if (!aiEnabled || run.status === "running") return;
     setRun({ status: "running", task });
-    const t0 = Date.now();
-    try {
-      const data =
-        task === "market_analysis"
-          ? marketContext(snap)
-          : task === "strategy_analysis"
-            ? strategyContext()
-            : await evidenceReviewContext();
-      const result = await aiTask(task, data, { url: aiGatewayUrl });
-      setRun({ status: "done", task, result, at: Date.now() });
-      journal({
-        kind: "ai",
-        reason: `${task}: ok · ${result.raw.slice(0, 180)}`,
-        latencyMs: Date.now() - t0,
-      });
-      if (task === "evidence_review") {
-        // AI pattern discovery: typed proposals only, governor-validated,
-        // shadow-first. The analyst discovers; statistics decide.
-        const proposed = extractLearningArtifacts(
-          result.content,
-          getProfiles(),
-          Date.now(),
-          DEFAULT_LEARNING_CONFIG,
-          { slippagePct: 0.05 },
-        );
-        if (proposed.length > 0) {
-          const r = injectArtifacts(proposed);
-          if (r.added > 0) {
-            toast({
-              title: `AI proposed ${r.added} learning artifact${r.added === 1 ? "" : "s"}`,
-              description: "Shadow-testing on the Evidence desk — nothing is applied without proof.",
-            });
-          }
-          if (r.rejected > 0) {
-            toast({
-              title: `Governor rejected ${r.rejected} AI proposal${r.rejected === 1 ? "" : "s"}`,
-              description: "Failed schema, clamp, evidence or scope checks.",
-              variant: "destructive",
-            });
-          }
-        }
+    const data =
+      task === "market_analysis"
+        ? marketContext(snap)
+        : task === "strategy_analysis"
+          ? strategyContext()
+          : await evidenceReviewContext();
+    const out = await executeAnalystTask(task, data, aiGatewayUrl);
+    setBudgetTick((n) => n + 1);
+    if (out.ok) {
+      setRun({ status: "done", task, result: out.result, at: out.at });
+      if (out.proposed > 0) {
+        toast({
+          title: `AI proposed ${out.proposed} learning artifact${out.proposed === 1 ? "" : "s"}`,
+          description: "Shadow-testing on the Evidence desk — nothing is applied without proof.",
+        });
       }
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : "AI call failed";
-      const failure = err instanceof AiError ? err.failure : undefined;
-      setRun({ status: "error", task, error: msg, failure, at: Date.now() });
-      journal({ kind: "ai", reason: `${task}: failed · ${msg}`, latencyMs: Date.now() - t0 });
-      if (failure === "rate_limited_local") {
-        toast({ title: "Slow down", description: msg });
+      if (out.rejected > 0) {
+        toast({
+          title: `Governor rejected ${out.rejected} AI proposal${out.rejected === 1 ? "" : "s"}`,
+          description: "Failed schema, clamp, evidence or scope checks.",
+          variant: "destructive",
+        });
       }
-    } finally {
-      setBudgetTick((n) => n + 1);
+    } else {
+      setRun({ status: "error", task, error: out.error, failure: out.failure, at: out.at });
+      if (out.failure === "rate_limited_local") {
+        toast({ title: "Slow down", description: out.error });
+      }
     }
   };
 
   return (
     <div className="flex flex-col gap-6">
+      <AiExecPanel snap={snap} />
+
       <Card className="p-4 sm:p-5">
         <div className="flex flex-wrap items-start justify-between gap-4">
           <div className="flex items-start gap-3">
@@ -437,26 +475,28 @@ export function AiDesk({ snap }: { snap: LeefSnapshot }) {
               variant="outline"
               className={cn(
                 "gap-1.5",
-                health === "ok" && "border-leef/40 text-leef",
-                health === "down" && "border-sell/40 text-sell",
+                healthShown === "ok" && "border-leef/40 text-leef",
+                healthShown === "down" && "border-sell/40 text-sell",
               )}
             >
-              {health === "checking" ? (
+              {healthShown === "checking" ? (
                 <Loader2 className="size-3 animate-spin" />
-              ) : health === "ok" ? (
+              ) : healthShown === "ok" ? (
                 <CheckCircle2 className="size-3" />
-              ) : health === "down" ? (
+              ) : healthShown === "down" ? (
                 <XCircle className="size-3" />
               ) : (
                 <CircleDashed className="size-3" />
               )}
-              {health === "checking"
+              {healthShown === "checking"
                 ? "Checking…"
-                : health === "ok"
+                : healthShown === "ok"
                   ? "Gateway online"
-                  : health === "down"
+                  : healthShown === "down"
                     ? "Unreachable / CORS"
-                    : "Gateway"}
+                    : healthShown === "off"
+                      ? "AI off"
+                      : "Gateway"}
             </Badge>
           </div>
         </div>
@@ -490,7 +530,7 @@ export function AiDesk({ snap }: { snap: LeefSnapshot }) {
               <Save className="size-4" />
               Save
             </Button>
-            <Button variant="ghost" size="sm" onClick={() => void checkHealth()}>
+            <Button variant="ghost" size="sm" onClick={() => setHealthNonce((n) => n + 1)}>
               Re-check
             </Button>
             <span className="text-xs text-muted-foreground ml-auto tabular-nums">
@@ -500,7 +540,7 @@ export function AiDesk({ snap }: { snap: LeefSnapshot }) {
           </div>
         )}
 
-        {health === "down" && (
+        {healthShown === "down" && (
           <div className="mt-3 rounded-lg border border-warn/30 bg-warn/5 p-3 text-sm text-muted-foreground">
             If the worker is up but calls fail, this origin is probably not in its CORS allowlist.
             Add{" "}
