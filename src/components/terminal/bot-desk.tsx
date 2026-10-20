@@ -10,9 +10,11 @@ import {
   Sparkles,
   Waves,
 } from "lucide-react";
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Area, AreaChart, YAxis } from "recharts";
 import { ChartFrame } from "./chart-frame";
+import { StrategyPnlChart } from "@/components/charts/StrategyPnlChart";
+import { useNow } from "./use-now";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
@@ -93,34 +95,42 @@ export function BotDesk({ snap }: { snap: LeefSnapshot }) {
 
   const liveReady = mode === "live" && (hasSecret() || hasWalletSession());
   const liveBook = snap.source === "live";
-  const coolLeft = Math.max(0, Math.ceil((b.cooldownUntil - Date.now()) / 1000));
   const warmup = Math.min(b.series.length, BOT_WARMUP_POINTS);
 
   const equityUsd = markPortfolioUsd(snap, balances).totalUsd;
   const winRate = b.stats.trades > 0 ? b.stats.wins / b.stats.trades : 0;
 
   const syncSec = useTerminal((s) => clampSyncSec(s.syncSec ?? DEFAULT_SYNC_SEC));
-  /** Dry-run: what the bot would do on this book right now. */
-  const preview = evaluateBot({
-    now: Date.now(),
-    snap,
-    series: b.series,
-    running: true,
-    strategy: b.strategy,
-    goals: b.goals,
-    risk: { ...b.risk, maxQuoteAgeSec: Math.max(b.risk.maxQuoteAgeSec, syncSec + 15) },
-    position: b.position,
-    gridAnchor: b.gridAnchor,
-    balances,
-    cooldownUntil: b.cooldownUntil,
-    tradesThisHour: b.tradesThisHour,
-    sessionRealizedUsd: b.stats.realizedUsd,
-    sessionStartEquityUsd: b.stats.startEquityUsd,
-    quote: b.quote,
-    base: b.base,
-    growthTargets: b.growthTargets,
-    growthMode: b.growthMode,
-  });
+  /**
+   * Dry-run: what the bot would do on this book. Evaluated at the book's own
+   * fetch time (pure — no Date.now() in render) and memoized on the inputs so
+   * the engine doesn't re-run on every render.
+   */
+  const snapMs = Date.parse(snap.fetchedAt);
+  const preview = useMemo(
+    () =>
+      evaluateBot({
+        now: snapMs,
+        snap,
+        series: b.series,
+        running: true,
+        strategy: b.strategy,
+        goals: b.goals,
+        risk: { ...b.risk, maxQuoteAgeSec: Math.max(b.risk.maxQuoteAgeSec, syncSec + 15) },
+        position: b.position,
+        gridAnchor: b.gridAnchor,
+        balances,
+        cooldownUntil: b.cooldownUntil,
+        tradesThisHour: b.tradesThisHour,
+        sessionRealizedUsd: b.stats.realizedUsd,
+        sessionStartEquityUsd: b.stats.startEquityUsd,
+        quote: b.quote,
+        base: b.base,
+        growthTargets: b.growthTargets,
+        growthMode: b.growthMode,
+      }),
+    [snap, snapMs, b, balances, syncSec],
+  );
 
   function onStart() {
     // A halted strategy must be resumed explicitly (banner below) — the
@@ -285,7 +295,7 @@ export function BotDesk({ snap }: { snap: LeefSnapshot }) {
               <span>
                 {warmup}/{BOT_WARMUP_POINTS} prints for the engines
               </span>
-              {coolLeft > 0 && <span>Next trade in {coolLeft}s</span>}
+              <CooldownCountdown until={b.cooldownUntil} />
             </div>
             <div className="mt-2 h-1.5 overflow-hidden rounded-full bg-surface-2">
               <div
@@ -508,6 +518,8 @@ export function BotDesk({ snap }: { snap: LeefSnapshot }) {
             </Card>
           )}
 
+          {b.strategy !== "growth" && <StrategyPnlChart />}
+
           <Card className="p-4 sm:p-5">
             <div className="mb-3 flex items-center justify-between gap-2">
               <div>
@@ -617,22 +629,31 @@ function HoldingsPosition({ snap }: { snap: LeefSnapshot }) {
   );
 }
 
+/** Ticking "next trade in Ns" countdown, isolated so only this span re-renders. */
+function CooldownCountdown({ until }: { until: number }) {
+  const now = useNow();
+  const coolLeft = Math.max(0, Math.ceil((until - now) / 1000));
+  if (coolLeft <= 0) return null;
+  return <span>Next trade in {coolLeft}s</span>;
+}
+
 function RegimeBadge({ snap }: { snap: LeefSnapshot }) {
   const series = useBot((s) => s.series);
   const decisions = useBot((s) => s.decisions);
   const risk = useBot((s) => s.risk);
+  const now = useNow(5000);
   const r = classifyRegime({
     series,
     poolPricesUsd: snap.pools.map((p) => p.usdPerLeef ?? 0).filter((v) => v > 0),
   });
   const danger = dangerScore({
-    quoteAgeMs: Math.max(0, Date.now() - Date.parse(snap.fetchedAt)),
+    quoteAgeMs: Math.max(0, now - Date.parse(snap.fetchedAt)),
     maxQuoteAgeMs: Math.max(15, risk.maxQuoteAgeSec) * 1000,
     volPct: r.volPct,
     dislocationPct: r.dislocationPct,
     liquidityUsd: Math.max(0, ...snap.pools.map((p) => p.tvlUsd)),
     recentFailures: decisions.filter(
-      (d) => d.kind === "error" && isEconomicFailureReason(d.reason) && Date.now() - Date.parse(d.t) < 600_000,
+      (d) => d.kind === "error" && isEconomicFailureReason(d.reason) && now - Date.parse(d.t) < 600_000,
     ).length,
   });
   const tone =
@@ -669,11 +690,12 @@ function RegimeBadge({ snap }: { snap: LeefSnapshot }) {
 
 function PositionPnl({ snap }: { snap: LeefSnapshot }) {
   const position = useBot((s) => s.position);
+  const now = useNow(10_000);
   if (!position) return null;
   const pnlPct = (snap.leefUsd / position.entryUsd - 1) * 100;
   const valueUsd = position.amountLeef * snap.leefUsd;
   const pnlUsd = valueUsd - position.entryCostUsd;
-  const heldMin = Math.max(0, Math.round((Date.now() - position.since) / 60_000));
+  const heldMin = Math.max(0, Math.round((now - position.since) / 60_000));
   return (
     <>
       <div
@@ -966,6 +988,66 @@ function GrowthPnlCards({ snap }: { snap: LeefSnapshot }) {
   );
 }
 
+/**
+ * Module-level so timing (Date.now) and journaling live outside render scope.
+ * Advisory only: returns a ranked mix for a human to apply — never trades.
+ */
+async function requestGrowthMix(args: {
+  snap: LeefSnapshot;
+  candidates: string[];
+  currentTargets: { symbol: string; weight: number }[];
+  balances: ReturnType<ReturnType<typeof useWallet.getState>["balances"]>;
+  aiGatewayUrl: string;
+}): Promise<{ pick: ReturnType<typeof extractGrowthTargets>; note: string | null }> {
+  const { snap, candidates, currentTargets, balances, aiGatewayUrl } = args;
+  const t0 = Date.now();
+  try {
+    const candData = candidates.map((symbol) => {
+      const u = snap.universe.find((t) => t.symbol === symbol);
+      return {
+        symbol,
+        tvlUsd: Math.round(u?.tvlUsd ?? 0),
+        volume24Usd: Math.round(u?.volume24Usd ?? 0),
+        usdPrice: u?.usdPrice ?? null,
+        trusted: u?.alcorTrusted ?? false,
+        scam: u?.alcorScam ?? false,
+      };
+    });
+    const res = await aiTask(
+      "strategy_analysis",
+      {
+        mode: "growth_target_selection",
+        instruction:
+          "Pick 1-5 tokens from `candidates` to ACCUMULATE over the coming weeks (a treasure mix). " +
+          "Prefer liquid, venue-trusted tokens; exclude scam-flagged ones; LEEF may be included when sensible. " +
+          "Reply in JSON including a `targets` array of {symbol, weight} whose weights sum to 100, plus a short `reason`.",
+        currentTargets,
+        walletUsd: Math.round(markPortfolioUsd(snap, balances).totalUsd * 100) / 100,
+        candidates: candData,
+      },
+      { url: aiGatewayUrl },
+    );
+    journal({
+      kind: "ai",
+      reason: `growth_target_selection: ok · ${res.raw.slice(0, 160)}`,
+      latencyMs: Date.now() - t0,
+    });
+    const pick = extractGrowthTargets(res.content, candidates);
+    if (!pick) {
+      return {
+        pick: null,
+        note: "The analyst answered, but no usable token mix was found in its reply. Try again or pick manually.",
+      };
+    }
+    const reason = (res.content as { reason?: unknown })?.reason;
+    return { pick, note: typeof reason === "string" ? reason.slice(0, 240) : null };
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : "AI call failed";
+    journal({ kind: "ai", reason: `growth_target_selection: failed · ${msg}`, latencyMs: Date.now() - t0 });
+    return { pick: null, note: msg };
+  }
+}
+
 function TreasureCard({ snap }: { snap: LeefSnapshot }) {
   const targets = useBot((s) => s.growthTargets);
   const mode = useBot((s) => s.growthMode);
@@ -994,51 +1076,16 @@ function TreasureCard({ snap }: { snap: LeefSnapshot }) {
     setAiBusy(true);
     setAiPick(null);
     setAiNote(null);
-    const t0 = Date.now();
     try {
-      const candidates = choices.slice(0, 24);
-      const candData = candidates.map((symbol) => {
-        const u = snap.universe.find((t) => t.symbol === symbol);
-        return {
-          symbol,
-          tvlUsd: Math.round(u?.tvlUsd ?? 0),
-          volume24Usd: Math.round(u?.volume24Usd ?? 0),
-          usdPrice: u?.usdPrice ?? null,
-          trusted: u?.alcorTrusted ?? false,
-          scam: u?.alcorScam ?? false,
-        };
+      const { pick, note } = await requestGrowthMix({
+        snap,
+        candidates: choices.slice(0, 24),
+        currentTargets: targets,
+        balances,
+        aiGatewayUrl,
       });
-      const res = await aiTask(
-        "strategy_analysis",
-        {
-          mode: "growth_target_selection",
-          instruction:
-            "Pick 1-5 tokens from `candidates` to ACCUMULATE over the coming weeks (a treasure mix). " +
-            "Prefer liquid, venue-trusted tokens; exclude scam-flagged ones; LEEF may be included when sensible. " +
-            "Reply in JSON including a `targets` array of {symbol, weight} whose weights sum to 100, plus a short `reason`.",
-          currentTargets: targets,
-          walletUsd: Math.round(markPortfolioUsd(snap, balances).totalUsd * 100) / 100,
-          candidates: candData,
-        },
-        { url: aiGatewayUrl },
-      );
-      journal({
-        kind: "ai",
-        reason: `growth_target_selection: ok · ${res.raw.slice(0, 160)}`,
-        latencyMs: Date.now() - t0,
-      });
-      const pick = extractGrowthTargets(res.content, candidates);
-      if (!pick) {
-        setAiNote("The analyst answered, but no usable token mix was found in its reply. Try again or pick manually.");
-      } else {
-        setAiPick(pick);
-        const reason = (res.content as { reason?: unknown })?.reason;
-        setAiNote(typeof reason === "string" ? reason.slice(0, 240) : null);
-      }
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : "AI call failed";
-      journal({ kind: "ai", reason: `growth_target_selection: failed · ${msg}`, latencyMs: Date.now() - t0 });
-      setAiNote(msg);
+      setAiPick(pick);
+      setAiNote(note);
     } finally {
       setAiBusy(false);
     }
@@ -1240,7 +1287,12 @@ function RiskCard({ strategy, snap }: { strategy: BotStrategy; snap: LeefSnapsho
   const notice = useBot((s) => s.riskMigrationNotice);
   const clearNotice = useBot((s) => s.clearRiskMigrationNotice);
   const [slidersOn, setSlidersOn] = useState(false);
-  useEffect(() => setSlidersOn(true), []);
+  // Mount Radix sliders after first paint (measurement glitch workaround) —
+  // the state flip happens in a frame callback, not synchronously in an effect.
+  useEffect(() => {
+    const id = requestAnimationFrame(() => setSlidersOn(true));
+    return () => cancelAnimationFrame(id);
+  }, []);
   const quoteSym = (quote || "WAX").toUpperCase();
   // Same gated oracle the engine sizes with (requireTradePrice rides this):
   // never convert at a stale or non-tradeable mark the engine would refuse,
@@ -1548,9 +1600,13 @@ function NumField({
 }) {
   const [draft, setDraft] = useState(() => formatUsdDraft(value));
   const [focused, setFocused] = useState(false);
-  useEffect(() => {
+  // Keep the draft in sync with external value changes while unfocused —
+  // adjusted during render (the React-endorsed alternative to an effect).
+  const [lastValue, setLastValue] = useState(value);
+  if (value !== lastValue) {
+    setLastValue(value);
     if (!focused) setDraft(formatUsdDraft(value));
-  }, [value, focused]);
+  }
   return (
     <label className="block">
       <span className="mb-1 block text-xs text-muted-foreground">{label}</span>
