@@ -225,7 +225,7 @@ export function suggestBotSettings(input: AdvisorInput): AdvisorSuggestion {
     detail: `${bal.toFixed(bal >= 10 ? 1 : 4)} ${quote}${px > 0 ? ` · $${quoteUsd.toFixed(2)}` : ""}`,
   });
   why.push({
-label: "Min trade",
+    label: "Min trade",
     detail: `$${minTrade.toFixed(minTrade < 1 ? 2 : 2)} (~${(clipFrac * 100).toFixed(1)}% of stack)`,
   });
   why.push({
