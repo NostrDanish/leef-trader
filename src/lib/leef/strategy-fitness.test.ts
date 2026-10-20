@@ -287,7 +287,7 @@ describe("DCA cadence + exit preflight", () => {
   });
   it("refuses a new clip when the accumulated bag's exit impact exceeds the cap", () => {
     // 20k WAX / 20M LEEF pool: a 500k LEEF bag exits at ≈2.4% impact > 2% cap.
-const snap = mkSnap([mkPool(1159, 20_000, 20_000_000)]);
+    const snap = mkSnap([mkPool(1159, 20_000, 20_000_000)]);
     const d = evaluateBot(
       botInput({
         snap,
