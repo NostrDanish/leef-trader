@@ -394,7 +394,6 @@ function TradeButton({ snap }: { snap: LeefSnapshot }) {
   const swapMaxHops = useTerminal((s) => s.swapMaxHops);
   const selectedRouteSig = useTerminal((s) => s.selectedRouteSig);
   const setImportOpen = useWallet((s) => s.setImportOpen);
-  const authType = useWallet((s) => s.authType);
   const mode = useWallet((s) => s.mode);
   const [busy, setBusy] = useState(false);
   const [done, setDone] = useState<SwapOutcome | null>(null);

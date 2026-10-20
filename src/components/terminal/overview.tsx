@@ -8,6 +8,8 @@ import {
   YAxis,
 } from "recharts";
 import { ChartFrame } from "./chart-frame";
+import { CandleChart } from "@/components/charts/CandleChart";
+import { OracleCard } from "@/components/charts/OracleCard";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
@@ -113,6 +115,13 @@ export function Overview({
           value={`${fmtNum(stats.feeApyPct, { digits: 1 })}%`}
           sub={`${fmtUsd(stats.fee24Usd, 2)} fees / 24h`}
         />
+      </div>
+
+      <div className="grid gap-5 lg:grid-cols-3">
+        <div className="min-w-0 lg:col-span-2">
+          <CandleChart />
+        </div>
+        <OracleCard snap={snap} />
       </div>
 
       <div className="grid gap-5 lg:grid-cols-3">
