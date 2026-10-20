@@ -87,7 +87,7 @@ export function TerminalApp() {
       <StatusBar snap={snap} ranked={ranked} tick={tick} />
       <ImportKeyDialog />
 
-      {snap.warning && snap.source === "fallback" && (
+      {snap.warning && (snap.source === "fallback" || snap.source === "unavailable") && (
         <div className="mx-auto w-full max-w-[1440px] px-4 pt-4 sm:px-6">
           <div className="rounded-xl border border-warn/30 bg-warn/10 px-3 py-2 text-xs text-warn">
             {snap.warning}

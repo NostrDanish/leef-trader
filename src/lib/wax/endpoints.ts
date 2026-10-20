@@ -28,40 +28,36 @@ export type WaxEndpoint = {
  * All are public Antelope chain APIs run by independent infrastructure
  * providers — a dead node here must never kill the engine.
  *
- * Live sweep 2026-09-19 (5× get_info + get_table_rows per endpoint):
- * greymass 390 ms, eosphere 470 ms (best freshness), eosusa 483 ms,
- * eosrio 541 ms, cryptolions 573 ms, waxsweden 1262 ms (~3 s block lag).
- * Dropped after that sweep: wax.blokcrafters.io (DNS ENOTFOUND ×5) and
- * hyperion.wax.eosdetroit.io (5/5 timeouts >10 s).
+ * Live sweep 2026-10-20 (get_info + get_table_rows per endpoint):
+ * greymass 0.59 s / 2.26 s (primary), waxsweden 0.57–0.88 s / 0.65 s,
+ * eosphere 1.40 s / 1.28 s, eosrio 1.45 s (RPC only — its Hyperion 404s),
+ * cryptolions 1.60 s, eosusa 1.7 s→15 s+ variable (UNRELIABLE — last).
+ * The health-scored pool still fails over on downtime, latency, block lag
+ * or a bad chain id.
  */
 export const DEFAULT_RPC_ENDPOINTS: WaxEndpoint[] = [
-  // EOSUSA first on the strength of its chain RPC — but its Hyperion
-  // rate-limits aggressively (see the history pool below), so "no rate
-  // limits" is only true here. The health-scored pool still fails over on
-  // downtime, latency, block lag or a bad chain id.
-  { url: "https://wax.eosusa.io", kind: "rpc", priority: 1, enabled: true },
-  { url: "https://wax.greymass.com", kind: "rpc", priority: 2, enabled: true },
-  { url: "https://wax.eosrio.io", kind: "rpc", priority: 3, enabled: true },
-  { url: "https://api.waxsweden.org", kind: "rpc", priority: 4, enabled: true },
-  { url: "https://wax.eosphere.io", kind: "rpc", priority: 5, enabled: true },
-  { url: "https://wax.cryptolions.io", kind: "rpc", priority: 6, enabled: true },
+  { url: "https://wax.greymass.com", kind: "rpc", priority: 1, enabled: true },
+  { url: "https://api.waxsweden.org", kind: "rpc", priority: 2, enabled: true },
+  { url: "https://wax.eosphere.io", kind: "rpc", priority: 3, enabled: true },
+  { url: "https://wax.eosrio.io", kind: "rpc", priority: 4, enabled: true },
+  { url: "https://wax.cryptolions.io", kind: "rpc", priority: 5, enabled: true },
+  { url: "https://wax.eosusa.io", kind: "rpc", priority: 6, enabled: true },
 ];
 
 /**
  * Default Hyperion history pool (also serves /v2/state/get_tokens).
  *
- * Live sweep 2026-09-19 (3× /v2/history/get_actions per endpoint):
- * cryptolions 707 ms (fastest), eosphere 933 ms (most reliable under
- * burst), waxsweden 1159 ms. EOSUSA demoted to last: sustained HTTP 429
- * "Rate limit exceeded, retry in 1 minute" on /v2 — as the former p1 it
- * guaranteed a first-poll 429. eosrio was dropped entirely: its Hyperion
- * 3.5.0-5 registers only /v2/health — every /v2/history and /v2/state call
- * 404s (it stays in the RPC pool, where it is healthy).
+ * Live sweep 2026-10-20: waxsweden clean (CORS *, 0.86 s get_tokens) —
+ * primary. eosphere 429s fast under burst (fallback, retry-after backoff).
+ * cryptolions intermittent 403s. EOSUSA last: sustained HTTP 429
+ * "Rate limit exceeded, retry in 1 minute" on /v2. eosrio stays out of
+ * this pool: its Hyperion registers only /v2/health — every /v2/history
+ * and /v2/state call 404s (it stays in the RPC pool, where it is healthy).
  */
 export const DEFAULT_HISTORY_ENDPOINTS: WaxEndpoint[] = [
-  { url: "https://wax.cryptolions.io", kind: "history", priority: 1, enabled: true },
+  { url: "https://api.waxsweden.org", kind: "history", priority: 1, enabled: true },
   { url: "https://wax.eosphere.io", kind: "history", priority: 2, enabled: true },
-  { url: "https://api.waxsweden.org", kind: "history", priority: 3, enabled: true },
+  { url: "https://wax.cryptolions.io", kind: "history", priority: 3, enabled: true },
   { url: "https://wax.eosusa.io", kind: "history", priority: 4, enabled: true },
 ];
 
