@@ -1,5 +1,5 @@
 import { isWaxToken } from "./amm";
-import { fallbackSnapshot } from "./fallback";
+import { unavailableSnapshot } from "./fallback";
 import { attachUsdPrices, parseAllPools, parseSwaps } from "./parse";
 import { loadTokenRegistry } from "./token-registry";
 import type { AuxPool, LeefPool, LeefSnapshot, LiveTrade } from "./types";
@@ -273,7 +273,7 @@ function kickCold(leef: LeefPool[], aux: AuxPool[]): void {
       const restIds = [...restLeef, ...restAux];
       const [trades, venues, rest] = await Promise.all([
         loadTrades(leef).catch(() => lastTrades),
-        fetchExternalVenues(cache?.snap.waxUsd ?? 0).catch(() => lastVenues),
+fetchExternalVenues(cache?.snap.waxUsd ?? 0).catch(() => lastVenues),
         restIds.length
           ? Promise.allSettled(restIds.map((id) => fetchPoolById(id, "low"))).then((r) =>
               applyPoolResults(leef, aux, restIds, r),
@@ -346,15 +346,15 @@ async function loadHot(): Promise<LeefSnapshot> {
 
 /**
  * Fetch the current LEEF book from Alcor's public API.
- * In-flight calls are deduplicated; falls back to the last live book (or a
- * static snapshot) when the API is unreachable.
+ * In-flight calls are deduplicated; falls back to the last live book, else an
+ * honest empty `unavailable` snapshot, when the API is unreachable.
  *
  * HOT PATH: tracked pool state + prices. Tape, remaining pools, and
  * Defibox/Taco topology refresh in the background and never block a trade.
  */
 export async function getLeefSnapshot(): Promise<LeefSnapshot> {
   if (import.meta.env.MODE === "test") {
-    return fallbackSnapshot("Test mode — static book.", new Date().toISOString());
+    return unavailableSnapshot("Test mode — market fetch disabled.");
   }
   if (inflight) return inflight;
   inflight = (async () => {
@@ -365,10 +365,7 @@ export async function getLeefSnapshot(): Promise<LeefSnapshot> {
     } catch (err) {
       if (cache) return { ...cache.snap, warning: "Using last live book." };
       const raw = err instanceof Error ? err.message : "Alcor fetch failed";
-      return fallbackSnapshot(
-        `Live book unavailable (${raw}). Showing the last known LEEF pools.`,
-        new Date().toISOString(),
-      );
+      return unavailableSnapshot(`Live book unavailable (${raw}).`);
     }
   })().finally(() => {
     inflight = null;

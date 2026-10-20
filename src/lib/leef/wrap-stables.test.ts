@@ -83,7 +83,6 @@ function mkPool(
 }
 
 const WRAP_USDC = { symbol: "USDC", contract: "wrap.alcor", decimals: 6 };
-const WRAP_USDT = { symbol: "USDT", contract: "wrap.alcor", decimals: 6 };
 const LEGACY_USDT = { symbol: "USDT", contract: "usdt.alcor", decimals: 4 };
 
 function mkSnap(pools: LeefPool[]): LeefSnapshot {

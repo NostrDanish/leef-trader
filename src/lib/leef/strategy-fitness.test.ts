@@ -12,7 +12,6 @@ import {
   DEFAULT_GOALS,
   DEFAULT_RISK,
   evaluateBot,
-  findBestArb,
   gridFeePct,
   reversionRead,
   roundTripCostFloorPct,
@@ -20,9 +19,8 @@ import {
   type BotInput,
 } from "./bot-engine";
 import { evaluateEntry } from "./net-edge";
-import { normalizeTargets, planGrowthAction } from "./growth-engine";
+import { planGrowthAction } from "./growth-engine";
 import { snapFreshAtMs, type LeefPool, type LeefSnapshot } from "./types";
-import { useBot } from "@/store/bot";
 import type { PoolFlowState } from "@/lib/market/swap-flow";
 
 const WAX_USD = 0.02;
@@ -289,7 +287,7 @@ describe("DCA cadence + exit preflight", () => {
   });
   it("refuses a new clip when the accumulated bag's exit impact exceeds the cap", () => {
     // 20k WAX / 20M LEEF pool: a 500k LEEF bag exits at ≈2.4% impact > 2% cap.
-    const snap = mkSnap([mkPool(1159, 20_000, 20_000_000)]);
+const snap = mkSnap([mkPool(1159, 20_000, 20_000_000)]);
     const d = evaluateBot(
       botInput({
         snap,
@@ -318,6 +316,25 @@ describe("grid fee tier", () => {
     expect(gridFeePct(snap, "WAX")).toBeCloseTo(1.0, 6);
     const step = adaptiveGridStepPct(2.5, 0, 1.0);
     expect(step).toBeGreaterThanOrEqual(2.4); // 2×1.0 + 0.4
+  });
+
+  it("grid ENTRIES arm above the actual pool fee tier, like exits do", () => {
+    // Regression: grid entries called adaptiveGridStepPct without the fee
+    // argument (default 0.3%) while exits passed gridFeePct — a 1%-tier pool
+    // armed entries at sub-fee steps.
+    const snap = mkSnap([mkPool(1159, 50_000, 500_000_000, 1.0)]);
+    const d = evaluateBot(
+      botInput({
+        snap,
+        strategy: "grid",
+        balances: { WAX: 50 },
+        gridAnchor: snap.leefUsd, // at-anchor → the armed-step HOLD path
+        risk: { ...DEFAULT_RISK, gridStepPct: 1 },
+      }),
+    );
+    const m = d.reason.match(/next sell \+(\d+(?:\.\d+)?)%/);
+    expect(m, `expected an armed grid step in: ${d.reason}`).not.toBeNull();
+    expect(Number(m![1])).toBeGreaterThanOrEqual(2.4); // 2×1.0% round-trip + 0.4% buffer
   });
 });
 

@@ -46,7 +46,7 @@ const STABLEISH = new Set(["USDT", "USDC", "WAXUSDT", "WAXUSDC", "PARAUSD", "DAI
 
 const CORE = ["LEEF", "WAX", "WAXUSDC", "WAXUSDT", "USDT", "USDC", "PARAUSD"] as const;
 
-/** Bases you can accumulate. WAX is the quote/gas asset — never a base. */
+/** Bases you can accumulate — any liquid token, WAX included. */
 export function listBaseTokens(snap: LeefSnapshot): string[] {
   // Any liquid token may be base — WAX included. LEEF is pinned first because
   // the app is LEEF-built, not because the engine requires it.
@@ -225,7 +225,7 @@ export function suggestBotSettings(input: AdvisorInput): AdvisorSuggestion {
     detail: `${bal.toFixed(bal >= 10 ? 1 : 4)} ${quote}${px > 0 ? ` · $${quoteUsd.toFixed(2)}` : ""}`,
   });
   why.push({
-    label: "Min trade",
+label: "Min trade",
     detail: `$${minTrade.toFixed(minTrade < 1 ? 2 : 2)} (~${(clipFrac * 100).toFixed(1)}% of stack)`,
   });
   why.push({
@@ -263,7 +263,7 @@ export function suggestBotSettings(input: AdvisorInput): AdvisorSuggestion {
     risk: {
       minTradeUsd: minTrade,
       maxPositionUsd: maxPos,
-      operationalReserveUsd: Math.max(0, Math.min(bal * quoteUsd * 0.1, 1)),
+      operationalReserveUsd: Math.max(0, Math.min(quoteUsd * 0.1, 1)),
       cooldownSec: cooldown,
       maxTradesHour: hourly,
       maxImpactPct: impact,
