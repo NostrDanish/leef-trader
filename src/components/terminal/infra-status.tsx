@@ -247,7 +247,7 @@ export function InfraStatus() {
 
         <Section title="Market state">
           <div className="flex items-center gap-2 font-mono tabular-nums">
-<StatusDot ok={e.snapshot?.source === "live"} />
+            <StatusDot ok={e.snapshot?.source === "live"} />
             <span className="text-fg">
               {e.snapshot?.source === "live" ? "Live book" : "Fallback book"}
             </span>
