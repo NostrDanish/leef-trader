@@ -7,8 +7,13 @@
  *
  * TacoSwap: contract swap.taco. Observed live memo:
  *   <minOutAmount> <SYMBOL>@<contract>
- * Pools table is tried as `pairs` then `pools`. Fee documented as 0.30%
- * (3000 Alcor units) for unstaked swaps.
+ * Swap pairs live in `pairs`, keyed by a STRING pair code ("AB", "TACTHC"),
+ * rows {id, supply, pool1, pool2} — verified live 2026-10-20 (8280 rows).
+ * The numeric-sharded sweep never paged this table correctly; it is swept
+ * key-ordered by next_key like Nefty's. (swap.taco ALSO has a `pools`
+ * table, but it is staking rewards — {total_staked, daily_reward} — not
+ * swap pairs; the former `pools` fallback read the wrong table.)
+ * Fee documented as 0.30% (3000 Alcor units) for unstaked swaps.
  *
  * NeftyBlocks: contract swap.nefty, table `pairs` keyed by symbol_code
  * (`code`, e.g. "USDANO") with extended_asset reserve0/reserve1. Verified
@@ -217,25 +222,73 @@ function tacoToken(raw: unknown, fallbackQty?: unknown): VenueToken | null {
   };
 }
 
+/** Pair code shape: EOSIO symbol_code — 1–7 uppercase alnum chars. */
+const TACO_CODE_RE = /^[A-Z0-9]{1,7}$/;
+
+/**
+ * Stable numeric handle for a Taco pair code: 32-bit FNV-1a. The on-chain
+ * key is the pair-code string itself (no numeric id), so the namespaced
+ * route-graph id is TACO_ID_BASE + hash(code). Collision handling is in
+ * parseTacoPairs (first code wins, the other is logged and skipped).
+ */
+export function tacoPairNativeId(code: string): number {
+  let h = 0x811c9dc5;
+  for (let i = 0; i < code.length; i++) {
+    h ^= code.charCodeAt(i);
+    h = Math.imul(h, 0x01000193);
+  }
+  return h >>> 0;
+}
+
+function tacoWarn(msg: string, row: TableRow): void {
+  // Fail CLOSED on schema surprises: log + skip the pool, never throw into
+  // the engine loop.
+  console.warn(`[taco] skipping pair row: ${msg}`, JSON.stringify(row).slice(0, 200));
+}
+
 export function parseTacoPairs(rows: TableRow[], waxUsd: number): VenuePool[] {
   const out: VenuePool[] = [];
+  const codeByHash = new Map<number, string>();
+  const parsedCodes = new Set<string>();
   for (const r of rows) {
-    const nativeId = Number(r.id ?? r.pool_id ?? r.poolid);
-    if (!Number.isFinite(nativeId)) continue;
+    const code = typeof r.id === "string" ? r.id : "";
+    if (!TACO_CODE_RE.test(code)) {
+      tacoWarn("bad/missing pair code", r);
+      continue;
+    }
+    if (parsedCodes.has(code)) continue; // node returned the row twice
+    parsedCodes.add(code);
     const a =
-      tacoToken(r.token0, r.reserve0) ??
       tacoToken(r.pool1) ??
+      tacoToken(r.token0, r.reserve0) ??
       tacoToken(r.quantity_a);
     const b =
-      tacoToken(r.token1, r.reserve1) ??
       tacoToken(r.pool2) ??
+      tacoToken(r.token1, r.reserve1) ??
       tacoToken(r.quantity_b);
-    if (!a || !b || !tokenOk(a) || !tokenOk(b)) continue;
-    if (!(a.quantity > 0) || !(b.quantity > 0)) continue;
+    if (!a || !b) {
+      tacoWarn("unparseable reserves", r);
+      continue;
+    }
+    // Fail-safe: a pair whose legs verify as the SAME symbol is a spoofed or
+    // malformed row — skip it rather than route a meaningless self-swap.
+    if (!tokenOk(a) || !tokenOk(b) || a.symbol === b.symbol) {
+      tacoWarn("token identity failed verification", r);
+      continue;
+    }
+    if (!(a.quantity > 0) || !(b.quantity > 0)) continue; // drained pool
+    const nativeId = tacoPairNativeId(code);
+    const seen = codeByHash.get(nativeId);
+    if (seen != null && seen !== code) {
+      tacoWarn(`pair-code hash collision with ${seen}`, r);
+      continue;
+    }
+    codeByHash.set(nativeId, code);
     const pool: VenuePool = {
       venue: "taco",
       id: TACO_ID_BASE + nativeId,
       nativeId,
+      pairCode: code,
       tokenA: a,
       tokenB: b,
       fee: TACO_FEE_ALCOR,
@@ -247,6 +300,35 @@ export function parseTacoPairs(rows: TableRow[], waxUsd: number): VenuePool[] {
     out.push(pool);
   }
   return out;
+}
+
+/** Page cap for the code-keyed pairs sweep (8280 pairs live = 9 pages @1000). */
+const TACO_MAX_PAGES = 16;
+
+/**
+ * Pairs sweep keyed by pair-code string: the numeric sharded sweep does not
+ * apply (keys are symbol_code strings like "AB", not integers), so page by
+ * next_key with a hard page cap — same shape as the Nefty code-keyed sweep.
+ */
+async function getTacoPairRows(limit = 1000): Promise<TableRow[]> {
+  const rows: TableRow[] = [];
+  const seen = new Set<string>();
+  let lowerBound: string | number = 0;
+  for (let page = 0; page < TACO_MAX_PAGES; page++) {
+    const raw = await readTablePage(TACO_SWAP, "pairs", limit, lowerBound);
+    const chunk = Array.isArray(raw.rows) ? raw.rows : [];
+    for (const row of chunk) {
+      const key = typeof row.id === "string" ? row.id : JSON.stringify(row);
+      if (seen.has(key)) continue;
+      seen.add(key);
+      rows.push(row);
+    }
+    if (!raw.more || chunk.length === 0) break;
+    const next = raw.next_key;
+    if (next == null || String(next) === String(lowerBound)) break;
+    lowerBound = String(next);
+  }
+  return rows;
 }
 
 /* ------------------------------------------------------------------ */
@@ -322,6 +404,8 @@ export function parseNeftyPairs(
       neftyWarn("unparseable reserves", r);
       continue;
     }
+    // Fail-safe: a pair whose legs verify as the SAME symbol is a spoofed or
+    // malformed row — skip it rather than route a meaningless self-swap.
     if (!tokenOk(a) || !tokenOk(b) || a.symbol === b.symbol) {
       neftyWarn("token identity failed verification", r);
       continue;
@@ -432,8 +516,7 @@ export async function fetchDefiboxPools(waxUsd: number): Promise<VenuePool[]> {
 
 export async function fetchTacoPools(waxUsd: number): Promise<VenuePool[]> {
   try {
-    let rows = await getTableRows(TACO_SWAP, "pairs", 200);
-    if (rows.length === 0) rows = await getTableRows(TACO_SWAP, "pools", 200);
+    const rows = await getTacoPairRows();
     return parseTacoPairs(rows, waxUsd);
   } catch {
     return [];
@@ -488,7 +571,12 @@ export async function refreshVenuePair(
   venue: "defibox" | "taco" | "nefty",
   nativeId: number,
   waxUsd: number,
-  /** Nefty only: the on-chain pair code (its table is keyed by code, not id). */
+  /**
+   * Nefty and Taco: the on-chain pair code (their pairs tables are keyed by
+   * code string, not numeric id). Fail-safe: a missing/malformed code skips
+   * the venue (returns null — no fresh quote) rather than trusting a stale
+   * topology row; Defibox ignores this and re-reads by numeric id.
+   */
   pairCode?: string,
 ): Promise<VenuePool | null> {
   try {
@@ -532,38 +620,26 @@ export async function refreshVenuePair(
       const parsed = parseDefiboxPairs(raw.rows ?? [], waxUsd);
       return parsed.find((p) => p.nativeId === nativeId) ?? parsed[0] ?? null;
     }
-    let raw = (await rpcPost(
+    // Taco's pairs table is keyed by pair-code string, not numeric id —
+    // same fail-closed rule as Nefty: no discovered code → no fresh quote.
+    if (!pairCode || !TACO_CODE_RE.test(pairCode)) return null;
+    const raw = (await rpcPost(
       "/v1/chain/get_table_rows",
       {
         json: true,
         code: TACO_SWAP,
         scope: TACO_SWAP,
         table: "pairs",
-        lower_bound: nativeId,
-        upper_bound: nativeId,
+        lower_bound: pairCode,
+        upper_bound: pairCode,
         limit: 1,
       },
         4_000,
         "high",
       )) as { rows?: TableRow[] };
-    if (!raw.rows?.length) {
-      raw = (await rpcPost(
-        "/v1/chain/get_table_rows",
-        {
-          json: true,
-          code: TACO_SWAP,
-          scope: TACO_SWAP,
-          table: "pools",
-          lower_bound: nativeId,
-          upper_bound: nativeId,
-          limit: 1,
-        },
-        4_000,
-        "high",
-      )) as { rows?: TableRow[] };
-    }
     const parsed = parseTacoPairs(raw.rows ?? [], waxUsd);
-    return parsed.find((p) => p.nativeId === nativeId) ?? parsed[0] ?? null;
+    // Exact code match only — a neighboring row is a schema surprise.
+    return parsed.find((p) => p.pairCode === pairCode) ?? null;
   } catch {
     return null;
   }
