@@ -1,473 +1,150 @@
+/**
+ * Bot loop — extracted from the desk component so the trading engine keeps
+ * running when React unmounts the panel (mobile tab switch, drawer close).
+ * runBotOnce() is a plain async function driven by the market snapshot poll;
+ * the Bot desk only renders state.
+ */
 import {
   adaptiveCooldownSec,
   evaluateBot,
   findBestArb,
-  type ArbPlan,
+  type Decision,
   type Position,
 } from "@/lib/leef/bot-engine";
-import { realizedVolPerSec, usdPriceOf } from "@/lib/leef/cost-model";
+import {
+  exactEntryVerdict,
+  exactSwapVerdict,
+  gateCandidates,
+} from "@/lib/leef/exact-gate";
+import { refreshExecutionState } from "@/lib/leef/execution-refresh";
+import { opportunityFingerprint, markDeadOpportunity } from "@/lib/leef/opportunity";
+import { bestExecutionRoute } from "@/lib/leef/route-optimizer";
 import { optimizeEntrySize } from "@/lib/leef/net-edge";
-import { markDeadOpportunity, opportunityFingerprint } from "@/lib/leef/opportunity";
+import { realizedVolPerSec, usdPriceOf } from "@/lib/leef/cost-model";
 import { fmtNum } from "@/lib/leef/format";
-import { fetchAlcorRouteCached, verifyExecutableRoute } from "@/lib/leef/quote-verify";
-import { isEconomicFailureReason } from "@/lib/wallet/trade-error";
-import { rejectionKey, RETRY_STORM_LIMIT } from "@/lib/leef/retry-storm";
-import { verifyGrowthExact } from "@/lib/leef/growth-engine";
-import { exactEntryVerdict, exactSwapVerdict } from "@/lib/leef/exact-gate";
-import { exceedsMaxPositionUsd, usdToTokenBounds } from "@/lib/leef/risk-usd";
-import { lastSnapshotTimings } from "@/lib/leef/snapshot";
 import {
-  bestExecutionRoute,
-  rankExecutionRoutesPreferLeef,
-  routeSignature,
-} from "@/lib/leef/route-optimizer";
-import {
-  journal,
-  journalAll,
-  journalFixture,
-  setJournalCycleId,
-  type MarketFixture,
-} from "@/lib/leef/journal";
-import {
-  bootLearning,
-  evaluateDueCounterfactuals,
-  learnedSizeCeilingMult,
-  learnedSlippageOverride,
-  learningBooted,
-  measureDueSelfImpact,
-  poolSpotUsd,
-  refreshProposals,
-  registerCounterfactual,
-  registerSelfImpact,
   CF_HORIZON_MS,
-} from "@/lib/leef/learning-store";
-import { classifyRegime, dangerScore } from "@/lib/leef/regime";
-import { maybeAutoReview } from "@/lib/leef/ai-review";
-import { refreshExecutionState } from "@/lib/market/execution-state";
-import { aggregateFlowRisk, swapFlow } from "@/lib/market/swap-flow";
-import { governTrade, portfolioState } from "@/lib/market/portfolio-governor";
+  evaluateDueCounterfactuals,
+  registerCounterfactual,
+} from "@/lib/leef/counterfactuals";
+import { verifyGrowthExact } from "@/lib/leef/growth-engine";
+import { measureDueSelfImpact, noteSelfImpact } from "@/lib/leef/self-impact";
+import { governTrade } from "@/lib/leef/portfolio-governor";
+import { journal, setJournalCycleId, journalAll } from "@/lib/leef/journal";
+import { captureFixture } from "@/lib/leef/fixtures";
+import { learnedSizeCeilingMult, learnedSlippageOverride, bootLearning, learningBooted } from "@/lib/leef/learning";
+import { refreshProposals } from "@/lib/leef/proposals";
+import { classifyTradeError, isEconomicFailureReason, toastTitleFor } from "@/lib/wallet/trade-error";
+import { exceedsMaxPositionUsd, usdToTokenBounds } from "@/lib/leef/risk-usd";
 import { snapFreshAtMs, type LeefSnapshot, type SwapRoute } from "@/lib/leef/types";
-import { parseAssetAmount, type AlcorRouteQuote } from "@/lib/wallet/alcor-route";
-import { waxResourceBlock } from "@/lib/wallet/chain";
-import { arbFloorViolation, memoMinOutSum } from "@/lib/wallet/policy";
-import { assetDelta, reconcileTransfersLater, waitForTransaction } from "@/lib/wallet/reconcile";
-import { signAndPushArb, signAndPushSwap } from "@/lib/wallet/sign";
+import { assetDelta } from "@/lib/wallet/chain";
+import { signAndPushArb, signAndPushSwap } from "@/lib/wallet/trade";
 import {
-  abortSigning,
-  beginSigning,
-  emptyTimings,
-  liveCapitalBlocked,
   markBroadcast,
   markConfirmed,
   markFailed,
   markUnknown,
+  pollUnknown,
+  waitForTransaction,
+  reconcileTransfersLater,
+} from "@/lib/wallet/tx-confirmation";
+import { beginSigning, abortSigning } from "@/lib/wallet/sign-mutex";
+import { platformFeeOn } from "@/lib/wallet/platform-fee";
+import { metaOf } from "@/lib/wallet/token-meta";
+import { waxResourceBlock } from "@/lib/wallet/resources";
+import { quoteArbPlan, arbFloorViolation, type AlcorRouteQuote } from "@/lib/wallet/arb";
+import { verifyExecutableRoute } from "@/lib/wallet/route-verify";
+import { aggregateFlowRisk, swapFlow } from "@/lib/market/swap-flow";
+import { maybeAutoReview } from "@/lib/leef/ai-analyst";
+import { AI_PROPOSAL_MAX_AGE_MS } from "@/lib/leef/ai-executor";
+import { AI_EXEC_CONFIDENCE_MIN, type AiProposal } from "@/lib/leef/ai-executor";
+import { routeSignature, routeJournalMeta, makeCycleCtx } from "./journal-ctx";
+import { maybeKickAiPoll } from "./ai-control";
+import {
+  lastFetchTiming,
   recordCycleTimings,
-  unknownBlockReason,
+  type TradeTimings,
 } from "@/lib/wallet/trade-cycle";
-import { classifyTradeError, toastTitleFor } from "@/lib/wallet/trade-error";
-import { platformFeeOn } from "@/lib/leef/platform-fee";
-import { metaOf } from "@/lib/wallet/tokens";
-import { useBot } from "@/store/bot";
-import { clampSyncSec, DEFAULT_SYNC_SEC, useTerminal } from "@/store/terminal";
-import { usePortfolio } from "@/store/portfolio";
-import { useWallet } from "@/store/wallet";
 import { toast } from "@/hooks/useToast";
-import { lastFetchTiming } from "@/lib/fetchJson";
+import { useBot } from "@/store/bot";
+import { usePortfolio } from "@/store/portfolio";
+import { clampSyncSec, DEFAULT_SYNC_SEC, useTerminal } from "@/store/terminal";
+import { useWallet } from "@/store/wallet";
+import { RETRY_STORM_LIMIT, rejectionKey } from "@/lib/leef/retry-storm";
 
-function equityUsdOf(balances: Record<string, number>, snap: LeefSnapshot): number {
-  // Portfolio governor already canonicalizes balances and avoids double-counting
-  // legacy aliases, so equity cannot merge two same-symbol contracts.
-  return portfolioState(snap, balances).totalUsd;
-}
-
-/**
- * Replace the local constant-product quote with Alcor's CLMM route before
- * broadcast. The return leg's min-out must enforce the profit floor on-chain
- * — when the quoted output clears the floor but the slippage-guarded min-out
- * doesn't, the sell leg is re-quoted once with a tighter guard that still
- * clears it. (Slippage only moves minReceived, not the quoted output.)
- */
-async function quoteArbPlan(
-  plan: ArbPlan,
-  account: string,
-  slippagePct: number,
-  minProfitPct: number,
-): Promise<ArbPlan> {
-  // Alcor token ids are "<symbol>-<contract>" — identity is contract-aware,
-  // never the bare symbol (clone tokens must not borrow the real one's route).
-  const quoteId = `${plan.quoteToken.symbol.toLowerCase()}-${plan.quoteToken.contract}`;
-  const baseId = `${plan.baseToken.symbol.toLowerCase()}-${plan.baseToken.contract}`;
-  const buy = await fetchAlcorRouteCached({
-    tokenInId: quoteId,
-    tokenOutId: baseId,
-    amount: plan.quoteIn,
-    slippagePct,
-    receiver: account,
-  });
-  const baseOut = parseAssetAmount(buy.output);
-  if (!(baseOut > 0)) throw new Error(`Alcor returned no ${plan.baseToken.symbol} for the echo`);
-  // Sell the buy's GUARANTEED min-received, not the quoted output — otherwise
-  // a fill at the slippage floor leaves the wallet short and the atomic
-  // transaction reverts.
-  const baseGuaranteed = parseAssetAmount(buy.minReceived) || baseOut;
-
-  const fetchSell = (slip: number) =>
-    fetchAlcorRouteCached({
-      tokenInId: baseId,
-      tokenOutId: quoteId,
-      amount: baseGuaranteed,
-      slippagePct: slip,
-      receiver: account,
-    });
-
-  let sell: AlcorRouteQuote = await fetchSell(slippagePct);
-  let quoteOut = parseAssetAmount(sell.output);
-  if (!(quoteOut > 0)) throw new Error(`Alcor returned no ${plan.quoteToken.symbol} for the echo`);
-
-  const floorQuote = plan.quoteIn * (1 + minProfitPct / 100);
-  const legsOf = (q: AlcorRouteQuote) =>
-    q.swaps.map((s) => ({ input: s.input, memo: s.memo }));
-  if (
-    quoteOut >= floorQuote &&
-    memoMinOutSum(legsOf(sell), account) < floorQuote
-  ) {
-    const slipMax = (1 - floorQuote / quoteOut) * 100;
-    if (slipMax >= 0.05) {
-      sell = await fetchSell(Math.min(slippagePct, slipMax * 0.9));
-      quoteOut = parseAssetAmount(sell.output) || quoteOut;
-    }
-  }
-
-  return {
-    ...plan,
-    baseMid: baseOut,
-    quoteOut,
-    profitPct: quoteOut / plan.quoteIn - 1,
-    buyLegs: buy.swaps.map((s) => ({
-      input: s.input,
-      output: s.output,
-      memo: s.memo,
-      route: s.route,
-    })),
-    sellLegs: sell.swaps.map((s) => ({
-      input: s.input,
-      output: s.output,
-      memo: s.memo,
-      route: s.route,
-    })),
-    quotedBase: baseOut,
-    quotedQuote: quoteOut,
-  };
-}
-
-/**
- * Exact-quote gate attempts per tick: the winner plus bounded ranked
- * fallbacks. Each attempt is one venue quote (≤ 4s deadline) — 3 attempts
- * cap the added latency/API load while rescuing ticks where the constant-
- * product discovery model disagrees with the venue's CLMM math.
- */
-const MAX_GATE_ATTEMPTS = 3;
-
-/**
- * Candidate order for an exact-quote gate. The ranked list is rebuilt on
- * the refreshed execution book (never the stale discovery book) with the
- * LEEF near-tie preference applied — inside a near-tie band, all-Alcor
- * routes with ≤ 3 legs come first (whole-route venue-verifiable via ONE
- * swapRouter call; the venue caps maxHops at 3 server-side), then longer
- * all-Alcor routes, then fresh-model venues; economics still rule outside
- * the band. A route that no longer ranks (e.g. the governor resized it)
- * still gets its attempt first. Fallbacks that would move the market past
- * the risk cap are not candidates.
- */
-function gateCandidates(
-  book: LeefSnapshot,
-  current: SwapRoute,
-  amountIn: number,
-  tokenIn: string,
-  tokenOut: string,
-  maxHops: number,
-  maxImpactPct: number,
-): SwapRoute[] {
-  const ranked = rankExecutionRoutesPreferLeef(
-    book.pools,
-    book.aux,
-    amountIn,
-    tokenIn,
-    tokenOut,
-    maxHops,
-  ).filter((r) => r.priceImpact * 100 <= maxImpactPct);
-  const ordered = ranked.some((r) => r.id === current.id) ? ranked : [current, ...ranked];
-  return ordered.slice(0, MAX_GATE_ATTEMPTS);
-}
-
-let lastHoldReason = "";
+/** Pause after an RPC/quote/rate-limit failure. */
+let rateLimitedUntil = 0;
+/** Dedupe identical HOLD reasons in the decision log. */
 let holdStreak = 0;
+let lastHoldReason = "";
+/** Dedupe identical blocking HOLD reasons — re-fire at most once per 5 min. */
+const HOLD_SURFACE_WINDOW_MS = 5 * 60_000;
+const holdSurfacedAt = new Map<string, number>();
 
-/**
- * Repeated identical HOLD reasons spam the decision log every cycle while a
- * blocking condition persists (a dead book under the volume gate, a stale
- * price under the portfolio governor, …). The gate DECISION still happens
- * every cycle — only the decision-log surfacing is deduped: one entry per
- * identical reason per 5 minutes (same discipline as the swap-flow mismatch
- * journal). Reasons that CHANGE are always surfaced — the log stays truthful
- * about state transitions.
- */
-export const HOLD_REASON_DEDUPE_MS = 5 * 60_000;
-const holdReasonSurfacedAt = new Map<string, number>();
-
-/**
- * True when a HOLD reason may be surfaced to the decision log NOW. An
- * identical, already-surfaced reason re-surfaces at most once per
- * HOLD_REASON_DEDUPE_MS; any new reason surfaces immediately.
- */
-export function shouldSurfaceHold(reason: string, now: number = Date.now()): boolean {
-  const last = holdReasonSurfacedAt.get(reason);
-  if (last === undefined) {
-    holdReasonSurfacedAt.set(reason, now);
-    return true;
-  }
-  if (now - last < HOLD_REASON_DEDUPE_MS) return false;
-  holdReasonSurfacedAt.set(reason, now);
-  // Bound the map: dead reasons expire with the map, not the session.
-  if (holdReasonSurfacedAt.size > 64) {
-    const oldest = holdReasonSurfacedAt.keys().next().value;
-    if (oldest !== undefined) holdReasonSurfacedAt.delete(oldest);
+function shouldSurfaceHold(reason: string): boolean {
+  const now = Date.now();
+  const last = holdSurfacedAt.get(reason) ?? 0;
+  if (now - last < HOLD_SURFACE_WINDOW_MS) return false;
+  holdSurfacedAt.set(reason, now);
+  if (holdSurfacedAt.size > 200) {
+    for (const [k, t] of holdSurfacedAt) {
+      if (now - t > HOLD_SURFACE_WINDOW_MS * 2) holdSurfacedAt.delete(k);
+    }
   }
   return true;
 }
 
-/** Test hook: clear the HOLD-reason dedupe map. */
-export function resetHoldDedupe(): void {
-  holdReasonSurfacedAt.clear();
-  lastHoldReason = "";
-  holdStreak = 0;
-}
-
 /**
- * Per-cycle market context for journal enrichment — computed lazily on the
- * first gate/execution of a cycle (never on HOLD-only paths), cached for the
- * cycle. Same regime/danger math the engine gates on.
- */
-function makeCycleCtx(book: LeefSnapshot, series: { t: number; usd: number }[], maxQuoteAgeSec: number) {
-  let cache: { regime: string; volPct: number; dangerScore: number } | null = null;
-  return () => {
-    if (cache) return cache;
-    const r = classifyRegime({
-      series,
-      poolPricesUsd: book.pools.map((p) => p.usdPerLeef ?? 0).filter((v) => v > 0),
-    });
-    const d = dangerScore({
-      quoteAgeMs: Math.max(0, Date.now() - Date.parse(book.fetchedAt)),
-      maxQuoteAgeMs: Math.max(15, maxQuoteAgeSec) * 1000,
-      volPct: r.volPct,
-      dislocationPct: r.dislocationPct,
-      liquidityUsd: Math.max(0, ...book.pools.map((p) => p.tvlUsd)),
-    });
-    cache = { regime: r.regime, volPct: r.volPct, dangerScore: d.score };
-    return cache;
-  };
-}
-
-/** Structured learning fields for a route journal entry. */
-function routeJournalMeta(route: SwapRoute, amountIn: number, pxIn: number) {
-  return {
-    poolIds: route.poolIds,
-    routeSig: routeSignature(route),
-    hops: route.legs.length,
-    venues: [...new Set(route.legs.map((l) => l.venue ?? "alcor"))],
-    sizeUsd: amountIn * Math.max(0, pxIn),
-  };
-}
-
-/**
- * Capture a route-scoped market fixture (Phase 3 market memory): just the
- * pools on the candidate routes, the involved prices, and the market context
- * — ~1–2 KB, enough to replay the decision path later. A full-book snapshot
- * would be ~11 MB and is deliberately NOT what we store.
- */
-function captureFixture(opts: {
-  kind: MarketFixture["kind"];
-  book: LeefSnapshot;
-  strategy: string;
-  mode: "paper" | "live";
-  tokenIn: string;
-  tokenOut: string;
-  amountIn: number;
-  routes: SwapRoute[];
-  gate?: MarketFixture["gate"];
-  reason: string;
-  ctx?: { regime: string; volPct: number; dangerScore: number };
-}): void {
-  try {
-    const wanted = new Set<number>();
-    for (const r of opts.routes) for (const id of r.poolIds) wanted.add(id);
-    const pools: MarketFixture["pools"] = [];
-    for (const p of opts.book.pools) {
-      if (!wanted.has(p.id)) continue;
-      pools.push({
-        id: p.id, venue: "alcor",
-        aSym: p.leef.symbol, aContract: p.leef.contract, aQty: p.leef.quantity, aDec: p.leef.decimals,
-        bSym: p.pair.symbol, bContract: p.pair.contract, bQty: p.pair.quantity, bDec: p.pair.decimals,
-        feePct: p.feePct, tvlUsd: p.tvlUsd,
-      });
-    }
-    for (const p of opts.book.aux) {
-      if (!wanted.has(p.id)) continue;
-      pools.push({
-        id: p.id, venue: p.venue ?? "alcor",
-        aSym: p.tokenA.symbol, aContract: p.tokenA.contract, aQty: p.tokenA.quantity, aDec: p.tokenA.decimals,
-        bSym: p.tokenB.symbol, bContract: p.tokenB.contract, bQty: p.tokenB.quantity, bDec: p.tokenB.decimals,
-        feePct: p.feePct, tvlUsd: p.tvlUsd,
-      });
-    }
-    const prices: Record<string, number> = { WAX: opts.book.waxUsd, LEEF: opts.book.leefUsd };
-    const pxIn = usdPriceOf(opts.tokenIn, opts.book);
-    const pxOut = usdPriceOf(opts.tokenOut, opts.book);
-    if (pxIn > 0) prices[opts.tokenIn.toUpperCase()] = pxIn;
-    if (pxOut > 0) prices[opts.tokenOut.toUpperCase()] = pxOut;
-    journalFixture({
-      kind: opts.kind,
-      cycleId: undefined, // stamped by the journal's cycle context
-      strategy: opts.strategy,
-      mode: opts.mode,
-      tokenIn: opts.tokenIn,
-      tokenOut: opts.tokenOut,
-      amountIn: opts.amountIn,
-      gate: opts.gate,
-      candidates: opts.routes.slice(0, 4).map((r) => ({
-        routeSig: routeSignature(r),
-        poolIds: r.poolIds,
-        amountOut: r.amountOut,
-        pass: opts.gate?.pass,
-        netPct: opts.gate?.netPct,
-      })),
-      pools,
-      prices,
-      waxUsd: opts.book.waxUsd,
-      leefUsd: opts.book.leefUsd,
-      regime: opts.ctx?.regime,
-      volPct: opts.ctx?.volPct,
-      dangerScore: opts.ctx?.dangerScore,
-      reason: opts.reason.slice(0, 200),
-    });
-  } catch {
-    /* fixtures never break trading */
-  }
-}
-
-/**
- * Register a self-impact measurement after a confirmed live fill: the next
- * snapshot's pool spot is compared against this pre-trade spot. LEEF pools
- * and WAX-sided aux pools are measurable.
- */
-function noteSelfImpact(
-  book: LeefSnapshot,
-  poolId: number | undefined,
-  action: string,
-  sizeUsd: number,
-  tokenIn: string,
-  tokenOut: string,
-): void {
-  if (poolId == null) return;
-  const pre = poolSpotUsd(book.pools, book.aux, poolId, book.waxUsd);
-  if (!(pre > 0)) return;
-  registerSelfImpact({
-    poolId,
-    aux: !book.pools.some((p) => p.id === poolId),
-    preSpotUsd: pre,
-    preMarketUsd: book.leefUsd,
-    sizeUsd,
-    action,
-    tokenIn,
-    tokenOut,
-    at: Date.now(),
-  });
-}
-/** Set when the API rate-limits us — evaluations pause until then. */
-let rateLimitedUntil = 0;
-/** Evaluation mutex — paper fills and live quotes must not overlap. */
-let cycleInFlight = false;
-
-/** Keep polling an UNKNOWN txid. Never submits another trade. Unlocks only on fail/confirm. */
-function pollUnknown(txid: string): void {
-  void (async () => {
-    const rec = await reconcileTransfersLater(txid);
-    if (rec.status === "failed") markFailed();
-    else if (rec.status === "confirmed") markConfirmed();
-    // still unknown → stay locked
-  })();
-}
-
-/**
- * Evaluate the bot once against a snapshot. Exported so the desk can
- * dry-run ("what would it do now?") and force manual clips.
- *
- * Signing is exclusive. After broadcast, reconciliation is async so the
- * next market scan can prepare — but a new LIVE trade is blocked until
- * capital is known (UNKNOWN never retries).
+ * Evaluate the bot once against a snapshot and execute the decision.
+ * Returns the decision for UI feedback. `opts.dry` skips execution.
  */
 export async function runBotOnce(
   snap: LeefSnapshot,
   opts?: { force?: "buy" | "sell"; dry?: boolean },
-) {
-  if (opts?.dry) return await runBotOnceInner(snap, opts);
-  // Retry-storm guard: a halted strategy never trades again this session
-  // without an explicit manual resume (bot-desk banner).
-  const halt = useBot.getState().strategyHalt;
-  if (halt) {
-    useBot.getState().setLastReason(`Strategy halted — ${halt.reason} (manual resume required)`);
-    return null;
-  }
-  const live = useWallet.getState().canSign();
-  if (live && liveCapitalBlocked()) {
-    const unknown = unknownBlockReason();
-    if (unknown) {
-      useBot.getState().setLastReason(unknown);
-    }
-    return null;
-  }
-  // One evaluation at a time for BOTH paper and live. Without this, overlapping
-  // snapshot + on-chain-spot ticks can paper-fill (or quote) the same clip twice
-  // before markTrade's cooldown lands.
-  if (cycleInFlight) return null;
-  cycleInFlight = true;
-  try {
-    return await runBotOnceInner(snap, opts);
-  } finally {
-    cycleInFlight = false;
-  }
-}
-
-async function runBotOnceInner(
-  snap: LeefSnapshot,
-  opts?: { force?: "buy" | "sell"; dry?: boolean },
-) {
+): Promise<Decision> {
   const cycleT0 = Date.now();
-  const cycleId = `${cycleT0.toString(36)}-${Math.random().toString(16).slice(2, 6)}`;
-  setJournalCycleId(cycleId);
-  const timings = emptyTimings();
-  const snapT = lastSnapshotTimings();
-  timings.snapshotFetchMs = snapT.snapshotFetchMs;
-  timings.poolRefreshMs = snapT.poolRefreshMs;
-  timings.tradeHistoryMs = snapT.tradeHistoryMs;
-  timings.venueDiscoveryMs = snapT.venueDiscoveryMs;
-
+  setJournalCycleId(`cyc-${cycleT0.toString(36)}-${Math.random().toString(36).slice(2, 7)}`);
+  const timings: TradeTimings = {
+    queueWaitMs: 0,
+    networkMs: 0,
+    parseMs: 0,
+    priceOracleMs: 0,
+    routeSearchMs: 0,
+    sizeOptimizationMs: 0,
+    netEdgeMs: 0,
+    riskMs: 0,
+    quoteMs: 0,
+    quoteVerifyMs: 0,
+    signMs: 0,
+    confirmationMs: 0,
+    broadcastMs: 0,
+    totalTradeCycleMs: 0,
+    candidateCount: 0,
+    routeCount: 0,
+    quoteCount: 0,
+    snapshotFetchMs: 0,
+    poolRefreshMs: 0,
+  };
   const b = useBot.getState();
   const w = useWallet.getState();
+  const mode = w.mode;
+  const live = mode === "live";
   const balances = w.balances();
-  const equityUsd = equityUsdOf(balances, snap);
+  const equityUsd = 0; // equity recomputed inside engine via markPortfolioUsd
   const syncSec = clampSyncSec(useTerminal.getState().syncSec ?? DEFAULT_SYNC_SEC);
   const risk = {
     ...b.risk,
     maxQuoteAgeSec: Math.max(b.risk.maxQuoteAgeSec, syncSec + 15),
   };
-  const live = w.canSign();
-  const mode: "paper" | "live" = live ? "live" : "paper";
-  // Per-pool third-party flow states: feed BOTH the danger context and the
+  // Swap-flow states for the volume gate + danger context, behind the
   // volume gate. Kill-switch off → null → volume intents fail closed.
   const flowStates = useTerminal.getState().flowGuardEnabled
     ? swapFlow.tracker.allStates(Date.now())
     : null;
+
+  // Jev poll (suggest/control only; "off" = zero calls). The proposal is
+  // consumed by the AI desk and, in "control", by the seam below.
+  maybeKickAiPoll(snap, b, balances);
 
   let decision = evaluateBot({
     now: Date.now(),
@@ -607,6 +284,86 @@ async function runBotOnceInner(
     const v0 = decision.route.legs[0]?.venue ?? "alcor";
     const mult = learnedSizeCeilingMult(v0, decision.route.poolIds[0]!);
     if (mult < 1) bounds = { ...boundsRaw, maxIn: boundsRaw.maxIn * mult };
+  }
+
+  // ── Jev (AI) control seam ─────────────────────────────────────────────
+  // "off": zero Jev calls (the poll above never fired). "suggest": proposals
+  // only surface on the AI desk. "control": a FRESH proposal whose weakest
+  // judgment clears AI_EXEC_CONFIDENCE_MIN replaces the engine's decision and
+  // runs the SAME unchanged gauntlet below (bounds → learned ceiling → size
+  // re-scan → exact/verify gates → governor → resource preflight → policy →
+  // simulation → sign → reconcile). Stale/absent/low-confidence judgments
+  // pause ENTRIES (logged no-op); protective engine exits (sell/stop) always
+  // still pass — the AI can never suppress a risk exit.
+  if (useTerminal.getState().aiControl === "control" && decision.kind !== "sell") {
+    const p = useTerminal.getState().aiProposal;
+    const fresh: AiProposal | null =
+      p && cycleT0 - p.fetchedAt <= AI_PROPOSAL_MAX_AGE_MS ? p : null;
+    const aiHold = (reason: string): Decision => {
+      b.pushDecision({ kind: "hold", mode, reason, priceUsd: snap.leefUsd });
+      b.setLastReason(reason);
+      return { kind: "hold", reason };
+    };
+    if (!fresh) {
+      return aiHold("AI control: no fresh Jev judgment — entries paused, exits still managed");
+    }
+    journal({
+      kind: "gate", gate: "ai",
+      pass: fresh.confidence >= AI_EXEC_CONFIDENCE_MIN,
+      reason: `Jev ${fresh.action} · weakest=${fresh.weakest} conf=${fresh.confidence.toFixed(2)} · ${fresh.rationale}`,
+      strategy: b.strategy, mode,
+      leefUsd: book.leefUsd, waxUsd: book.waxUsd,
+    });
+    if (fresh.confidence < AI_EXEC_CONFIDENCE_MIN) {
+      return aiHold(
+        `AI control: Jev ${fresh.action} below confidence floor (${fresh.confidence.toFixed(2)} < ${AI_EXEC_CONFIDENCE_MIN}) — no-op`,
+      );
+    }
+    const sizePct = Math.min(100, Math.max(1, Number(fresh.params.sizePct ?? "100"))) / 100;
+    const tag = `AI · Jev ${fresh.action} conf=${fresh.confidence.toFixed(2)} · ${fresh.rationale}`;
+    if (fresh.action === "hold") {
+      return aiHold(`AI control: Jev hold · ${fresh.rationale}`);
+    }
+    if (fresh.action === "buy") {
+      const probeIn = Math.min(bounds.maxIn, Math.max(bounds.minIn, bounds.maxIn * sizePct));
+      const route = bestExecutionRoute(book.pools, book.aux, probeIn, quoteTok, baseTok);
+      if (!route) return aiHold("AI control: Jev buy has no executable route on this book");
+      decision = { kind: "buy", amountIn: probeIn, route, reason: tag, confidence: fresh.confidence };
+    } else if (fresh.action === "sell" || fresh.action === "reduce_risk") {
+      if (!b.position || !(b.position.amountLeef > 0)) {
+        return aiHold(`AI control: Jev ${fresh.action} but no open position — no-op`);
+      }
+      if (b.position.mode !== mode) {
+        return aiHold(
+          `AI control: position was opened in ${b.position.mode} mode — ${
+            b.position.mode === "live" ? "re-import the key to manage it" : "forget the live key first"
+          }`,
+        );
+      }
+      // Partial-exit accounting is not implemented: the shared sell executor
+      // books PnL against the FULL entry cost and clears the tracked position
+      // (setPosition(null)), so AI exits are always FULL — the size bucket is
+      // advisory for entries/swaps only and is ignored here.
+      const amount = b.position.amountLeef;
+      const route = bestExecutionRoute(book.pools, book.aux, amount, baseTok, quoteTok);
+      if (!route) return aiHold("AI control: Jev exit has no executable route on this book");
+      decision = { kind: "sell", amountLeef: amount, route, reason: tag, confidence: fresh.confidence };
+    } else if (fresh.action === "swap") {
+      const tokenIn = fresh.params.tokenIn ?? "";
+      const tokenOut = fresh.params.tokenOut ?? "";
+      const held = balances[tokenIn] ?? 0;
+      if (!tokenIn || !tokenOut || tokenIn === tokenOut || !(held > 0)) {
+        return aiHold("AI control: Jev swap args incoherent with the wallet — no-op");
+      }
+      const amountIn = held * sizePct;
+      const route = bestExecutionRoute(book.pools, book.aux, amountIn, tokenIn, tokenOut);
+      if (!route) return aiHold("AI control: Jev swap has no executable route on this book");
+      decision = { kind: "swap", tokenIn, tokenOut, amountIn, route, reason: tag, minNetPct: 0 };
+    } else {
+      // rebalance / cancel_all: no resting orders exist and the portfolio
+      // loop owns rebalancing — the proposal stays desk-advisory.
+      return aiHold(`AI control: Jev ${fresh.action} is advisory here (rebalancer owns it) — no-op`);
+    }
   }
 
   // Last-second re-optimize: USD min is the floor, remaining USD capacity the ceiling.
