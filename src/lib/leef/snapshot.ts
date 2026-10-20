@@ -273,7 +273,7 @@ function kickCold(leef: LeefPool[], aux: AuxPool[]): void {
       const restIds = [...restLeef, ...restAux];
       const [trades, venues, rest] = await Promise.all([
         loadTrades(leef).catch(() => lastTrades),
-fetchExternalVenues(cache?.snap.waxUsd ?? 0).catch(() => lastVenues),
+        fetchExternalVenues(cache?.snap.waxUsd ?? 0).catch(() => lastVenues),
         restIds.length
           ? Promise.allSettled(restIds.map((id) => fetchPoolById(id, "low"))).then((r) =>
               applyPoolResults(leef, aux, restIds, r),
