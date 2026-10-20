@@ -3,7 +3,7 @@ import { LazyLoginArea } from "@/components/auth/LazyLoginArea";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { marketStats } from "@/lib/leef/analytics";
-import { fmtNum, fmtUsd } from "@/lib/leef/format";
+import { fmtUsd } from "@/lib/leef/format";
 import type { LeefSnapshot } from "@/lib/leef/types";
 import { toast } from "@/hooks/useToast";
 import { cn } from "@/lib/utils";

@@ -1,6 +1,7 @@
 import { create } from "zustand";
 import { persist } from "zustand/middleware";
 import { DEFAULT_AI_GATEWAY } from "@/lib/leef/ai-analyst";
+import type { AiProposal } from "@/lib/leef/ai-executor";
 import { setLearningModeProvider } from "@/lib/leef/learning-store";
 
 /** Book-pull cadence. Live = 10s — fastest that stays polite to Alcor. */
@@ -48,6 +49,16 @@ type TerminalState = {
   /** AI analyst master switch — off = zero calls to the gateway. */
   aiEnabled: boolean;
   /**
+   * Jev (System One) execution authority. Default OFF = zero Jev calls.
+   * "suggest" = proposals surface on the AI desk only. "control" = a fresh
+   * proposal at/above the confidence floor becomes an execution candidate
+   * through the unchanged risk gauntlet. Persisted; granting "control"
+   * requires the explicit confirm step (UI risk dialog → confirmed: true).
+   */
+  aiControl: "off" | "suggest" | "control";
+  /** Latest Jev proposal for the AI desk (ephemeral — never persisted). */
+  aiProposal: AiProposal | null;
+  /**
    * Swap-flow danger guard (audit E-1) kill-switch. When ON, Hyperion logswap
    * flow may RAISE the danger score (veto/size-down entries); it never
    * creates an entry. OFF = flow is panel-only market data.
@@ -86,6 +97,13 @@ type TerminalState = {
   setSwapMaxHops: (n: number) => void;
   selectRoute: (id: string | null) => void;
   setAiEnabled: (on: boolean) => void;
+  /**
+   * Set the Jev execution authority. "control" is refused unless
+   * `confirmed === true` (the UI risk-confirm dialog) — returns whether the
+   * mode was applied. Leaving "control" never requires confirmation.
+   */
+  setAiControl: (mode: "off" | "suggest" | "control", confirmed?: boolean) => boolean;
+  setAiProposal: (p: AiProposal | null) => void;
   setFlowGuardEnabled: (on: boolean) => void;
   setLearningMode: (mode: "suggest" | "controlled") => void;
   setAiReviewEveryTrades: (n: number) => void;
@@ -110,6 +128,8 @@ export const useTerminal = create<TerminalState>()(
   swapMaxHops: 4,
   selectedRouteSig: null,
   aiEnabled: true,
+  aiControl: "off",
+  aiProposal: null,
   flowGuardEnabled: true,
   learningMode: "suggest",
   aiReviewEveryTrades: 8,
@@ -137,6 +157,15 @@ export const useTerminal = create<TerminalState>()(
     set({ swapMaxHops: Math.min(10, Math.max(1, Math.round(n))), selectedRouteSig: null }),
   selectRoute: (selectedRouteSig) => set({ selectedRouteSig }),
   setAiEnabled: (aiEnabled) => set({ aiEnabled }),
+  setAiControl: (mode, confirmed) => {
+    if (mode === "control" && get().aiControl !== "control" && confirmed !== true) {
+      return false; // explicit risk-confirm required to grant control
+    }
+    // A stale proposal must never outlive the mode that produced it.
+    set(mode === get().aiControl ? { aiControl: mode } : { aiControl: mode, aiProposal: null });
+    return true;
+  },
+  setAiProposal: (aiProposal) => set({ aiProposal }),
   setFlowGuardEnabled: (flowGuardEnabled) => set({ flowGuardEnabled }),
   setLearningMode: (learningMode) => set({ learningMode }),
   setAiReviewEveryTrades: (n) =>
@@ -150,12 +179,17 @@ export const useTerminal = create<TerminalState>()(
     }),
     {
       name: "leef-terminal-sync",
-      version: 1,
+      version: 2,
+      // v1 → v2: aiControl is new. The safe default is ALWAYS "off" — the
+      // legacy aiEnabled flag gated only the advisory analyst gateway and
+      // must never imply execution authority.
+      migrate: (persisted) => ({ ...(persisted as object), aiControl: "off" }),
       partialize: (s) => ({
         syncSec: s.syncSec,
         aiGatewayUrl: s.aiGatewayUrl,
         swapMaxHops: s.swapMaxHops,
         aiEnabled: s.aiEnabled,
+        aiControl: s.aiControl,
         flowGuardEnabled: s.flowGuardEnabled,
         learningMode: s.learningMode,
         aiReviewEveryTrades: s.aiReviewEveryTrades,

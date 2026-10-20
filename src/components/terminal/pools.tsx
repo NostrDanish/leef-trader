@@ -48,8 +48,8 @@ export function PoolsTable({ ranked }: { ranked: RankedPool[] }) {
 
   rows = [...rows].sort((a, b) => {
     const key = sort;
-    let va: number | string = 0;
-    let vb: number | string = 0;
+    let va: number | string;
+    let vb: number | string;
     if (key === "score") {
       va = a.tradeScore;
       vb = b.tradeScore;
@@ -224,7 +224,7 @@ export function PoolsTable({ ranked }: { ranked: RankedPool[] }) {
                   </td>
                   <td className="px-3 py-3">
                     <div className="flex flex-wrap gap-1">
-                      {p.badges.map((b) => (
+{p.badges.map((b) => (
                         <Badge key={b} variant={BADGE_COPY[b].variant}>
                           {BADGE_COPY[b].label}
                         </Badge>
