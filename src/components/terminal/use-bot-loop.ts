@@ -581,6 +581,9 @@ async function runBotOnceInner(
     holdStreak += 1;
     if (
       (decision.reason !== lastHoldReason || holdStreak % 10 === 0) &&
+      // Identical blocking reasons re-fire verbatim every cycle on a dead
+      // book — surface them at most once per 5 min per reason (gate still
+      // blocks every cycle; only the log surfacing is deduped).
       shouldSurfaceHold(decision.reason)
     ) {
       b.pushDecision({ kind: "hold", mode, reason: decision.reason, priceUsd: snap.leefUsd });
@@ -909,7 +912,7 @@ async function runBotOnceInner(
           tokenIn: quoteTok,
           tokenOut: baseTok,
           amountIn: decision.amountIn,
-          sizeUsd: decision.amountIn * bounds.quoteUsd,
+          sizeUsd: decision.amountIn * (bounds.quoteUsd),
           poolIds: lastCandidate?.poolIds ?? [],
           venues: lastCandidate
             ? [...new Set(lastCandidate.legs.map((l) => l.venue ?? "alcor"))]
@@ -952,7 +955,7 @@ async function runBotOnceInner(
         route: { ...gated.route, amountOut: gated.expectedOut },
         edge: {
           netEdgePct: gated.netEdgePct,
-          netProfitUsd: (gated.netEdgePct / 100) * (decision.amountIn * bounds.quoteUsd),
+          netProfitUsd: (gated.netEdgePct / 100) * (decision.amountIn * (bounds.quoteUsd)),
           score: decision.edge?.score ?? 0,
         },
         reason: `${decision.reason} · ${gated.reason}`,
@@ -1414,7 +1417,7 @@ async function runBotOnceInner(
         tokenIn: quoteTok,
         tokenOut: baseTok,
         amountIn: decision.amountIn,
-        sizeUsd: decision.amountIn * bounds.quoteUsd,
+        sizeUsd: decision.amountIn * (bounds.quoteUsd),
         poolIds: decision.route.poolIds,
         venues: [...new Set(decision.route.legs.map((l) => l.venue ?? "alcor"))],
         routeSig: routeSignature(decision.route),
@@ -1606,7 +1609,7 @@ async function runBotOnceInner(
           book,
           decision.route.poolIds[0],
           "buy",
-          decision.amountIn * bounds.quoteUsd,
+          decision.amountIn * (bounds.quoteUsd),
           quoteTok,
           baseTok,
         );
@@ -1918,7 +1921,7 @@ async function runBotOnceInner(
           return { kind: "hold", reason };
         }
         if (!isEcho && plan.profitPct * 100 < b.risk.minEdgePct) {
-          const reason = `Alcor spread ${(plan.profitPct * 100).toFixed(2)}% is below the ${b.risk.minEdgePct}% floor`;
+          const reason = `Alcor spread ${ (plan.profitPct * 100).toFixed(2)}% is below the ${b.risk.minEdgePct}% floor`;
           b.setLastReason(reason);
           b.pushDecision({ kind: "hold", mode, reason, priceUsd: snap.leefUsd });
           return { kind: "hold", reason };
@@ -2137,6 +2140,7 @@ async function runBotOnceInner(
     recordCycleTimings(timings);
     setJournalCycleId(null);
   }
+  return decision;
 }
 
 /**
