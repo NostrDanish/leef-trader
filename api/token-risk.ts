@@ -17,6 +17,7 @@ import {
   tokenId,
   type TokenRisk,
 } from "../src/lib/leef/token-risk-core";
+import { guard } from "./_guard";
 
 declare const process: { env: Record<string, string | undefined> };
 
@@ -25,6 +26,12 @@ const TIMEOUT_MS = 3_000;
 const CACHE_TTL_MS = 6 * 3600_000;
 const cache = new Map<string, { at: number; risk: TokenRisk }>();
 
+// Whole-reply cache (60s) keyed by the canonical token set: repeat UI polls for
+// the same tokens never re-hit the upstream quota within a minute, on top of
+// the 6h per-token cache above. In-memory — per warm instance, like `cache`.
+const REPLY_TTL_MS = 60_000;
+const replyCache = new Map<string, { at: number; results: Record<string, TokenRisk> }>();
+
 const json = (body: unknown, status = 200): Response =>
   new Response(JSON.stringify(body), {
     status,
@@ -32,6 +39,11 @@ const json = (body: unknown, status = 200): Response =>
   });
 
 export async function POST(request: Request): Promise<Response> {
+  // Audit LT-2: per-IP rate limit (+ optional bearer auth when TRADER_API_TOKEN
+  // is set) runs BEFORE any body parsing or upstream quota spend.
+  const blocked = guard(request, { route: "token-risk" });
+  if (blocked) return blocked;
+
   let body: unknown;
   try {
     body = await request.json();
@@ -40,6 +52,12 @@ export async function POST(request: Request): Promise<Response> {
   }
   const tokens = parseTokenRiskRequest(body);
   if (!tokens) return json({ error: "expected { tokens: [{ symbol, contract }] } (1-4 tokens)" }, 400);
+
+  const replyKey = tokens.map(tokenId).sort().join("|");
+  const cached = replyCache.get(replyKey);
+  if (cached && Date.now() - cached.at < REPLY_TTL_MS) {
+    return json({ available: true, results: cached.results });
+  }
 
   const results: Record<string, TokenRisk> = {};
   const now = Date.now();
@@ -52,7 +70,10 @@ export async function POST(request: Request): Promise<Response> {
     }
     return true;
   });
-  if (!todo.length) return json({ available: true, results });
+  if (!todo.length) {
+    replyCache.set(replyKey, { at: Date.now(), results });
+    return json({ available: true, results });
+  }
 
   const key = process.env.TYPESAFE_API_KEY;
   if (!key) return json({ available: false });
@@ -70,6 +91,7 @@ export async function POST(request: Request): Promise<Response> {
       cache.set(id, { at: now, risk });
       results[id] = risk;
     }
+    replyCache.set(replyKey, { at: now, results });
     return json({ available: true, results });
   } catch {
     return json({ available: false });

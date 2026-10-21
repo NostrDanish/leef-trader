@@ -59,6 +59,9 @@ export function connectSrc(): string[] {
   return ["'self'", "blob:", ...connectOrigins()];
 }
 
+/** Same-origin sink for violation reports (api/csp-report.ts). */
+export const CSP_REPORT_ROUTE = "/api/csp-report";
+
 export function buildCsp(): string {
   return [
     "default-src 'none'",
@@ -73,5 +76,11 @@ export function buildCsp(): string {
     `connect-src ${connectSrc().join(" ")}`,
     "img-src 'self' data: blob: https:",
     "media-src 'self' https:",
+    // Telemetry (audit LT-2 follow-up): report-uri for legacy browsers,
+    // report-to for Reporting-Endpoints-aware ones. The policy stays
+    // report-only until the preview smoke test, but now reports land in
+    // api/csp-report.ts (204 + function log) instead of vanishing.
+    `report-uri ${CSP_REPORT_ROUTE}`,
+    "report-to csp-endpoint",
   ].join("; ");
 }
