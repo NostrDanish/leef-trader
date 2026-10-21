@@ -55,7 +55,7 @@ export type JournalEntry = {
   priceUsd?: number;
 
   /** gate entries */
-  gate?: "entry" | "swap" | "growth";
+  gate?: "entry" | "swap" | "growth" | "ai";
   pass?: boolean;
   /** 1-based gate-attempt index within the tick (candidate fallback). */
   attempt?: number;

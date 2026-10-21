@@ -34,7 +34,7 @@ describe("trackRejection", () => {
   it("halts after 3 identical consecutive rejections", () => {
     const k = key("assertion failure with message: overdrawn balance: 1.5 PARAUSD");
     let streak: RejectionStreak | null = null;
-    let halted = false;
+    let halted: boolean;
     for (let i = 0; i < RETRY_STORM_LIMIT - 1; i++) {
       ({ streak, halted } = trackRejection(streak, k));
       expect(halted).toBe(false);

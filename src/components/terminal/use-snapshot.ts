@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { fallbackSnapshot } from "@/lib/leef/fallback";
+import { unavailableSnapshot } from "@/lib/leef/fallback";
 import { rankPools } from "@/lib/leef/rank";
 import { loadSeedSnapshot } from "@/lib/leef/seed";
 import type { LeefSnapshot } from "@/lib/leef/types";
@@ -7,7 +7,7 @@ import { marketEngine } from "@/lib/market/market-engine";
 import { clampSyncSec, DEFAULT_SYNC_SEC, useTerminal } from "@/store/terminal";
 import { useMarketEngine } from "@/hooks/useMarketEngine";
 
-const placeholder = fallbackSnapshot(
+const placeholder = unavailableSnapshot(
   "Loading the live Alcor LEEF book…",
   "2026-01-01T00:00:00.000Z",
 );

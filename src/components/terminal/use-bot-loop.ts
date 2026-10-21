@@ -3,6 +3,7 @@ import {
   evaluateBot,
   findBestArb,
   type ArbPlan,
+  type Decision,
   type Position,
 } from "@/lib/leef/bot-engine";
 import { realizedVolPerSec, usdPriceOf } from "@/lib/leef/cost-model";
@@ -43,6 +44,14 @@ import {
 } from "@/lib/leef/learning-store";
 import { classifyRegime, dangerScore } from "@/lib/leef/regime";
 import { maybeAutoReview } from "@/lib/leef/ai-review";
+import {
+  AI_EXEC_CONFIDENCE_MIN,
+  aiSummaryOf,
+  buildAiQuestions,
+  parseAiProposal,
+  type AiProposal,
+} from "@/lib/leef/ai-executor";
+import { askJev } from "@/lib/leef/jev-client";
 import { refreshExecutionState } from "@/lib/market/execution-state";
 import { aggregateFlowRisk, swapFlow } from "@/lib/market/swap-flow";
 import { governTrade, portfolioState } from "@/lib/market/portfolio-governor";
@@ -73,6 +82,46 @@ import { usePortfolio } from "@/store/portfolio";
 import { useWallet } from "@/store/wallet";
 import { toast } from "@/hooks/useToast";
 import { lastFetchTiming } from "@/lib/fetchJson";
+
+/* ------------------------------------------------------------------ */
+/* Jev (System One) AI seam — propose only; the gauntlet decides       */
+/* ------------------------------------------------------------------ */
+
+/** Min gap between Jev polls (one request, speculative fan-out). */
+const AI_POLL_MS = 45_000;
+/** A proposal older than this never executes — stale judgments don't trade. */
+const AI_PROPOSAL_MAX_AGE_MS = 120_000;
+
+let aiPollInFlight = false;
+let aiLastPollAt = 0;
+
+/**
+ * Background Jev poll. "off" = zero calls (this never fires). The proposal
+ * lands in the terminal store for the AI desk; the control seam reads it.
+ * Never throws — Jev is advisory infrastructure, not liveness-critical.
+ */
+function maybeKickAiPoll(
+  snap: LeefSnapshot,
+  b: ReturnType<typeof useBot.getState>,
+  balances: Record<string, number>,
+): void {
+  if (import.meta.env.MODE === "test") return;
+  if (useTerminal.getState().aiControl === "off") return;
+  if (snap.source !== "live") return;
+  const now = Date.now();
+  if (aiPollInFlight || now - aiLastPollAt < AI_POLL_MS) return;
+  aiPollInFlight = true;
+  aiLastPollAt = now;
+  const summary = aiSummaryOf(snap, b, balances);
+  void (async () => {
+    try {
+      const res = await askJev(summary, buildAiQuestions(summary));
+      useTerminal.getState().setAiProposal(res ? parseAiProposal(res.answers) : null);
+    } finally {
+      aiPollInFlight = false;
+    }
+  })();
+}
 
 function equityUsdOf(balances: Record<string, number>, snap: LeefSnapshot): number {
   // Portfolio governor already canonicalizes balances and avoids double-counting
@@ -469,6 +518,10 @@ async function runBotOnceInner(
     ? swapFlow.tracker.allStates(Date.now())
     : null;
 
+  // Jev poll (suggest/control only; "off" = zero calls). The proposal is
+  // consumed by the AI desk and, in "control", by the seam below.
+  maybeKickAiPoll(snap, b, balances);
+
   let decision = evaluateBot({
     now: Date.now(),
     snap,
@@ -607,6 +660,86 @@ async function runBotOnceInner(
     const v0 = decision.route.legs[0]?.venue ?? "alcor";
     const mult = learnedSizeCeilingMult(v0, decision.route.poolIds[0]!);
     if (mult < 1) bounds = { ...boundsRaw, maxIn: boundsRaw.maxIn * mult };
+  }
+
+  // ── Jev (AI) control seam ─────────────────────────────────────────────
+  // "off": zero Jev calls (the poll above never fired). "suggest": proposals
+  // only surface on the AI desk. "control": a FRESH proposal whose weakest
+  // judgment clears AI_EXEC_CONFIDENCE_MIN replaces the engine's decision and
+  // runs the SAME unchanged gauntlet below (bounds → learned ceiling → size
+  // re-scan → exact/verify gates → governor → resource preflight → policy →
+  // simulation → sign → reconcile). Stale/absent/low-confidence judgments
+  // pause ENTRIES (logged no-op); protective engine exits (sell/stop) always
+  // still pass — the AI can never suppress a risk exit.
+  if (useTerminal.getState().aiControl === "control" && decision.kind !== "sell") {
+    const p = useTerminal.getState().aiProposal;
+    const fresh: AiProposal | null =
+      p && cycleT0 - p.fetchedAt <= AI_PROPOSAL_MAX_AGE_MS ? p : null;
+    const aiHold = (reason: string): Decision => {
+      b.pushDecision({ kind: "hold", mode, reason, priceUsd: snap.leefUsd });
+      b.setLastReason(reason);
+      return { kind: "hold", reason };
+    };
+    if (!fresh) {
+      return aiHold("AI control: no fresh Jev judgment — entries paused, exits still managed");
+    }
+    journal({
+      kind: "gate", gate: "ai",
+      pass: fresh.confidence >= AI_EXEC_CONFIDENCE_MIN,
+      reason: `Jev ${fresh.action} · weakest=${fresh.weakest} conf=${fresh.confidence.toFixed(2)} · ${fresh.rationale}`,
+      strategy: b.strategy, mode,
+      leefUsd: book.leefUsd, waxUsd: book.waxUsd,
+    });
+    if (fresh.confidence < AI_EXEC_CONFIDENCE_MIN) {
+      return aiHold(
+        `AI control: Jev ${fresh.action} below confidence floor (${fresh.confidence.toFixed(2)} < ${AI_EXEC_CONFIDENCE_MIN}) — no-op`,
+      );
+    }
+    const sizePct = Math.min(100, Math.max(1, Number(fresh.params.sizePct ?? "100"))) / 100;
+    const tag = `AI · Jev ${fresh.action} conf=${fresh.confidence.toFixed(2)} · ${fresh.rationale}`;
+    if (fresh.action === "hold") {
+      return aiHold(`AI control: Jev hold · ${fresh.rationale}`);
+    }
+    if (fresh.action === "buy") {
+      const probeIn = Math.min(bounds.maxIn, Math.max(bounds.minIn, bounds.maxIn * sizePct));
+      const route = bestExecutionRoute(book.pools, book.aux, probeIn, quoteTok, baseTok);
+      if (!route) return aiHold("AI control: Jev buy has no executable route on this book");
+      decision = { kind: "buy", amountIn: probeIn, route, reason: tag, confidence: fresh.confidence };
+    } else if (fresh.action === "sell" || fresh.action === "reduce_risk") {
+      if (!b.position || !(b.position.amountLeef > 0)) {
+        return aiHold(`AI control: Jev ${fresh.action} but no open position — no-op`);
+      }
+      if (b.position.mode !== mode) {
+        return aiHold(
+          `AI control: position was opened in ${b.position.mode} mode — ${
+            b.position.mode === "live" ? "re-import the key to manage it" : "forget the live key first"
+          }`,
+        );
+      }
+      // Partial-exit accounting is not implemented: the shared sell executor
+      // books PnL against the FULL entry cost and clears the tracked position
+      // (setPosition(null)), so AI exits are always FULL — the size bucket is
+      // advisory for entries/swaps only and is ignored here.
+      const amount = b.position.amountLeef;
+      const route = bestExecutionRoute(book.pools, book.aux, amount, baseTok, quoteTok);
+      if (!route) return aiHold("AI control: Jev exit has no executable route on this book");
+      decision = { kind: "sell", amountLeef: amount, route, reason: tag, confidence: fresh.confidence };
+    } else if (fresh.action === "swap") {
+      const tokenIn = fresh.params.tokenIn ?? "";
+      const tokenOut = fresh.params.tokenOut ?? "";
+      const held = balances[tokenIn] ?? 0;
+      if (!tokenIn || !tokenOut || tokenIn === tokenOut || !(held > 0)) {
+        return aiHold("AI control: Jev swap args incoherent with the wallet — no-op");
+      }
+      const amountIn = held * sizePct;
+      const route = bestExecutionRoute(book.pools, book.aux, amountIn, tokenIn, tokenOut);
+      if (!route) return aiHold("AI control: Jev swap has no executable route on this book");
+      decision = { kind: "swap", tokenIn, tokenOut, amountIn, route, reason: tag, minNetPct: 0 };
+    } else {
+      // rebalance / cancel_all: no resting orders exist and the portfolio
+      // loop owns rebalancing — the proposal stays desk-advisory.
+      return aiHold(`AI control: Jev ${fresh.action} is advisory here (rebalancer owns it) — no-op`);
+    }
   }
 
   // Last-second re-optimize: USD min is the floor, remaining USD capacity the ceiling.

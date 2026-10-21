@@ -294,18 +294,20 @@ export const DEFAULT_RISK: BotRisk = {
   // a volume echo is "zero-loss average" after fees — the on-chain min-out
   // still reverts anything worse. Not wash trading: cost is bounded.
   maxEchoLossPct: 1.5,
-  // Flow gate: the chain's median swap is $0.005 and pools see 45-min trade
-  // droughts — printing tape on a book nobody else touches buys nothing.
-  // Default OFF: even 10 min of quiet gated the WHOLE session on dead books
-  // ("no third-party swap observed this session"), so nothing ever traded.
-  // The echo budget below still bounds what volume strategies may spend.
+  // OFF-BY-DESIGN (evidence, audit C6): the chain's median swap is $0.005
+  // and pools see 45-min trade droughts — printing tape on a book nobody
+  // else touches buys nothing. Even 10 min of quiet gated the WHOLE session
+  // on dead books ("no third-party swap observed this session"), so nothing
+  // ever traded. Disabled pending more tape data; the echo budget below
+  // still bounds what volume strategies may spend.
   volumeFlowGateMin: 0,
   echoBudgetUsd: 5,
-  // The exact-quote gate also enforces guaranteedOut ≥ minNetEdgePct; a 0.1%
-  // floor needs a 0.3% CLMM clip to land its min-out within 0.2% — that
-  // combination almost never exists on WAX micro books, so every candidate
-  // was vetoed ("guaranteed −1.27% < floor 0.1%"). 0 = the on-chain min-out
-  // itself is the floor (always satisfied by construction).
+  // OFF-BY-DESIGN (evidence, audit C6): the exact-quote gate enforces
+  // guaranteedOut ≥ minNetEdgePct, and a 0.1% floor needs a 0.3% CLMM clip
+  // to land its min-out within 0.2% — that combination almost never exists
+  // on WAX micro books, so every candidate was vetoed ("guaranteed −1.27%
+  // < floor 0.1%"). 0 = the exact-gate floor IS the on-chain min-out by
+  // design (always satisfied by construction, still never loss-making).
   minNetEdgePct: 0,
   maxQuoteAgeSec: 45,
   maxHops: 4,
@@ -1650,7 +1652,11 @@ export function evaluateBot(input: BotInput): Decision {
       return hold(`RSI ${rsi.toFixed(0)} · %B ${pctB.toFixed(2)} — waiting for an oversold tag`);
     }
     case "grid": {
-      const step = adaptiveGridStepPct(risk.gridStepPct, realizedVolPerSec(input.series));
+      const step = adaptiveGridStepPct(
+        risk.gridStepPct,
+        realizedVolPerSec(input.series),
+        gridFeePct(snap, quote),
+      );
       const expected = step * 0.8;
       const anchor = input.gridAnchor;
       if (anchor == null) {
@@ -1788,7 +1794,11 @@ export function evaluateBot(input: BotInput): Decision {
         }
       }
       {
-        const step = adaptiveGridStepPct(risk.gridStepPct, realizedVolPerSec(input.series));
+        const step = adaptiveGridStepPct(
+          risk.gridStepPct,
+          realizedVolPerSec(input.series),
+          gridFeePct(snap, quote),
+        );
         const anchor = input.gridAnchor;
         if ((anchor == null || baseUsd <= anchor * (1 - step / 100)) && regW("grid") > 0) {
           theses.push({

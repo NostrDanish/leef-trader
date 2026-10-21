@@ -163,6 +163,31 @@ describe("advisor", () => {
     expect(s.risk.maxPositionUsd).toBeLessThanOrEqual(1_000);
   });
 
+  it("operational reserve scales with 10% of wallet USD value, capped at $1", () => {
+    // Regression: reserve was bal * quoteUsd * 0.1 (token count × USD value),
+    // which clamped to $1 for any wallet ≥ ~$3.2 and collapsed below it.
+    const mk = (wax: number) =>
+      suggestBotSettings({
+        snap: snap(),
+        balances: { WAX: wax },
+        base: "LEEF",
+        quote: "WAX",
+        focus: [],
+        strategy: "signal",
+        cpuPct: 0.1,
+        netPct: 0.1,
+        ramPct: 0.1,
+      });
+    // WAX = $0.02 in the fixture → 100 WAX = $2 → reserve $0.20.
+    expect(mk(100).risk.operationalReserveUsd).toBeCloseTo(0.2, 6);
+    // 250 WAX = $5 → reserve $0.50 (would have been $1 under the bug).
+    expect(mk(250).risk.operationalReserveUsd).toBeCloseTo(0.5, 6);
+    // Cap: 10,000 WAX = $200 → $1.
+    expect(mk(10_000).risk.operationalReserveUsd).toBe(1);
+    // Empty wallet → $0 reserve.
+    expect(mk(0).risk.operationalReserveUsd).toBe(0);
+  });
+
   it("suggests a quote the wallet actually holds", () => {
     const pair = suggestPair(snap(), { WAXUSDC: 40, WAX: 1 }, ["LEEF", "WAXUSDC"]);
     expect(pair.base).toBe("LEEF");

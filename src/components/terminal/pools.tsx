@@ -48,8 +48,8 @@ export function PoolsTable({ ranked }: { ranked: RankedPool[] }) {
 
   rows = [...rows].sort((a, b) => {
     const key = sort;
-    let va: number | string = 0;
-    let vb: number | string = 0;
+    let va: number | string;
+    let vb: number | string;
     if (key === "score") {
       va = a.tradeScore;
       vb = b.tradeScore;

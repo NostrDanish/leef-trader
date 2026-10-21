@@ -123,7 +123,7 @@ export type RankedPool = LeefPool & {
   feeApyPct: number;
 };
 
-export type SnapshotSource = "live" | "fallback";
+export type SnapshotSource = "live" | "fallback" | "unavailable";
 
 export type LeefSnapshot = {
   source: SnapshotSource;

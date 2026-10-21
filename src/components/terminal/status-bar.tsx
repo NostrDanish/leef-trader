@@ -1,11 +1,11 @@
-import { useEffect, useState } from "react";
 import { marketStats } from "@/lib/leef/analytics";
-import { fmtLeefLot, fmtNum, fmtUsd, timeAgo } from "@/lib/leef/format";
+import { fmtLeefLot, fmtNum, fmtUsd } from "@/lib/leef/format";
 import { headline } from "@/lib/leef/rank";
 import type { LeefSnapshot, RankedPool } from "@/lib/leef/types";
 import type { LiveTickState } from "./use-live-tick";
 import { useMarketEngine } from "@/hooks/useMarketEngine";
 import { cn } from "@/lib/utils";
+import { relTime, useNow } from "./use-now";
 import { VersionBanner } from "./version-banner";
 
 export function StatusBar({
@@ -17,18 +17,12 @@ export function StatusBar({
   ranked: RankedPool[];
   tick: LiveTickState;
 }) {
-  const [mounted, setMounted] = useState(false);
-  const [now, setNow] = useState(Date.now());
-  useEffect(() => setMounted(true), []);
   // Live infra pulse (head block age etc.) between engine commits.
-  useEffect(() => {
-    const id = window.setInterval(() => setNow(Date.now()), 1000);
-    return () => window.clearInterval(id);
-  }, []);
+  const now = useNow();
   const engine = useMarketEngine();
   const h = headline(ranked);
   const stats = marketStats(snap);
-  const synced = mounted ? timeAgo(snap.fetchedAt) : "just now";
+  const synced = relTime(snap.fetchedAt, now);
   const blockAgeSec =
     engine.headBlockAt > 0 ? Math.max(0, (now - engine.headBlockAt) / 1000) : null;
   const blockFresh = blockAgeSec != null && blockAgeSec < 5;

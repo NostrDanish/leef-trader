@@ -1,8 +1,9 @@
-import { useEffect, useState, type ReactNode } from "react";
+import { useState, type ReactNode } from "react";
 import { Check, Loader2, RotateCcw, Save, Wifi, WifiOff } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { fmtNum, timeAgo } from "@/lib/leef/format";
+import { useNow } from "./use-now";
 import { marketEngine } from "@/lib/market/market-engine";
 import { TRADING_MAX_BLOCK_LAG, type EndpointHealth } from "@/lib/wax/provider-pool";
 import { lastCycleTimings } from "@/lib/wallet/trade-cycle";
@@ -67,7 +68,6 @@ function Section({
 }
 
 function EndpointRow({ e }: { e: EndpointHealth }) {
-  const dead = e.status === "cooldown" || e.status === "disabled";
   return (
     <div className="flex items-center gap-2 font-mono tabular-nums">
       <span className={cn("size-2 shrink-0 rounded-full", statusColor(e.status))} />
@@ -111,16 +111,17 @@ function TimingRow({ label, ms }: { label: string; ms: number }) {
 /* ------------------------------------------------------------------ */
 
 function EndpointConfigEditor() {
-  const [rpcText, setRpcText] = useState("");
-  const [histText, setHistText] = useState("");
-  const [saved, setSaved] = useState(false);
-
-  useEffect(() => {
+  const [rpcText, setRpcText] = useState(() => {
     const cfg = readEndpointConfig();
     const eff = marketEngine.getState().endpoints;
-    setRpcText((cfg?.rpc ?? eff.rpc).join("\n"));
-    setHistText((cfg?.history ?? eff.history).join("\n"));
-  }, []);
+    return (cfg?.rpc ?? eff.rpc).join("\n");
+  });
+  const [histText, setHistText] = useState(() => {
+    const cfg = readEndpointConfig();
+    const eff = marketEngine.getState().endpoints;
+    return (cfg?.history ?? eff.history).join("\n");
+  });
+  const [saved, setSaved] = useState(false);
 
   const save = () => {
     const clean = (t: string) =>
@@ -195,18 +196,14 @@ function EndpointConfigEditor() {
 
 export function InfraStatus() {
   const e = useMarketEngine();
-  const [, force] = useState(0);
   // Keep block age / "synced Xs ago" live between engine commits.
-  useEffect(() => {
-    const id = window.setInterval(() => force((n) => n + 1), 1000);
-    return () => window.clearInterval(id);
-  }, []);
+  const now = useNow();
 
-  const blockAgeMs = e.headBlockAt > 0 ? Date.now() - e.headBlockAt : Number.POSITIVE_INFINITY;
+  const blockAgeMs = e.headBlockAt > 0 ? now - e.headBlockAt : Number.POSITIVE_INFINITY;
   const blockFresh = blockAgeMs < 5_000;
   const chainLive = e.status === "running" || e.status === "resyncing";
   const timings = lastCycleTimings();
-  const alcorAge = e.alcor.lastOkAt > 0 ? Date.now() - e.alcor.lastOkAt : 0;
+  const alcorAge = e.alcor.lastOkAt > 0 ? now - e.alcor.lastOkAt : 0;
 
   return (
     <div className="space-y-4">
@@ -263,7 +260,7 @@ export function InfraStatus() {
             <span className={cn("font-mono", e.alcor.ok ? "text-leef" : "text-warn")}>
               {e.alcor.ok ? "ok" : "down"}
             </span>
-            {alcorAge > 0 && ` · ${timeAgo(new Date(Date.now() - alcorAge).toISOString())}`}
+            {alcorAge > 0 && ` · ${timeAgo(new Date(e.alcor.lastOkAt).toISOString())}`}
             {e.snapshot?.spotAt && (
               <>
                 {" · on-chain spot "}

@@ -313,17 +313,17 @@ export async function verifyExecutableRoute(opts: {
         alcor: quote,
       });
     } else {
-      // Nefty's table is keyed by pair code, not numeric id — recover the
-      // code from the discovery snapshot (topology only; the row itself is
-      // re-read fresh below). No code → fail closed.
+      // Nefty's and Taco's tables are keyed by pair code, not numeric id —
+      // recover the code from the discovery snapshot (topology only; the row
+      // itself is re-read fresh below). No code → fail closed.
       const pairCode =
-        venue === "nefty"
+        venue === "nefty" || venue === "taco"
           ? opts.snap.venues?.find((v) => v.id === leg.poolId)?.pairCode
           : undefined;
-      if (venue === "nefty" && !pairCode) {
+      if ((venue === "nefty" || venue === "taco") && !pairCode) {
         throw new TradeError(
           "MODEL_ONLY",
-          `nefty pair ${nativePoolId(leg.poolId)} has no discovered pair code — not executable`,
+          `${venue} pair ${nativePoolId(leg.poolId)} has no discovered pair code — not executable`,
         );
       }
       const pair = await refreshVenuePair(

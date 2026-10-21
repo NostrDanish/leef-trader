@@ -4,8 +4,19 @@ import { forgetSecret, hasSecret } from "@/lib/wallet/secret";
 import { hasWalletSession, logoutWallet, type WalletKind } from "@/lib/wallet/session";
 
 /** Empty on purpose — no simulated LEEF/WAX bag. Paper mode is unsigned live
- *  books with a zero wallet until the user connects. */
+ *  books with a zero wallet until the user connects or uses the faucet. */
 const PAPER_BALANCES: Record<string, number> = {};
+
+/**
+ * SIMULATED faucet grants (NOT real funds) — explicit test constants the UI
+ * labels "simulated". Applied to `paperBalances` ONLY; never mixed with
+ * liveBalances, never signed, never on-chain. Top-up semantics: each token
+ * is raised to the grant if the paper balance is below it.
+ */
+export const PAPER_FAUCET_GRANTS: Record<string, number> = {
+  WAX: 250,
+  LEEF: 8_000_000,
+};
 
 type WalletState = {
   mode: "paper" | "live";
@@ -31,6 +42,11 @@ type WalletState = {
     res?: { cpuPct: number | null; netPct: number | null; ramPct?: number | null },
   ) => void;
   resetPaper: () => void;
+  /**
+   * Credit the SIMULATED faucet grants to the paper wallet (top-up). No-op
+   * in live mode — the faucet can never touch a real balance.
+   */
+  paperFaucet: () => void;
   applyPaperFill: (tokenIn: string, amountIn: number, tokenOut: string, amountOut: number) => void;
   forgetLive: () => void;
   /**
@@ -93,6 +109,15 @@ export const useWallet = create<WalletState>()(
           ramPct: res?.ramPct ?? get().ramPct,
         }),
       resetPaper: () => set({ paperBalances: { ...PAPER_BALANCES } }),
+      paperFaucet: () =>
+        set((s) => {
+          if (s.mode !== "paper") return {};
+          const b = { ...s.paperBalances };
+          for (const [sym, grant] of Object.entries(PAPER_FAUCET_GRANTS)) {
+            b[sym] = Math.max(b[sym] ?? 0, grant);
+          }
+          return { paperBalances: b };
+        }),
       applyPaperFill: (tokenIn, amountIn, tokenOut, amountOut) =>
         set((s) => {
           const b = { ...s.paperBalances };

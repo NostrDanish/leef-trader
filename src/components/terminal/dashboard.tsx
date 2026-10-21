@@ -12,6 +12,7 @@ import {
   YAxis,
 } from "recharts";
 import { ChartFrame } from "./chart-frame";
+import { DepthChart } from "@/components/charts/DepthChart";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
@@ -123,6 +124,8 @@ export function Dashboard({ snap }: { snap: LeefSnapshot }) {
           </div>
         </Card>
       </div>
+
+      <DepthChart />
 
       <Card className="p-4 sm:p-5">
         <DepthCurve pool={pool} />
@@ -331,9 +334,15 @@ function DepthCurve({ pool }: { pool: LeefPool }) {
   return (
     <div>
       <div className="mb-4">
-        <h3 className="text-sm font-medium">Buy-side impact</h3>
+        <h3 className="text-sm font-medium">
+          Buy-side impact{" "}
+          <span className="ml-1 rounded border border-warn/40 px-1.5 py-0.5 font-mono text-[10px] uppercase tracking-wider text-warn">
+            Modeled estimate
+          </span>
+        </h3>
         <p className="text-xs text-muted-foreground">
-          Price impact of buying LEEF with {pool.pair.symbol} against live reserves.
+          MODELED constant-product impact of buying LEEF with {pool.pair.symbol} against
+          current reserves — an estimate, not the order book. Real resting depth is charted above.
         </p>
       </div>
       {data.length < 2 ? (

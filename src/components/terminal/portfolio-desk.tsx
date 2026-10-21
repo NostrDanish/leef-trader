@@ -28,6 +28,7 @@ import { cn } from "@/lib/utils";
 import { usePortfolio } from "@/store/portfolio";
 import { useWallet } from "@/store/wallet";
 import { TokenMark } from "./token-mark";
+import { useNow } from "./use-now";
 import { runRebalancer } from "./use-portfolio-loop";
 
 export function PortfolioDesk({ snap }: { snap: LeefSnapshot }) {
@@ -61,8 +62,9 @@ export function PortfolioDesk({ snap }: { snap: LeefSnapshot }) {
     balances,
   });
 
+  const now = useNow();
   const nextIn = p.running
-    ? Math.max(0, Math.ceil((p.lastRunAt + p.settings.intervalSec * 1000 - Date.now()) / 1000))
+    ? Math.max(0, Math.ceil((p.lastRunAt + p.settings.intervalSec * 1000 - now) / 1000))
     : null;
 
   function onStart() {
