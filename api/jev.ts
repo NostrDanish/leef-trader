@@ -10,6 +10,8 @@
  * leaves this function (not returned, not logged). Request bodies and answers
  * are never logged either — market state can be position-sensitive.
  */
+import { guard } from "./_guard";
+
 declare const process: { env: Record<string, string | undefined> };
 
 const ENDPOINT = "https://api.typesafe.ai/v1/systemone";
@@ -42,6 +44,11 @@ function questionsOk(raw: unknown): raw is Record<string, { type: string }> {
 }
 
 export async function POST(request: Request): Promise<Response> {
+  // Audit LT-2: per-IP rate limit (+ optional bearer auth when TRADER_API_TOKEN
+  // is set) runs BEFORE any body parsing or upstream quota spend.
+  const blocked = guard(request, { route: "jev" });
+  if (blocked) return blocked;
+
   let body: unknown;
   try {
     body = await request.json();
