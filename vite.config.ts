@@ -4,6 +4,15 @@ import react from "@vitejs/plugin-react";
 import tailwindcss from "@tailwindcss/vite";
 import { defineConfig } from "vitest/config";
 
+const DOM_TEST_GLOBS = [
+  'src/**/*.test.tsx',
+  'src/components/**/*.test.ts',
+  'src/hooks/**/*.test.ts',
+  'src/store/**/*.test.ts',
+  'src/test/**/*.test.ts',
+  'src/lib/telegram/**/*.test.ts',
+];
+
 // https://vitejs.dev/config/
 export default defineConfig(() => ({
   server: {
@@ -16,8 +25,28 @@ export default defineConfig(() => ({
   ],
   test: {
     globals: true,
-    environment: 'jsdom',
     setupFiles: './src/test/setup.ts',
+    // jsdom costs ~0.5s of setup per file, which dominated the suite when every
+    // pure-logic test paid it. Only UI/browser-facing code gets a DOM.
+    projects: [
+      {
+        extends: true,
+        test: {
+          name: 'dom',
+          environment: 'jsdom',
+          include: [...DOM_TEST_GLOBS],
+        },
+      },
+      {
+        extends: true,
+        test: {
+          name: 'node',
+          environment: 'node',
+          include: ['src/**/*.test.ts'],
+          exclude: [...DOM_TEST_GLOBS],
+        },
+      },
+    ],
     exclude: [
       '**/node_modules/**',
       '**/dist/**',
