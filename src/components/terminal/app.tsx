@@ -1,5 +1,4 @@
 import { lazy, Suspense, useEffect } from "react";
-import { restoreWallet } from "@/lib/wallet/session";
 import { marketEngine } from "@/lib/market/market-engine";
 import { useTerminal } from "@/store/terminal";
 import { useWallet } from "@/store/wallet";
@@ -61,15 +60,18 @@ export function TerminalApp() {
   }, []);
 
   // Restore an external wallet session (Cloud Wallet / Anchor) on load.
+  // The Wharfkit stack is imported only when a previous session exists.
   useEffect(() => {
     const authType = useWallet.getState().authType;
     if (authType !== "wcw" && authType !== "anchor") return;
     let cancelled = false;
-    void restoreWallet().then((id) => {
-      if (cancelled) return;
-      if (id) useWallet.getState().setWalletSession(id);
-      else useWallet.setState({ authType: null });
-    });
+    void import("@/lib/wallet/session")
+      .then((m) => m.restoreWallet())
+      .then((id) => {
+        if (cancelled) return;
+        if (id) useWallet.getState().setWalletSession(id);
+        else useWallet.setState({ authType: null });
+      });
     return () => {
       cancelled = true;
     };

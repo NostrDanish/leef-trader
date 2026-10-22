@@ -9,9 +9,8 @@ import {
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { accountsForKeys, choosePermission, permissionsForKey } from "@/lib/wallet/chain";
-import { describeKey, importSecret, parsePrivateKey } from "@/lib/wallet/secret";
-import { loginWallet, type WalletKind } from "@/lib/wallet/session";
 import { isAccountName } from "@/lib/wallet/tokens";
+import type { WalletKind } from "@/lib/wallet/session-state";
 import { useWallet } from "@/store/wallet";
 import { toast } from "@/hooks/useToast";
 
@@ -31,6 +30,7 @@ export function ImportKeyDialog() {
     setError(null);
     setBusy(kind);
     try {
+      const { loginWallet } = await import("@/lib/wallet/session");
       const id = await loginWallet(kind);
       setWalletSession(id);
       setOpen(false);
@@ -52,6 +52,7 @@ export function ImportKeyDialog() {
     setError(null);
     setBusy("key");
     try {
+      const { parsePrivateKey, describeKey, importSecret } = await import("@/lib/wallet/secret");
       const parsed = parsePrivateKey(wif);
       const pub = describeKey(parsed);
       let name = account.trim().toLowerCase();

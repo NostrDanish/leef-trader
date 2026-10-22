@@ -37,6 +37,16 @@ export default defineConfig(() => ({
     },
   },
   build: {
+    modulePreload: {
+      resolveDependencies(_filename, deps) {
+        // The Wharfkit session chunk is a dynamic import (~570 KB). Do not
+        // preload it. `session-state` is the tiny handle the shell needs
+        // immediately — that one stays.
+        return deps.filter(
+          (dep) => !/\/session-(?!state-)[^/]+\.js$/.test(dep),
+        );
+      },
+    },
     rollupOptions: {
       output: {
         manualChunks(id: string) {
@@ -49,23 +59,14 @@ export default defineConfig(() => ({
           ) {
             return "vendor-react";
           }
-          // Wharfkit / Antelope session stack.
-          if (
-            /node_modules\/(@wharfkit|@greymass)\//.test(id)
-          ) {
-            return "vendor-wharfkit";
-          }
-          // Crypto primitives used by the wallet/key code (initial graph),
-          // kept apart so they don't drag the Nostr chunk in with them.
+          // @noble/@scure are shared by the signer and the Nostr shell.
+          // One chunk so neither graph duplicates them. Do not manually
+          // chunk @wharfkit, nostr, or recharts: that pulled shared helpers
+          // (tslib, bn.js, the react CJS wrapper) into the chunk and made
+          // the entry import the whole thing.
           if (/node_modules\/(@noble|@scure)\//.test(id)) {
             return "vendor-crypto";
           }
-          // NOTE: nostr and recharts are intentionally NOT manually chunked.
-          // They are only reachable through lazy boundaries (NostrShell,
-          // lazy desks), so rolldown auto-splits them into async chunks.
-          // Forcing them into manual chunks dragged shared CJS interop
-          // helpers (react wrapper) into that chunk and pulled it back
-          // into the initial modulepreload graph.
         },
       },
     },

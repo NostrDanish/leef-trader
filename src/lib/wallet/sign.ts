@@ -44,7 +44,7 @@ import {
   platformFeeOn,
 } from "@/lib/leef/platform-fee";
 import { hasSecret, signDigest } from "./secret";
-import { walletSession } from "./session";
+import { walletSession } from "./session-state";
 import { formatAsset, parseAsset, metaOf } from "./tokens";
 
 export { ALCOR_SWAP_CONTRACT };

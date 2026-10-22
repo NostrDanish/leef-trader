@@ -1,7 +1,7 @@
 import { create } from "zustand";
 import { persist } from "zustand/middleware";
-import { forgetSecret, hasSecret } from "@/lib/wallet/secret";
-import { hasWalletSession, logoutWallet, type WalletKind } from "@/lib/wallet/session";
+import { forgetSecret, hasSecret } from "@/lib/wallet/secret-state";
+import { hasWalletSession, type WalletKind } from "@/lib/wallet/session-state";
 
 /** Empty on purpose — no simulated LEEF/WAX bag. Paper mode is unsigned live
  *  books with a zero wallet until the user connects or uses the faucet. */
@@ -129,7 +129,9 @@ export const useWallet = create<WalletState>()(
         }),
       forgetLive: () => {
         forgetSecret();
-        if (hasWalletSession()) void logoutWallet();
+        if (hasWalletSession()) {
+          void import("@/lib/wallet/session").then((m) => m.logoutWallet());
+        }
         set({
           mode: "paper",
           account: "paper.leef",

@@ -1,5 +1,9 @@
 @import "tailwindcss";
 @import "tw-animate-css";
+/* Skill examples, docs, and the prebuild script are not part of the UI. */
+@source not "../.agents";
+@source not "../docs";
+@source not "../tools";
 
 @custom-variant dark (&:is(.dark *));
 

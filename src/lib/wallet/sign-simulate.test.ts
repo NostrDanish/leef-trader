@@ -6,7 +6,7 @@ const pushSigned = vi.fn(async () => ({ txid: "ab".repeat(32) }));
 const simulatePackedTransaction = vi.fn<() => Promise<SimulationResult>>();
 
 vi.mock("./secret", () => ({ hasSecret: () => true, signDigest }));
-vi.mock("./session", () => ({ walletSession: () => null }));
+vi.mock("./session-state", () => ({ walletSession: () => null }));
 vi.mock("./simulate", () => ({ simulatePackedTransaction }));
 vi.mock("./chain", async (orig) => ({
   ...(await orig<typeof import("./chain")>()),

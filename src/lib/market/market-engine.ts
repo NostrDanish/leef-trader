@@ -31,8 +31,8 @@ import {
 } from "@/lib/wax/alcor-onchain";
 import { journal } from "@/lib/leef/journal";
 import { headInfo } from "@/lib/wallet/chain";
-import { hasSecret } from "@/lib/wallet/secret";
-import { hasWalletSession } from "@/lib/wallet/session";
+import { hasSecret } from "@/lib/wallet/secret-state";
+import { hasWalletSession } from "@/lib/wallet/session-state";
 import { tradePhase, type TradePhase } from "@/lib/wallet/trade-cycle";
 import { rpcPool, historyPool, type EndpointHealth } from "@/lib/wax/provider-pool";
 import { effectiveEndpoints, type EndpointConfig } from "@/lib/wax/endpoints";
@@ -40,13 +40,41 @@ import { useBot } from "@/store/bot";
 import { usePortfolio } from "@/store/portfolio";
 import { clampSyncSec, DEFAULT_SYNC_SEC, useTerminal } from "@/store/terminal";
 import { useWallet } from "@/store/wallet";
-import { botOnSnapshot } from "@/components/terminal/use-bot-loop";
-import { rebalancerOnSnapshot } from "@/components/terminal/use-portfolio-loop";
 import { syncWalletBalances } from "@/components/terminal/use-wallet-sync";
 import { marketBus } from "./event-bus";
 import { hotPoolIds } from "./execution-state";
 import { routeCache } from "./route-cache";
 import { checkpointDrift, latestCheckpoints, swapFlow } from "./swap-flow";
+
+/**
+ * Bot + rebalancer are the signing path (route optimizer, policy, antelope
+ * signer). They load in parallel with the first snapshot instead of sitting
+ * on the entry module graph, so first paint does not wait for them.
+ */
+type EngineDrivers = {
+  botOnSnapshot: (snap: LeefSnapshot) => Promise<void>;
+  rebalancerOnSnapshot: (snap: LeefSnapshot) => void;
+};
+
+let driversPromise: Promise<EngineDrivers> | null = null;
+
+function loadDrivers(): Promise<EngineDrivers> {
+  if (!driversPromise) {
+    driversPromise = Promise.all([
+      import("@/components/terminal/use-bot-loop"),
+      import("@/components/terminal/use-portfolio-loop"),
+    ])
+      .then(([bot, rebalancer]) => ({
+        botOnSnapshot: bot.botOnSnapshot,
+        rebalancerOnSnapshot: rebalancer.rebalancerOnSnapshot,
+      }))
+      .catch((err: unknown) => {
+        driversPromise = null;
+        throw err;
+      });
+  }
+  return driversPromise;
+}
 
 /* ------------------------------------------------------------------ */
 /* engine state (immutable snapshot object for React)                   */
@@ -193,6 +221,7 @@ class MarketEngine {
       rpc: rpcPool.health(),
       history: historyPool.health(),
     });
+    void loadDrivers();
     this.scheduleHeartbeat(0);
     this.scheduleMarket(200);
     this.watchSuspension();
@@ -356,7 +385,9 @@ class MarketEngine {
           const tBot = Date.now();
           // One scheduler lane: profit/strategy evaluates first. Maintenance
           // only gets a turn after that decision settles and the shared
-          // capital lock is known idle.
+          // capital lock is known idle. Drivers overlap the snapshot fetch
+          // (kicked off in start) so this await is usually already resolved.
+          const { botOnSnapshot, rebalancerOnSnapshot } = await loadDrivers();
           await botOnSnapshot(snap);
           rebalancerOnSnapshot(snap);
           cycle.botMs = Date.now() - tBot;
@@ -451,7 +482,9 @@ class MarketEngine {
         if (ageMs <= this.cadenceMs() + 15_000) {
           // Same single lane for chain-spot updates: settle profit selection
           // before maintenance is allowed to inspect/spend inventory.
-          void botOnSnapshot(patchedSnap).then(() => rebalancerOnSnapshot(patchedSnap));
+          void loadDrivers().then(({ botOnSnapshot, rebalancerOnSnapshot }) =>
+            botOnSnapshot(patchedSnap).then(() => rebalancerOnSnapshot(patchedSnap)),
+          );
         }
       } else {
         // A successful read that finds UNCHANGED state is still fresh chain

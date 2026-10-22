@@ -5,7 +5,7 @@ const getChainInfo = vi.fn();
 const walletSession = vi.fn((): unknown => null);
 
 vi.mock("./secret", () => ({ hasSecret: () => true, signDigest }));
-vi.mock("./session", () => ({ walletSession }));
+vi.mock("./session-state", () => ({ walletSession }));
 vi.mock("./chain", async (orig) => ({
   ...(await orig<typeof import("./chain")>()),
   getChainInfo,

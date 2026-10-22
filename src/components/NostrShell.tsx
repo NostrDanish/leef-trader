@@ -1,4 +1,5 @@
 import type { ReactNode } from 'react';
+import '@/lib/buffer-polyfill';
 import NostrProvider from '@/components/NostrProvider';
 import { NostrSync } from '@/components/NostrSync';
 import { NostrLoginProvider } from '@nostrify/react/login';
