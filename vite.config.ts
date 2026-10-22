@@ -4,8 +4,12 @@ import react from "@vitejs/plugin-react";
 import tailwindcss from "@tailwindcss/vite";
 import { defineConfig } from "vitest/config";
 
+/** Async chunks that must not ride the initial modulepreload graph. */
+const DEFERRED_CHUNK = /wharfkit|use-bot-loop|use-portfolio-loop|use-wallet-sync|import-key|NIP19|NostrShell|nostrify|nostr-tools|recharts|lightweight-charts|CandleChart|DepthChart|bot-desk|ai-desk|portfolio-desk/i;
+
 // https://vitejs.dev/config/
 export default defineConfig(() => ({
+  base: process.env.VITE_BASE || "/",
   server: {
     host: "::",
     port: 8080,
@@ -14,6 +18,21 @@ export default defineConfig(() => ({
     react(),
     tailwindcss(),
   ],
+  optimizeDeps: {
+    include: [
+      "react",
+      "react-dom",
+      "react-router-dom",
+      "@tanstack/react-query",
+      "zustand",
+      "@wharfkit/session",
+      "@wharfkit/web-renderer",
+      "@wharfkit/wallet-plugin-anchor",
+      "@wharfkit/wallet-plugin-cloudwallet",
+      "lightweight-charts",
+      "recharts",
+    ],
+  },
   test: {
     globals: true,
     environment: 'jsdom',
@@ -37,6 +56,16 @@ export default defineConfig(() => ({
     },
   },
   build: {
+    target: "es2022",
+    minify: "oxc" as const,
+    // Gzip of a multi-MB output is often slower than the bundle step itself.
+    reportCompressedSize: false,
+    modulePreload: {
+      polyfill: false,
+      resolveDependencies(_filename: string, deps: string[]) {
+        return deps.filter((dep) => !DEFERRED_CHUNK.test(dep));
+      },
+    },
     rollupOptions: {
       output: {
         manualChunks(id: string) {

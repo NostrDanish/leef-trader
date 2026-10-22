@@ -189,6 +189,9 @@ export function TerminalHeader({
             size="icon"
             className="sm:hidden"
             aria-label="Wallet"
+            onMouseEnter={() => {
+              if (mode !== "live") void import("./import-key");
+            }}
             onClick={() => (mode === "live" ? setTab("wallet") : setImportOpen(true))}
           >
             <Wallet />

@@ -2,7 +2,7 @@ name: CI
 
 on:
   push:
-    branches: [main, "feat/**", "fix/**", "chore/**", "upgrade/**"]
+    branches: [main, "feat/**", "fix/**", "chore/**", "upgrade/**", "cursor/**"]
   pull_request:
     branches: [main]
 
@@ -27,14 +27,30 @@ jobs:
 
       - run: npm ci
 
-      - run: npm run typecheck
+      # typecheck / lint / unit tests are independent — overlap them after install.
+      - name: typecheck, lint, unit tests
+        run: |
+          set +e
+          npm run typecheck &
+          pid_tsc=$!
+          npx eslint src/lib src/store src/hooks --max-warnings 0 &
+          pid_lint=$!
+          npx vitest run --reporter=dot --silent &
+          pid_test=$!
+          fail=0
+          wait "$pid_tsc"; tsc_ec=$?
+          wait "$pid_lint"; lint_ec=$?
+          wait "$pid_test"; test_ec=$?
+          if [ "$tsc_ec" -ne 0 ]; then echo "::error::typecheck failed"; fail=1; fi
+          if [ "$lint_ec" -ne 0 ]; then echo "::error::lint failed"; fail=1; fi
+          if [ "$test_ec" -ne 0 ]; then echo "::error::unit tests failed"; fail=1; fi
+          exit "$fail"
 
       # TODO: `npm run lint` still reports 31 pre-existing errors in
       # src/components/terminal + index.html — pay down that debt and restore
       # the full-repo lint here.
-      - name: lint (core libs)
-        run: npx eslint src/lib src/store src/hooks --max-warnings 0
 
-      - run: npx vitest run
-
+      # SKIP_SEED: Alcor is best-effort and must not gate CI wall-clock.
       - run: npm run build
+        env:
+          SKIP_SEED: "1"

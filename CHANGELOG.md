@@ -2,6 +2,14 @@
 
 All notable changes to LEEF Trader. Dates are commit-era, not release tags.
 
+## Unreleased — Faster production build + smaller first paint
+
+- **prebuild**: Alcor seed fetch timeout 45s → 5s (3s in CI); `SKIP_SEED=1` skips the network call entirely so CI/build is not gated on Alcor.
+- **vite**: skip gzip size reporting, oxc minify, es2022 target, no modulepreload polyfill, keep Wharfkit/bot/chart/nostr chunks off the initial preload graph. `VITE_BASE` is now actually read (GitHub Pages).
+- **code-split**: Wharfkit loads only on Cloud Wallet / Anchor login-restore; bot/rebalancer/wallet-sync and the import-key dialog are async chunks. Latin-only IBM Plex font files; drop unused Inter fallback.
+- **deps**: drop unused template packages (cmdk, vaul, embla, otp, day-picker, qrcode, pako) and sync the lockfile so `npm ci` works (lightweight-charts was missing).
+- **ci**: typecheck/lint/tests overlap; seed skipped; deploy uses `npm ci` + npm cache.
+
 ## Unreleased — Branch sweep: restore code dropped by the squash merges
 
 Audit of all six remote branches (`consolidated/working-trader`,

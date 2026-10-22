@@ -35,12 +35,10 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: "22"
+          cache: npm
 
       - name: Install dependencies and build
-        run: |
-          npm install --legacy-peer-deps
-          npm run build
-          cp dist/index.html dist/404.html
+        run: npm ci && npm run build
         env:
           # Project sites live at /<repo-name>/; vite.config.ts reads this.
           VITE_BASE: /${{ github.event.repository.name }}/

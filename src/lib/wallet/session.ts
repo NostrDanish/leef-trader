@@ -4,11 +4,12 @@
  * Unlike the in-memory session key, these never see the key at all — each
  * trade pops the wallet to sign (Cloud Wallet users can whitelist the
  * swap.alcor transfers to trade without popups).
+ *
+ * Wharfkit is loaded only when a Cloud Wallet / Anchor session is actually
+ * used (login, restore, logout). Status checks stay sync and cheap so the
+ * terminal shell does not download the wallet stack on first paint.
  */
-import { SessionKit, type Session } from "@wharfkit/session";
-import { WebRenderer } from "@wharfkit/web-renderer";
-import { WalletPluginAnchor } from "@wharfkit/wallet-plugin-anchor";
-import { WalletPluginCloudWallet } from "@wharfkit/wallet-plugin-cloudwallet";
+import type { Session, SessionKit } from "@wharfkit/session";
 import { effectiveEndpoints } from "@/lib/wax/endpoints";
 import { rpcPool } from "@/lib/wax/provider-pool";
 
@@ -23,6 +24,30 @@ export type WalletIdentity = {
   permission: string;
   kind: WalletKind;
 };
+
+type Wharfkit = {
+  SessionKit: typeof import("@wharfkit/session").SessionKit;
+  WebRenderer: typeof import("@wharfkit/web-renderer").WebRenderer;
+  WalletPluginAnchor: typeof import("@wharfkit/wallet-plugin-anchor").WalletPluginAnchor;
+  WalletPluginCloudWallet: typeof import("@wharfkit/wallet-plugin-cloudwallet").WalletPluginCloudWallet;
+};
+
+let wharfkitPromise: Promise<Wharfkit> | null = null;
+
+function loadWharfkit(): Promise<Wharfkit> {
+  wharfkitPromise ??= Promise.all([
+    import("@wharfkit/session"),
+    import("@wharfkit/web-renderer"),
+    import("@wharfkit/wallet-plugin-anchor"),
+    import("@wharfkit/wallet-plugin-cloudwallet"),
+  ]).then(([session, renderer, anchor, cloud]) => ({
+    SessionKit: session.SessionKit,
+    WebRenderer: renderer.WebRenderer,
+    WalletPluginAnchor: anchor.WalletPluginAnchor,
+    WalletPluginCloudWallet: cloud.WalletPluginCloudWallet,
+  }));
+  return wharfkitPromise;
+}
 
 let kit: SessionKit | null = null;
 let session: Session | null = null;
@@ -79,7 +104,9 @@ function sessionChainUrls(): string[] {
 
 let kitUrl: string | null = null;
 
-function makeKit(url: string): SessionKit {
+async function makeKit(url: string): Promise<SessionKit> {
+  const { SessionKit, WebRenderer, WalletPluginAnchor, WalletPluginCloudWallet } =
+    await loadWharfkit();
   kitUrl = url;
   return new SessionKit(
     {
@@ -92,9 +119,9 @@ function makeKit(url: string): SessionKit {
   );
 }
 
-function getKit(): SessionKit {
+async function getKit(): Promise<SessionKit> {
   if (!kit) {
-    kit = makeKit(sessionChainUrls()[0]!);
+    kit = await makeKit(sessionChainUrls()[0]!);
   }
   return kit;
 }
@@ -115,11 +142,11 @@ function isEndpointFailure(err: unknown): boolean {
 }
 
 /** Rebuild the kit on the next curated endpoint after an endpoint failure. */
-function rotateKit(): SessionKit {
+async function rotateKit(): Promise<SessionKit> {
   const urls = sessionChainUrls();
   const idx = kitUrl ? urls.indexOf(kitUrl) : -1;
   const next = urls[(idx + 1) % urls.length]!;
-  kit = makeKit(next);
+  kit = await makeKit(next);
   return kit;
 }
 
@@ -129,11 +156,11 @@ async function withKit<T>(fn: (k: SessionKit) => Promise<T>): Promise<T> {
   let lastErr: unknown;
   for (let i = 0; i < attempts; i++) {
     try {
-      return await fn(getKit());
+      return await fn(await getKit());
     } catch (err) {
       lastErr = err;
       if (!isEndpointFailure(err) || i === attempts - 1) throw err;
-      rotateKit();
+      await rotateKit();
     }
   }
   throw lastErr;
@@ -181,7 +208,7 @@ export async function restoreWallet(): Promise<WalletIdentity | null> {
 
 export async function logoutWallet(): Promise<void> {
   try {
-    if (session) await getKit().logout(session);
+    if (session) await (await getKit()).logout(session);
   } catch {
     /* best effort */
   } finally {

@@ -10,7 +10,8 @@
  * handles a missing seed-snapshot.json.
  *
  * Offline / CI without network: the seed step skips gracefully, only
- * version.json is written.
+ * version.json is written. Set SKIP_SEED=1 to skip the network fetch
+ * entirely (CI does this so `npm run build` is not gated on Alcor).
  */
 import { execSync } from "node:child_process";
 import { mkdirSync, writeFileSync } from "node:fs";
@@ -23,6 +24,9 @@ const pubDir = path.join(root, "public");
 const ALCOR = "https://wax.alcor.exchange/api/v2";
 /** Hard cap for the seed payload — it ships to every visitor. */
 const MAX_BYTES = 200 * 1024;
+/** Keep prebuild off the critical path: Alcor is best-effort, not a gate. */
+const POOL_TIMEOUT_MS = process.env.CI ? 3_000 : 5_000;
+const TOKEN_TIMEOUT_MS = process.env.CI ? 2_000 : 4_000;
 
 /* ------------------------------------------------------------------ */
 /* version.json — build stamp for the "new version available" banner   */
@@ -88,8 +92,8 @@ const volumeOf = (p) =>
 
 async function writeSeed() {
   const [list, token] = await Promise.all([
-    fetchJson(`${ALCOR}/swap/pools`, 45_000),
-    fetchJson(`${ALCOR}/tokens/leef-leefmaincorp`, 10_000).catch(() => null),
+    fetchJson(`${ALCOR}/swap/pools`, POOL_TIMEOUT_MS),
+    fetchJson(`${ALCOR}/tokens/leef-leefmaincorp`, TOKEN_TIMEOUT_MS).catch(() => null),
   ]);
   if (!Array.isArray(list)) throw new Error("Alcor pool list is not an array");
 
@@ -131,10 +135,14 @@ async function writeSeed() {
 
 mkdirSync(pubDir, { recursive: true });
 writeVersion();
-try {
-  await writeSeed();
-} catch (err) {
-  console.warn(
-    `[prebuild] seed snapshot skipped (${err instanceof Error ? err.message : err}) — build continues without it.`,
-  );
+if (process.env.SKIP_SEED === "1") {
+  console.log("[prebuild] seed snapshot skipped (SKIP_SEED=1)");
+} else {
+  try {
+    await writeSeed();
+  } catch (err) {
+    console.warn(
+      `[prebuild] seed snapshot skipped (${err instanceof Error ? err.message : err}) — build continues without it.`,
+    );
+  }
 }

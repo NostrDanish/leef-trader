@@ -5,7 +5,6 @@ import { useTerminal } from "@/store/terminal";
 import { useWallet } from "@/store/wallet";
 import { DeskSkeleton } from "./desk-skeleton";
 import { TerminalHeader } from "./header";
-import { ImportKeyDialog } from "./import-key";
 import { DesktopNav, MobileNav } from "./shell-nav";
 import { StatusBar } from "./status-bar";
 import { useLiveTick } from "./use-live-tick";
@@ -47,11 +46,15 @@ const TickDesk = lazy(() =>
 const WalletDesk = lazy(() =>
   import("./wallet-desk").then((m) => ({ default: m.WalletDesk })),
 );
+const ImportKeyDialog = lazy(() =>
+  import("./import-key").then((m) => ({ default: m.ImportKeyDialog })),
+);
 
 export function TerminalApp() {
   const { snap, ranked, isFetching, refetch } = useSnapshot();
   const tick = useLiveTick(snap);
   const tab = useTerminal((s) => s.tab);
+  const importOpen = useWallet((s) => s.importOpen);
 
   // The persistent market engine: chain heartbeat, market pulls, on-chain
   // pool state, balances, bot + rebalancer drivers, suspension resync.
@@ -85,7 +88,11 @@ export function TerminalApp() {
         }}
       />
       <StatusBar snap={snap} ranked={ranked} tick={tick} />
-      <ImportKeyDialog />
+      {importOpen ? (
+        <Suspense fallback={null}>
+          <ImportKeyDialog />
+        </Suspense>
+      ) : null}
 
       {snap.warning && (snap.source === "fallback" || snap.source === "unavailable") && (
         <div className="mx-auto w-full max-w-[1440px] px-4 pt-4 sm:px-6">

@@ -40,13 +40,35 @@ import { useBot } from "@/store/bot";
 import { usePortfolio } from "@/store/portfolio";
 import { clampSyncSec, DEFAULT_SYNC_SEC, useTerminal } from "@/store/terminal";
 import { useWallet } from "@/store/wallet";
-import { botOnSnapshot } from "@/components/terminal/use-bot-loop";
-import { rebalancerOnSnapshot } from "@/components/terminal/use-portfolio-loop";
-import { syncWalletBalances } from "@/components/terminal/use-wallet-sync";
 import { marketBus } from "./event-bus";
 import { hotPoolIds } from "./execution-state";
 import { routeCache } from "./route-cache";
 import { checkpointDrift, latestCheckpoints, swapFlow } from "./swap-flow";
+
+/**
+ * Strategy / balance drivers live behind dynamic import() so the engine
+ * shell can boot without parsing the 2k-line bot loop, rebalancer, or
+ * signing stack. First snapshot still awaits them; later cycles hit the
+ * module cache.
+ */
+async function botOnSnapshot(snap: LeefSnapshot): Promise<void> {
+  const { botOnSnapshot: run } = await import("@/components/terminal/use-bot-loop");
+  return run(snap);
+}
+
+async function rebalancerOnSnapshot(snap: LeefSnapshot): Promise<void> {
+  const { rebalancerOnSnapshot: run } = await import(
+    "@/components/terminal/use-portfolio-loop"
+  );
+  run(snap);
+}
+
+async function syncWalletBalances(snap: LeefSnapshot): Promise<void> {
+  const { syncWalletBalances: run } = await import(
+    "@/components/terminal/use-wallet-sync"
+  );
+  return run(snap);
+}
 
 /* ------------------------------------------------------------------ */
 /* engine state (immutable snapshot object for React)                   */
@@ -358,7 +380,7 @@ class MarketEngine {
           // only gets a turn after that decision settles and the shared
           // capital lock is known idle.
           await botOnSnapshot(snap);
-          rebalancerOnSnapshot(snap);
+          await rebalancerOnSnapshot(snap);
           cycle.botMs = Date.now() - tBot;
           this.commit({
             cycle: { ...cycle, totalCycleMs: Date.now() - t0 },
