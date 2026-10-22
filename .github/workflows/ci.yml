@@ -15,8 +15,18 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  ci:
+  # Independent checks run as parallel jobs so wall-clock time is the slowest
+  # check rather than the sum of all of them.
+  check:
+    name: ${{ matrix.task }}
     runs-on: ubuntu-22.04
+    strategy:
+      fail-fast: false
+      matrix:
+        task: [typecheck, lint, test, build]
+    env:
+      # The CI build is never deployed; don't hit the Alcor API for the seed.
+      SKIP_SEED_SNAPSHOT: "1"
     steps:
       - uses: actions/checkout@v4
 
@@ -25,16 +35,29 @@ jobs:
           node-version: 22
           cache: npm
 
-      - run: npm ci
+      - run: npm ci --no-audit --no-fund
 
-      - run: npm run typecheck
+      - name: Restore tsc / eslint caches
+        if: matrix.task == 'typecheck' || matrix.task == 'lint'
+        uses: actions/cache@v4
+        with:
+          path: |
+            .tsbuildinfo
+            .eslintcache
+          key: ${{ matrix.task }}-${{ runner.os }}-${{ hashFiles('package-lock.json', 'tsconfig.json', 'eslint.config.js') }}-${{ github.sha }}
+          restore-keys: |
+            ${{ matrix.task }}-${{ runner.os }}-${{ hashFiles('package-lock.json', 'tsconfig.json', 'eslint.config.js') }}-
 
-      # TODO: `npm run lint` still reports 31 pre-existing errors in
-      # src/components/terminal + index.html — pay down that debt and restore
-      # the full-repo lint here.
-      - name: lint (core libs)
-        run: npx eslint src/lib src/store src/hooks --max-warnings 0
+      - if: matrix.task == 'typecheck'
+        run: npm run typecheck
 
-      - run: npx vitest run
+      # Content strategy: checkout resets mtimes, so the default metadata
+      # strategy would invalidate the whole restored cache.
+      - if: matrix.task == 'lint'
+        run: npx eslint --cache --cache-strategy content --max-warnings 0
 
-      - run: npm run build
+      - if: matrix.task == 'test'
+        run: npx vitest run
+
+      - if: matrix.task == 'build'
+        run: npm run build
