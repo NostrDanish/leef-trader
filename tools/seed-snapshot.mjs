@@ -88,7 +88,9 @@ const volumeOf = (p) =>
 
 async function writeSeed() {
   const [list, token] = await Promise.all([
-    fetchJson(`${ALCOR}/swap/pools`, 45_000),
+    // The unfiltered pool list is ~12 MB. 20s is enough on a healthy link
+    // and keeps a stalled Alcor from holding the whole production build.
+    fetchJson(`${ALCOR}/swap/pools`, 20_000),
     fetchJson(`${ALCOR}/tokens/leef-leefmaincorp`, 10_000).catch(() => null),
   ]);
   if (!Array.isArray(list)) throw new Error("Alcor pool list is not an array");

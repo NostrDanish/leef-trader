@@ -1,4 +1,6 @@
-@import "tailwindcss";
+/* Scan the app only. Default detection also walks .agents skill samples
+   and docs, which adds utilities the terminal never uses. */
+@import "tailwindcss" source(".");
 @import "tw-animate-css";
 
 @custom-variant dark (&:is(.dark *));

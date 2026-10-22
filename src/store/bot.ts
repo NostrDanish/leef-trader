@@ -8,7 +8,7 @@ import {
   type BotStrategy,
   type Position,
   type PricePoint,
-} from "@/lib/leef/bot-engine";
+} from "@/lib/leef/bot-config";
 import { migrateRiskToUsd } from "@/lib/leef/risk-usd";
 import { migrateSaferRiskDefaults } from "@/lib/leef/risk-defaults-migration";
 import {
@@ -16,13 +16,13 @@ import {
   normalizeTargets,
   type GrowthMode,
   type GrowthTarget,
-} from "@/lib/leef/growth-engine";
+} from "@/lib/leef/growth-config";
 import { journal } from "@/lib/leef/journal";
 import {
   trackRejection,
   type RejectionStreak,
 } from "@/lib/leef/retry-storm";
-import { setNeftyVenueEnabled } from "@/lib/leef/venue-adapters";
+import { setNeftyVenueEnabled } from "@/lib/leef/nefty-flag";
 
 export type BotDecisionKind = "buy" | "sell" | "arb" | "swap" | "hold" | "skip" | "stop" | "error";
 

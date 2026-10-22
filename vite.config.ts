@@ -4,8 +4,12 @@ import react from "@vitejs/plugin-react";
 import tailwindcss from "@tailwindcss/vite";
 import { defineConfig } from "vitest/config";
 
+// GitHub Pages sets VITE_BASE to /<repo>/. Every other host stays at /.
+const base = process.env.VITE_BASE || "/";
+
 // https://vitejs.dev/config/
 export default defineConfig(() => ({
+  base,
   server: {
     host: "::",
     port: 8080,
@@ -37,7 +41,12 @@ export default defineConfig(() => ({
     },
   },
   build: {
-    rollupOptions: {
+    // Baseline browsers already understand this syntax; skip downlevel work.
+    target: "es2022",
+    // modulepreload is supported by the same baseline. The polyfill is an
+    // inline script on every HTML response and does nothing there.
+    modulePreload: { polyfill: false },
+    rolldownOptions: {
       output: {
         manualChunks(id: string) {
           if (!id.includes("node_modules")) return;
@@ -49,14 +58,12 @@ export default defineConfig(() => ({
           ) {
             return "vendor-react";
           }
-          // Wharfkit / Antelope session stack.
-          if (
-            /node_modules\/(@wharfkit|@greymass)\//.test(id)
-          ) {
-            return "vendor-wharfkit";
-          }
-          // Crypto primitives used by the wallet/key code (initial graph),
-          // kept apart so they don't drag the Nostr chunk in with them.
+          // Wharfkit is a dynamic import (wallet login only). Do NOT manual
+          // chunk it: grouping it pulled shared helpers into that chunk and
+          // modulepreload put the whole 580 KB stack on first paint.
+          // Crypto primitives. Loaded with the engine chunk and the key
+          // importer, not with the shell. Kept apart so a shared helper
+          // cannot drag the Nostr chunk into this one.
           if (/node_modules\/(@noble|@scure)\//.test(id)) {
             return "vendor-crypto";
           }

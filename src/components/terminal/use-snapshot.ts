@@ -3,9 +3,8 @@ import { unavailableSnapshot } from "@/lib/leef/fallback";
 import { rankPools } from "@/lib/leef/rank";
 import { loadSeedSnapshot } from "@/lib/leef/seed";
 import type { LeefSnapshot } from "@/lib/leef/types";
-import { marketEngine } from "@/lib/market/market-engine";
 import { clampSyncSec, DEFAULT_SYNC_SEC, useTerminal } from "@/store/terminal";
-import { useMarketEngine } from "@/hooks/useMarketEngine";
+import { bootMarketEngine, useMarketEngine } from "@/hooks/useMarketEngine";
 
 const placeholder = unavailableSnapshot(
   "Loading the live Alcor LEEF book…",
@@ -46,7 +45,7 @@ export function useSnapshot() {
     isFetching: engine.fetching,
     dataUpdatedAt: engine.lastFetchAt,
     refetch: () => {
-      void marketEngine.forceRefresh();
+      void bootMarketEngine().then((engine) => engine.forceRefresh());
     },
     engine,
   };

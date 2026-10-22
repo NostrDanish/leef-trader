@@ -1,14 +1,12 @@
-import Buffer from 'buffer';
-
 /**
- * Polyfill for Buffer in browser environment
+ * AbortSignal polyfills for the Vite baseline target (Chrome 111 / Safari 16.4).
+ * `AbortSignal.timeout` landed earlier; `AbortSignal.any` did not (Chrome 116,
+ * Safari 17.4), so the entry still carries this small shim.
  *
- * Many Node.js libraries like isomorphic-git and bitcoinjs-lib expect Buffer to be globally available.
- * This polyfill makes the buffer package's Buffer available globally.
+ * The Node `buffer` package is intentionally not installed here. Nothing in
+ * the terminal needs a global Buffer, and shipping it pulled ~50 KB into the
+ * first script.
  */
-if (!globalThis.Buffer) {
-  globalThis.Buffer = Buffer.Buffer;
-}
 
 /**
  * Polyfill for AbortSignal.any()

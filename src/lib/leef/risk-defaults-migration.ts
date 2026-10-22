@@ -8,7 +8,7 @@
  * Anything the user changed away from the legacy defaults is left alone, and
  * a user can still set 0 (off) again after the migration.
  */
-import { DEFAULT_GOALS, DEFAULT_RISK, type BotGoals, type BotRisk } from "./bot-engine";
+import { DEFAULT_GOALS, DEFAULT_RISK, type BotGoals, type BotRisk } from "./bot-config";
 
 const LEGACY_MAX_TRADES_HOUR = 120;
 const LEGACY_COOLDOWN_SEC = 15;

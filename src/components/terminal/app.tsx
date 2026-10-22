@@ -1,11 +1,9 @@
 import { lazy, Suspense, useEffect } from "react";
 import { restoreWallet } from "@/lib/wallet/session";
-import { marketEngine } from "@/lib/market/market-engine";
 import { useTerminal } from "@/store/terminal";
 import { useWallet } from "@/store/wallet";
 import { DeskSkeleton } from "./desk-skeleton";
 import { TerminalHeader } from "./header";
-import { ImportKeyDialog } from "./import-key";
 import { DesktopNav, MobileNav } from "./shell-nav";
 import { StatusBar } from "./status-bar";
 import { useLiveTick } from "./use-live-tick";
@@ -47,18 +45,21 @@ const TickDesk = lazy(() =>
 const WalletDesk = lazy(() =>
   import("./wallet-desk").then((m) => ({ default: m.WalletDesk })),
 );
+// Chain account lookup lives in this dialog. Keep it off the shell graph
+// until the user actually opens import.
+const ImportKeyDialog = lazy(() =>
+  import("./import-key").then((m) => ({ default: m.ImportKeyDialog })),
+);
 
 export function TerminalApp() {
   const { snap, ranked, isFetching, refetch } = useSnapshot();
   const tick = useLiveTick(snap);
   const tab = useTerminal((s) => s.tab);
+  const importOpen = useWallet((s) => s.importOpen);
 
-  // The persistent market engine: chain heartbeat, market pulls, on-chain
-  // pool state, balances, bot + rebalancer drivers, suspension resync.
-  // Started ONCE — it outlives every component (no refresh, ever).
-  useEffect(() => {
-    marketEngine.start();
-  }, []);
+  // The market engine boots from useMarketEngine (dynamic import) so this
+  // shell does not wait on the bot / signer chunk. start() is idempotent
+  // and the singleton outlives every component.
 
   // Restore an external wallet session (Cloud Wallet / Anchor) on load.
   useEffect(() => {
@@ -85,7 +86,11 @@ export function TerminalApp() {
         }}
       />
       <StatusBar snap={snap} ranked={ranked} tick={tick} />
-      <ImportKeyDialog />
+      {importOpen && (
+        <Suspense fallback={null}>
+          <ImportKeyDialog />
+        </Suspense>
+      )}
 
       {snap.warning && (snap.source === "fallback" || snap.source === "unavailable") && (
         <div className="mx-auto w-full max-w-[1440px] px-4 pt-4 sm:px-6">

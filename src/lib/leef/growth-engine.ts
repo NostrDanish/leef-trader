@@ -9,6 +9,12 @@
  * execution risk are constraints. The existing swap path (fresh Alcor quote,
  * governor, policy, no rebroadcast) remains the execution layer.
  */
+import {
+  DEFAULT_GROWTH_TARGETS,
+  normalizeTargets,
+  type GrowthMode,
+  type GrowthTarget,
+} from "./growth-config";
 import type { LeefSnapshot, SwapRoute } from "./types";
 import { usdPriceOf } from "./cost-model";
 import {
@@ -24,13 +30,8 @@ import {
 import { canonicalBalanceEntries, markPortfolioUsd } from "@/lib/wallet/balances";
 import { isTrustedStable } from "@/lib/market/stables";
 
-export type GrowthMode = "max" | "balanced" | "compound";
-
-export type GrowthTarget = {
-  symbol: string;
-  /** 0–100 share of the treasure mix. */
-  weight: number;
-};
+export type { GrowthMode, GrowthTarget };
+export { DEFAULT_GROWTH_TARGETS, normalizeTargets };
 
 export type TargetAsset = GrowthTarget & {
   amount: number;
@@ -85,8 +86,6 @@ export type GrowthHold = {
   explain: string[];
   bestBlocked?: GrowthOpportunity;
 };
-
-export const DEFAULT_GROWTH_TARGETS: GrowthTarget[] = [{ symbol: "LEEF", weight: 100 }];
 
 export const GROWTH_MODES: {
   id: GrowthMode;
@@ -165,25 +164,6 @@ function policyOf(mode: GrowthMode): ModePolicy {
     harvestMinPct: 0.75,
     maxImpactPct: 3.5,
   };
-}
-
-export function normalizeTargets(raw: GrowthTarget[]): GrowthTarget[] {
-  const seen = new Set<string>();
-  const cleaned: GrowthTarget[] = [];
-  for (const t of raw) {
-    const symbol = t.symbol.toUpperCase();
-    if (!symbol || seen.has(symbol)) continue;
-    seen.add(symbol);
-    cleaned.push({ symbol, weight: Math.max(0, t.weight) });
-    if (cleaned.length >= 5) break;
-  }
-  const sum = cleaned.reduce((s, t) => s + t.weight, 0);
-  if (cleaned.length === 0) return [...DEFAULT_GROWTH_TARGETS];
-  if (!(sum > 0)) {
-    const w = 100 / cleaned.length;
-    return cleaned.map((t) => ({ ...t, weight: w }));
-  }
-  return cleaned.map((t) => ({ ...t, weight: (t.weight / sum) * 100 }));
 }
 
 export function amountOf(balances: Record<string, number>, snap: LeefSnapshot, symbol: string): number {

@@ -26,6 +26,9 @@
  * shape surprise, and the venue sits behind a persisted kill-switch.
  */
 import { rpcPost } from "@/lib/wallet/chain";
+import { neftyVenueEnabledNow, setNeftyVenueEnabled } from "./nefty-flag";
+
+export { neftyVenueEnabledNow, setNeftyVenueEnabled };
 import {
   DEFIBOX_ID_BASE,
   DEFIBOX_SWAP,
@@ -532,23 +535,13 @@ export async function fetchTacoPools(waxUsd: number): Promise<VenuePool[]> {
  * kill-switch must be able to pull the venue out of the route graph without a
  * redeploy. store/bot.ts keeps this in sync with the persisted setting.
  */
-let neftyVenueEnabled = true;
-
-export function setNeftyVenueEnabled(on: boolean): void {
-  neftyVenueEnabled = on === true;
-}
-
-export function neftyVenueEnabledNow(): boolean {
-  return neftyVenueEnabled;
-}
-
 let venueCache: { at: number; waxUsd: number; nefty: boolean; pools: VenuePool[] } | null = null;
 const VENUE_TTL_MS = 120_000;
 
 export async function fetchExternalVenues(waxUsd: number): Promise<VenuePool[]> {
   if (
     venueCache &&
-    venueCache.nefty === neftyVenueEnabled &&
+    venueCache.nefty === neftyVenueEnabledNow() &&
     Date.now() - venueCache.at < VENUE_TTL_MS
   ) {
     return venueCache.pools;
@@ -556,10 +549,10 @@ export async function fetchExternalVenues(waxUsd: number): Promise<VenuePool[]> 
   const [d, t, n] = await Promise.all([
     fetchDefiboxPools(waxUsd),
     fetchTacoPools(waxUsd),
-    neftyVenueEnabled ? fetchNeftyPools(waxUsd) : Promise.resolve([]),
+    neftyVenueEnabledNow() ? fetchNeftyPools(waxUsd) : Promise.resolve([]),
   ]);
   const pools = [...d, ...t, ...n];
-  venueCache = { at: Date.now(), waxUsd, nefty: neftyVenueEnabled, pools };
+  venueCache = { at: Date.now(), waxUsd, nefty: neftyVenueEnabledNow(), pools };
   return pools;
 }
 

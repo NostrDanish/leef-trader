@@ -52,7 +52,7 @@ export function ImportKeyDialog() {
     setError(null);
     setBusy("key");
     try {
-      const parsed = parsePrivateKey(wif);
+      const parsed = await parsePrivateKey(wif);
       const pub = describeKey(parsed);
       let name = account.trim().toLowerCase();
       const found = await accountsForKeys([pub.publicKey, pub.legacy]);
@@ -76,7 +76,7 @@ export function ImportKeyDialog() {
       );
       if (!choice.ok) throw new Error(choice.reason);
       const permission = choice.permission;
-      importSecret(wif);
+      await importSecret(wif);
       setWif("");
       setLive({ account: name, publicKey: pub.publicKey, permission });
       setOpen(false);
