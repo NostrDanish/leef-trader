@@ -11,6 +11,7 @@ import {
   PieChart,
   Radio,
   ServerCog,
+  Lock,
   Wallet,
   type LucideIcon,
 } from "lucide-react";
@@ -32,4 +33,5 @@ export const TABS: TabDef[] = [
   { id: "ai", label: "AI analyst", short: "AI", icon: Brain },
   { id: "evidence", label: "Evidence", short: "Proof", icon: FlaskConical },
   { id: "infra", label: "Infrastructure", short: "Infra", icon: ServerCog },
+  { id: "sat", label: "SAT treasury", short: "SAT", icon: Lock },
 ];

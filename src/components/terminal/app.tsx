@@ -28,6 +28,9 @@ const IlCalc = lazy(() => import("./il").then((m) => ({ default: m.IlCalc })));
 const InfraStatus = lazy(() =>
   import("./infra-status").then((m) => ({ default: m.InfraStatus })),
 );
+const SatDesk = lazy(() =>
+  import("./sat-desk").then((m) => ({ default: m.SatDesk })),
+);
 const Overview = lazy(() =>
   import("./overview").then((m) => ({ default: m.Overview })),
 );
@@ -115,6 +118,7 @@ export function TerminalApp() {
           {tab === "evidence" && <Evidence />}
           {tab === "ai" && <AiDesk snap={snap} />}
           {tab === "infra" && <InfraStatus />}
+          {tab === "sat" && <SatDesk />}
         </Suspense>
       </main>
 
