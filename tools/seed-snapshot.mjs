@@ -10,7 +10,8 @@
  * handles a missing seed-snapshot.json.
  *
  * Offline / CI without network: the seed step skips gracefully, only
- * version.json is written.
+ * version.json is written. Set SKIP_SEED_SNAPSHOT=1 to skip the network
+ * fetch outright (CI checks that never ship the bundle).
  */
 import { execSync } from "node:child_process";
 import { mkdirSync, writeFileSync } from "node:fs";
@@ -131,10 +132,14 @@ async function writeSeed() {
 
 mkdirSync(pubDir, { recursive: true });
 writeVersion();
-try {
-  await writeSeed();
-} catch (err) {
-  console.warn(
-    `[prebuild] seed snapshot skipped (${err instanceof Error ? err.message : err}) — build continues without it.`,
-  );
+if (process.env.SKIP_SEED_SNAPSHOT) {
+  console.log("[prebuild] seed snapshot skipped (SKIP_SEED_SNAPSHOT set).");
+} else {
+  try {
+    await writeSeed();
+  } catch (err) {
+    console.warn(
+      `[prebuild] seed snapshot skipped (${err instanceof Error ? err.message : err}) — build continues without it.`,
+    );
+  }
 }
