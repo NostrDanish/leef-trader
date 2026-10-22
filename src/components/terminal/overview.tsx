@@ -1,14 +1,5 @@
-import { useMemo, type ReactNode } from "react";
-import {
-  Bar,
-  BarChart,
-  CartesianGrid,
-  Tooltip as RTooltip,
-  XAxis,
-  YAxis,
-} from "recharts";
-import { ChartFrame } from "./chart-frame";
-import { CandleChart } from "@/components/charts/CandleChart";
+import { lazy, Suspense, useMemo, type ReactNode } from "react";
+import { ChartSkeleton } from "@/components/charts/chart-state";
 import { OracleCard } from "@/components/charts/OracleCard";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -25,6 +16,13 @@ import type { LeefSnapshot, RankedPool } from "@/lib/leef/types";
 import { cn } from "@/lib/utils";
 import { useTerminal } from "@/store/terminal";
 import { PairMarks } from "./token-mark";
+
+const CandleChart = lazy(() =>
+  import("@/components/charts/CandleChart").then((m) => ({ default: m.CandleChart })),
+);
+const LiquidityMix = lazy(() =>
+  import("./liquidity-mix").then((m) => ({ default: m.LiquidityMix })),
+);
 
 export function Overview({
   snap,
@@ -119,7 +117,9 @@ export function Overview({
 
       <div className="grid gap-5 lg:grid-cols-3">
         <div className="min-w-0 lg:col-span-2">
-          <CandleChart />
+          <Suspense fallback={<ChartSkeleton className="h-80" />}>
+            <CandleChart />
+          </Suspense>
         </div>
         <OracleCard snap={snap} />
       </div>
@@ -137,36 +137,9 @@ export function Overview({
               All pools
             </Button>
           </div>
-          <ChartFrame className="h-72">
-              <BarChart data={chartRows} layout="vertical" margin={{ left: 8, right: 12 }}>
-                <CartesianGrid stroke="var(--color-border)" strokeDasharray="3 6" horizontal={false} />
-                <XAxis
-                  type="number"
-                  tick={{ fill: "var(--color-subtle)", fontSize: 11 }}
-                  axisLine={false}
-                  tickLine={false}
-                  tickFormatter={(v: number) => `$${Math.round(v)}`}
-                />
-                <YAxis
-                  type="category"
-                  dataKey="name"
-                  width={96}
-                  tick={{ fill: "var(--color-muted)", fontSize: 11 }}
-                  axisLine={false}
-                  tickLine={false}
-                />
-                <RTooltip
-                  cursor={{ fill: "var(--color-surface-2)" }}
-                  contentStyle={tooltipStyle}
-                  formatter={(v, name) => [
-                    fmtUsd(Number(v), 2),
-                    name === "tvl" ? "TVL" : "24h vol",
-                  ]}
-                />
-                <Bar dataKey="tvl" fill="var(--color-accent)" radius={[0, 4, 4, 0]} barSize={10} />
-                <Bar dataKey="vol" fill="var(--color-wax)" radius={[0, 4, 4, 0]} barSize={10} />
-              </BarChart>
-          </ChartFrame>
+          <Suspense fallback={<ChartSkeleton />}>
+            <LiquidityMix rows={chartRows} />
+          </Suspense>
         </Card>
 
         <Card className="flex flex-col p-5">
@@ -349,10 +322,3 @@ function Change({ n, suffix }: { n: number | null | undefined; suffix?: string }
     </span>
   );
 }
-
-const tooltipStyle = {
-  background: "var(--color-surface-2)",
-  border: "1px solid var(--color-border)",
-  borderRadius: 8,
-  fontSize: 12,
-};

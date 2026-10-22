@@ -37,35 +37,46 @@ export default defineConfig(() => ({
     },
   },
   build: {
-    rollupOptions: {
+    target: "es2022",
+    // Gzip accounting walks every asset. With the font and chunk count here
+    // it dominates an otherwise short rolldown build.
+    reportCompressedSize: false,
+    modulePreload: { polyfill: false },
+    rolldownOptions: {
+      experimental: {
+        // Skip unused re-exports in side-effect-free barrels (lucide).
+        lazyBarrel: true,
+      },
       output: {
-        manualChunks(id: string) {
-          if (!id.includes("node_modules")) return;
-          // Core framework — needed for first paint, cached across deploys.
-          if (
-            /node_modules\/(react|react-dom|scheduler|react-router|react-router-dom|@remix-run)\//.test(
-              id,
-            )
-          ) {
-            return "vendor-react";
-          }
-          // Wharfkit / Antelope session stack.
-          if (
-            /node_modules\/(@wharfkit|@greymass)\//.test(id)
-          ) {
-            return "vendor-wharfkit";
-          }
-          // Crypto primitives used by the wallet/key code (initial graph),
-          // kept apart so they don't drag the Nostr chunk in with them.
-          if (/node_modules\/(@noble|@scure)\//.test(id)) {
-            return "vendor-crypto";
-          }
-          // NOTE: nostr and recharts are intentionally NOT manually chunked.
-          // They are only reachable through lazy boundaries (NostrShell,
-          // lazy desks), so rolldown auto-splits them into async chunks.
-          // Forcing them into manual chunks dragged shared CJS interop
-          // helpers (react wrapper) into that chunk and pulled it back
-          // into the initial modulepreload graph.
+        // Avoid TDZ checks on bundled top-level bindings.
+        topLevelVar: true,
+        codeSplitting: {
+          groups: [
+            {
+              name: "vendor-react",
+              test: /node_modules[\\/](react|react-dom|scheduler|react-router|react-router-dom|@remix-run)[\\/]/,
+              priority: 20,
+            },
+            {
+              // Dynamic import from session.ts. Do not pull shared helpers
+              // into this chunk — that reattached it to the entry graph.
+              name: "vendor-wharfkit",
+              test: /node_modules[\\/](@wharfkit|@greymass)[\\/]/,
+              priority: 20,
+              includeDependenciesRecursively: false,
+            },
+            {
+              name: "vendor-crypto",
+              test: /node_modules[\\/](@noble|@scure)[\\/]/,
+              priority: 20,
+              includeDependenciesRecursively: false,
+            },
+            // nostr and recharts are intentionally NOT grouped. They are only
+            // reachable through lazy boundaries (NostrShell, lazy desks).
+            // Forcing them into a vendor chunk dragged shared CJS interop
+            // helpers along and pulled that chunk back into the initial
+            // modulepreload graph.
+          ],
         },
       },
     },

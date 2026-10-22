@@ -19,7 +19,7 @@ import { learnedSizeCeilingMult } from "@/lib/leef/learning-store";
 import type { LeefSnapshot } from "@/lib/leef/types";
 import { parseAssetAmount } from "@/lib/wallet/alcor-route";
 import { waxResourceBlock } from "@/lib/wallet/chain";
-import { signAndPushBatch, type BatchLeg } from "@/lib/wallet/sign";
+import type { BatchLeg } from "@/lib/wallet/sign";
 import {
   capitalAvailable,
   coordinateCapitalMovement,
@@ -406,13 +406,15 @@ export async function runRebalancer(snap: LeefSnapshot, opts?: { force?: boolean
       try {
         const coordinated = await coordinateCapitalMovement({
           owner: "rebalancer",
-          submit: () =>
-            signAndPushBatch({
+          submit: async () => {
+            const { signAndPushBatch } = await import("@/lib/wallet/sign");
+            return signAndPushBatch({
               account: w.account,
               permission: w.permission,
               legs: allLegs,
               snap,
-            }),
+            });
+          },
           onSettled: async (result) => {
             if (result.status === "confirmed") await syncWalletBalances(snap);
           },

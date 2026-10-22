@@ -28,8 +28,8 @@ const lastParsed = (): AntelopeKeyPair => {
 describe("session key zeroization", () => {
   afterEach(() => forgetSecret());
 
-  it("forgetSecret overwrites the held private-key bytes and disables signing", () => {
-    importSecret(freshHexKey());
+  it("forgetSecret overwrites the held private-key bytes and disables signing", async () => {
+    await importSecret(freshHexKey());
     const held = lastParsed().privateKey;
     expect(hasSecret()).toBe(true);
     expect(held.some((b) => b !== 0)).toBe(true);
@@ -41,10 +41,10 @@ describe("session key zeroization", () => {
     expect(() => signDigest(new Uint8Array(32))).toThrow(/No private key/);
   });
 
-  it("importing a new key zeroizes the previous one", () => {
-    importSecret(freshHexKey());
+  it("importing a new key zeroizes the previous one", async () => {
+    await importSecret(freshHexKey());
     const first = lastParsed().privateKey;
-    importSecret(freshHexKey());
+    await importSecret(freshHexKey());
     const second = lastParsed().privateKey;
     expect(first.every((b) => b === 0)).toBe(true);
     expect(second.some((b) => b !== 0)).toBe(true);

@@ -1,4 +1,6 @@
-@import "tailwindcss";
+/* Scan the app only. Automatic detection also walks .agents skill
+   samples and docs, which adds unused utilities and slows every build. */
+@import "tailwindcss" source(".");
 @import "tw-animate-css";
 
 @custom-variant dark (&:is(.dark *));

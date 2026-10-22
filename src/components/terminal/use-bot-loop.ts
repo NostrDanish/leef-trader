@@ -60,7 +60,6 @@ import { parseAssetAmount, type AlcorRouteQuote } from "@/lib/wallet/alcor-route
 import { waxResourceBlock } from "@/lib/wallet/chain";
 import { arbFloorViolation, memoMinOutSum } from "@/lib/wallet/policy";
 import { assetDelta, reconcileTransfersLater, waitForTransaction } from "@/lib/wallet/reconcile";
-import { signAndPushArb, signAndPushSwap } from "@/lib/wallet/sign";
 import {
   abortSigning,
   beginSigning,
@@ -82,6 +81,11 @@ import { usePortfolio } from "@/store/portfolio";
 import { useWallet } from "@/store/wallet";
 import { toast } from "@/hooks/useToast";
 import { lastFetchTiming } from "@/lib/fetchJson";
+
+/** Signer (noble + antelope) stays off the first-paint graph. Cached after first use. */
+function loadSigner() {
+  return import("@/lib/wallet/sign");
+}
 
 /* ------------------------------------------------------------------ */
 /* Jev (System One) AI seam — propose only; the gauntlet decides       */
@@ -1495,7 +1499,7 @@ async function runBotOnceInner(
         if (!beginSigning()) return decision;
         const tSign = Date.now();
         try {
-          const exec = await signAndPushSwap({
+          const exec = await (await loadSigner()).signAndPushSwap({
             account: w.account,
             permission: w.permission,
             route: decision.route,
@@ -1648,7 +1652,7 @@ async function runBotOnceInner(
         if (!beginSigning()) return decision;
         const tSign = Date.now();
         try {
-          const exec = await signAndPushSwap({
+          const exec = await (await loadSigner()).signAndPushSwap({
             account: w.account,
             permission: w.permission,
             route: decision.route,
@@ -1778,7 +1782,7 @@ async function runBotOnceInner(
       if (live) {
         if (!beginSigning()) return decision;
         try {
-          const exec = await signAndPushSwap({
+          const exec = await (await loadSigner()).signAndPushSwap({
             account: w.account,
             permission: w.permission,
             route: decision.route,
@@ -1958,7 +1962,7 @@ async function runBotOnceInner(
         if (!beginSigning()) return decision;
         const tSign = Date.now();
         try {
-          const res = await signAndPushArb({
+          const res = await (await loadSigner()).signAndPushArb({
             account: w.account,
             permission: w.permission,
             plan,

@@ -196,6 +196,18 @@ class MarketEngine {
     this.scheduleHeartbeat(0);
     this.scheduleMarket(200);
     this.watchSuspension();
+    // The signer chunk is only needed once a key or a running bot can trade.
+    // Visitors in paper mode never download it.
+    const auth = useWallet.getState().authType;
+    if (
+      useBot.getState().running ||
+      hasSecret() ||
+      auth === "key" ||
+      auth === "wcw" ||
+      auth === "anchor"
+    ) {
+      void import("@/lib/wallet/sign");
+    }
   }
 
   stop(): void {

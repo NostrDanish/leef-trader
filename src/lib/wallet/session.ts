@@ -5,12 +5,19 @@
  * trade pops the wallet to sign (Cloud Wallet users can whitelist the
  * swap.alcor transfers to trade without popups).
  */
-import { SessionKit, type Session } from "@wharfkit/session";
-import { WebRenderer } from "@wharfkit/web-renderer";
-import { WalletPluginAnchor } from "@wharfkit/wallet-plugin-anchor";
-import { WalletPluginCloudWallet } from "@wharfkit/wallet-plugin-cloudwallet";
 import { effectiveEndpoints } from "@/lib/wax/endpoints";
 import { rpcPool } from "@/lib/wax/provider-pool";
+
+/** Type-only: a value import here would pull Wharfkit into the first-paint graph. */
+type Session = import("@wharfkit/session").Session;
+type SessionKit = import("@wharfkit/session").SessionKit;
+
+type KitDeps = {
+  SessionKit: typeof import("@wharfkit/session").SessionKit;
+  WebRenderer: typeof import("@wharfkit/web-renderer").WebRenderer;
+  WalletPluginAnchor: typeof import("@wharfkit/wallet-plugin-anchor").WalletPluginAnchor;
+  WalletPluginCloudWallet: typeof import("@wharfkit/wallet-plugin-cloudwallet").WalletPluginCloudWallet;
+};
 
 /** WAX mainnet chain id. */
 export const WAX_CHAIN_ID =
@@ -26,6 +33,30 @@ export type WalletIdentity = {
 
 let kit: SessionKit | null = null;
 let session: Session | null = null;
+let kitDepsPromise: Promise<KitDeps> | null = null;
+
+/** Wharfkit (session kit, renderer, wallet plugins) loads on first external-wallet use. */
+function loadKitDeps(): Promise<KitDeps> {
+  if (!kitDepsPromise) {
+    kitDepsPromise = Promise.all([
+      import("@wharfkit/session"),
+      import("@wharfkit/web-renderer"),
+      import("@wharfkit/wallet-plugin-anchor"),
+      import("@wharfkit/wallet-plugin-cloudwallet"),
+    ])
+      .then(([sessionMod, rendererMod, anchorMod, cloudMod]) => ({
+        SessionKit: sessionMod.SessionKit,
+        WebRenderer: rendererMod.WebRenderer,
+        WalletPluginAnchor: anchorMod.WalletPluginAnchor,
+        WalletPluginCloudWallet: cloudMod.WalletPluginCloudWallet,
+      }))
+      .catch((err: unknown) => {
+        kitDepsPromise = null;
+        throw err;
+      });
+  }
+  return kitDepsPromise;
+}
 
 const CORS_PROXY = "https://proxy.shakespeare.diy/?url=";
 
@@ -79,22 +110,23 @@ function sessionChainUrls(): string[] {
 
 let kitUrl: string | null = null;
 
-function makeKit(url: string): SessionKit {
+function makeKit(url: string, deps: KitDeps): SessionKit {
   kitUrl = url;
-  return new SessionKit(
+  return new deps.SessionKit(
     {
       appName: "LEEF Trader",
       chains: [{ id: WAX_CHAIN_ID, url }],
-      ui: new WebRenderer(),
-      walletPlugins: [new WalletPluginCloudWallet(), new WalletPluginAnchor()],
+      ui: new deps.WebRenderer(),
+      walletPlugins: [new deps.WalletPluginCloudWallet(), new deps.WalletPluginAnchor()],
     },
     { fetch: proxyFetch },
   );
 }
 
-function getKit(): SessionKit {
+async function getKit(): Promise<SessionKit> {
+  const deps = await loadKitDeps();
   if (!kit) {
-    kit = makeKit(sessionChainUrls()[0]!);
+    kit = makeKit(sessionChainUrls()[0]!, deps);
   }
   return kit;
 }
@@ -115,11 +147,12 @@ function isEndpointFailure(err: unknown): boolean {
 }
 
 /** Rebuild the kit on the next curated endpoint after an endpoint failure. */
-function rotateKit(): SessionKit {
+async function rotateKit(): Promise<SessionKit> {
+  const deps = await loadKitDeps();
   const urls = sessionChainUrls();
   const idx = kitUrl ? urls.indexOf(kitUrl) : -1;
   const next = urls[(idx + 1) % urls.length]!;
-  kit = makeKit(next);
+  kit = makeKit(next, deps);
   return kit;
 }
 
@@ -129,11 +162,11 @@ async function withKit<T>(fn: (k: SessionKit) => Promise<T>): Promise<T> {
   let lastErr: unknown;
   for (let i = 0; i < attempts; i++) {
     try {
-      return await fn(getKit());
+      return await fn(await getKit());
     } catch (err) {
       lastErr = err;
       if (!isEndpointFailure(err) || i === attempts - 1) throw err;
-      rotateKit();
+      await rotateKit();
     }
   }
   throw lastErr;
@@ -181,7 +214,7 @@ export async function restoreWallet(): Promise<WalletIdentity | null> {
 
 export async function logoutWallet(): Promise<void> {
   try {
-    if (session) await getKit().logout(session);
+    if (session) await (await getKit()).logout(session);
   } catch {
     /* best effort */
   } finally {
