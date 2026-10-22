@@ -11,8 +11,8 @@
 import { rpcPost } from "@/lib/wallet/chain";
 
 const ENV = (import.meta as { env?: Record<string, string | undefined> }).env ?? {};
-/** Owner-chosen name (11 chars: must be won in a WAX premium-name bid). 12-char fallback: smarttrader1. */
-export const SAT_CONTRACT: string = ENV.VITE_SAT_CONTRACT || "smarttrader";
+/** Owner-chosen account (12 chars, created directly). Override with VITE_SAT_CONTRACT. */
+export const SAT_CONTRACT: string = ENV.VITE_SAT_CONTRACT || "smartatrader";
 export const SAT_TOKEN_CONTRACT: string = ENV.VITE_SAT_TOKEN_CONTRACT || "sattokenacct";
 export const ALCOR_SWAP = "swap.alcor";
 
