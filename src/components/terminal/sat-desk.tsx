@@ -63,7 +63,7 @@ export function SatDesk() {
     <div className="space-y-4 p-4 text-sm">
       <div className="flex items-center gap-2">
         <Lock className="size-4" />
-        <h2 className="font-semibold">SAT treasury · {SAT_CONTRACT}</h2>
+        <h2 className="font-semibold"><img src="/tokens/sat-64.png" alt="SAT" width={24} height={24} className="inline-block h-6 w-6 rounded-full mr-2 align-middle" />SAT treasury · {SAT_CONTRACT}</h2>
         {deployed.isLoading ? <Loader2 className="size-3 animate-spin" /> : <Badge variant={on ? "default" : "secondary"}>{on ? "live" : "not deployed"}</Badge>}
         <Button size="sm" variant="link" className="ml-auto h-auto p-0" onClick={() => setTab("about")}>About / How it works</Button>
       </div>
