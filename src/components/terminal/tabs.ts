@@ -4,6 +4,7 @@ import {
   Brain,
   Calculator,
   FlaskConical,
+  Info,
   GitCompare,
   Layers,
   LayoutDashboard,
@@ -34,4 +35,5 @@ export const TABS: TabDef[] = [
   { id: "evidence", label: "Evidence", short: "Proof", icon: FlaskConical },
   { id: "infra", label: "Infrastructure", short: "Infra", icon: ServerCog },
   { id: "sat", label: "SAT treasury", short: "SAT", icon: Lock },
+  { id: "about", label: "About / How it works", short: "About", icon: Info },
 ];

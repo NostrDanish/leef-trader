@@ -34,7 +34,8 @@ export type TabId =
   | "evidence"
   | "ai"
   | "infra"
-  | "sat";
+  | "sat"
+  | "about";
 
 type TerminalState = {
   tab: TabId;

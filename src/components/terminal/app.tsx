@@ -31,6 +31,9 @@ const InfraStatus = lazy(() =>
 const SatDesk = lazy(() =>
   import("./sat-desk").then((m) => ({ default: m.SatDesk })),
 );
+const AboutDesk = lazy(() =>
+  import("./about-desk").then((m) => ({ default: m.AboutDesk })),
+);
 const Overview = lazy(() =>
   import("./overview").then((m) => ({ default: m.Overview })),
 );
@@ -119,6 +122,7 @@ export function TerminalApp() {
           {tab === "ai" && <AiDesk snap={snap} />}
           {tab === "infra" && <InfraStatus />}
           {tab === "sat" && <SatDesk />}
+          {tab === "about" && <AboutDesk />}
         </Suspense>
       </main>
 
