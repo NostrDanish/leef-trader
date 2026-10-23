@@ -4,6 +4,7 @@ import { Lock, Loader2 } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { walletSession } from "@/lib/wallet/session";
+import { useTerminal } from "@/store/terminal";
 import {
   SAT_CONTRACT,
   buildSubscribeAction,
@@ -40,6 +41,7 @@ export function SatDesk() {
   const session = walletSession();
   const actor = session ? String(session.actor) : null;
   const sub = useQuery({ queryKey: ["sat", "sub", actor], queryFn: () => readSub(actor!), enabled: on && !!actor });
+  const setTab = useTerminal((s) => s.setTab);
   const [busy, setBusy] = useState<number | null>(null);
   const [msg, setMsg] = useState<string | null>(null);
 
@@ -63,6 +65,7 @@ export function SatDesk() {
         <Lock className="size-4" />
         <h2 className="font-semibold">SAT treasury · {SAT_CONTRACT}</h2>
         {deployed.isLoading ? <Loader2 className="size-3 animate-spin" /> : <Badge variant={on ? "default" : "secondary"}>{on ? "live" : "not deployed"}</Badge>}
+        <Button size="sm" variant="link" className="ml-auto h-auto p-0" onClick={() => setTab("about")}>About / How it works</Button>
       </div>
       {!on && !deployed.isLoading && (
         <p className="text-muted-foreground">The leeftrader contract is not deployed on WAX yet (planned; account name is a placeholder). This desk will read its tables once it is live.</p>

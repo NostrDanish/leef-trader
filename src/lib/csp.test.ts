@@ -16,6 +16,11 @@ const NOT_FETCHED = new Set([
   // Provenance comment for the vendored Telegram SDK — the app never fetches
   // from telegram.org (script-src is 'self' and the SDK ships in src/vendor).
   "https://telegram.org",
+  // Plain <a href> links on the About page (src/lib/sat/explainer.ts); never fetched.
+  "https://leef-trader.vercel.app",
+  "https://t.me",
+  "https://leeftoken.io",
+  "https://github.com",
 ]);
 
 function walk(dir: string): string[] {
