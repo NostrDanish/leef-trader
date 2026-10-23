@@ -1,6 +1,6 @@
 # SAT treasury tab (leeftrader contract link)
 
-Status: contract **not deployed**; the tab shows "not deployed" until `get_code_hash` on the account is non-zero.
+Status: **deployed on WAX mainnet** (Oct 23 2026, `smartatrader` + SAT token `sattoken1111`, admin 2-of-3 `smartaadmin1`, low caps, not audited); the tab shows "not deployed" until `get_code_hash` on the account is non-zero.
 
 - Contract source/spec: private repo `NostrDanish/leef-trader-tg`, `contracts/` + `docs/CONTRACTS.md`.
 - Account: `VITE_SAT_CONTRACT`, default `smartatrader` (owner choice; 12 chars, regular `newaccount`).
