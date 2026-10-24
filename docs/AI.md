@@ -1,7 +1,7 @@
 # AI Analyst
 
 Optional second-opinion layer, powered by your own AI gateway
-([Leef-signer](https://github.com/NostrDanish/Leef-signer) — a Cloudflare
+([Leef-signer](https://github.com/leeftoken/Leef-signer) — a Cloudflare
 Worker you deploy, holding your own provider key as a Worker Secret).
 
 ```

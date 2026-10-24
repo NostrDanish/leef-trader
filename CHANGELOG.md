@@ -293,7 +293,7 @@ P0/P1 complete, P2 real-but-minimal, P3 honestly deferred
 
 ## Unreleased — AI analyst desk (advisory-only LLM via your own gateway)
 
-- **AI analyst integration** ([Leef-signer](https://github.com/NostrDanish/Leef-signer)
+- **AI analyst integration** ([Leef-signer](https://github.com/leeftoken/Leef-signer)
   Cloudflare Worker → PPQ). New **AI desk** tab: gateway health check,
   editable/persisted gateway URL, client-side budget (18/min under the
   worker's 20), and three one-click tasks — market analysis (live book +
