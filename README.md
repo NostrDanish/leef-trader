@@ -1,5 +1,7 @@
 # LEEF Trader
 
+Official site: https://leeftoken.io. Official GitHub: https://github.com/leeftoken (this repo is https://github.com/leeftoken/leef-trader).
+
 A WAX-native trading terminal and automated trading engine for the LEEF
 ecosystem, executing on Alcor's concentrated-liquidity AMM. Browser-based,
 non-custodial: keys never leave the tab. The site loads **once** — a
