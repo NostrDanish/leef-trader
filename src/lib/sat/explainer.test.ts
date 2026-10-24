@@ -11,6 +11,7 @@ describe("about / explainer content", () => {
   it("uses the official community link only", () => {
     const all = JSON.stringify({ LINKS, BLOCKS, ACCOUNTS });
     expect(LINKS.community).toBe("https://t.me/leefmaincorp");
+    expect(LINKS.explainer).toBe("https://github.com/leeftoken/leef-trader/blob/main/docs/EXPLAINER.md");
     expect(all).not.toMatch(/t\.me\/leeftoken/i);
   });
   it("lists every SAT / LEEF account", () => {

@@ -7,7 +7,7 @@ export const LINKS = {
   bot: "https://t.me/LEEF_Trader_Bot",
   community: "https://t.me/leefmaincorp",
   leef: "https://leeftoken.io",
-  explainer: "https://github.com/NostrDanish/leef-trader/blob/main/docs/EXPLAINER.md",
+  explainer: "https://github.com/leeftoken/leef-trader/blob/main/docs/EXPLAINER.md",
 } as const;
 
 export type Row = [string, string, string?];

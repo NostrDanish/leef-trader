@@ -1,7 +1,7 @@
 # LEEF Trader, @LEEF_Trader_Bot and SAT: how it all works
 
 Last checked against WAX mainnet: 23 Oct 2026. Every number below was read from the chain or from the
-repos ([leef-trader](https://github.com/NostrDanish/leef-trader), leef-trader-tg). Anything not decided yet is marked **TBD**.
+repos ([leef-trader](https://github.com/leeftoken/leef-trader), [leef-trader-tg](https://github.com/leeftoken/leef-trader-tg)). Anything not decided yet is marked **TBD**.
 
 - Platform: https://leef-trader.vercel.app/
 - Telegram bot: [t.me/LEEF_Trader_Bot](https://t.me/LEEF_Trader_Bot)

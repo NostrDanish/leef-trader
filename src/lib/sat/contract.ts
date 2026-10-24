@@ -1,6 +1,6 @@
 /**
  * Read-only client + wallet-signed action builders for the SAT / leeftrader
- * treasury contract (source: NostrDanish/leef-trader-tg contracts/leeftrader,
+ * treasury contract (source: leeftoken/leef-trader-tg contracts/leeftrader,
  * docs/CONTRACTS.md). Deployed on WAX mainnet Oct 23 2026 (smartatrader / sattoken1111, low caps, not audited);
  * overridable with VITE_SAT_CONTRACT. Reads fail soft ("not deployed").
  *

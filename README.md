@@ -7,7 +7,7 @@ persistent market engine (block heartbeat, health-scored RPC failover,
 on-chain pool state) keeps prices, routes, balances and strategies updating
 continuously with no page refresh and no key re-import.
 
-[![Edit with Shakespeare](https://shakespeare.diy/badge.svg)](https://shakespeare.diy/clone?url=https%3A%2F%2Fgithub.com%2FNostrDanish%2Fleef-trader.git)
+[![Edit with Shakespeare](https://shakespeare.diy/badge.svg)](https://shakespeare.diy/clone?url=https%3A%2F%2Fgithub.com%2Fleeftoken%2Fleef-trader.git)
 
 ## What it does
 
